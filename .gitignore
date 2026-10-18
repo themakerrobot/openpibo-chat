@@ -1,0 +1,11 @@
+__pycache__/
+.venv/
+data/train.jsonl
+data/heldout.jsonl
+runs/
+out/
+results/
+logs/
+state/
+.lock
+REPORT.md

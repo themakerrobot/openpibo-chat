@@ -1,0 +1,142 @@
+"""GPU 없이 돌아가는 부분: 도구 검사, 선생 답 검사, 학습 정답 자르기, 파이보 대화 흐름."""
+
+import json
+import random
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools import SYSTEM, TOOLS, check_call, same_call
+
+
+def test_tool_arguments_are_checked():
+    assert check_call("set_motion", {"name": "dance1"}) is None
+    assert check_call("set_motion", {"name": "moonwalk"})
+    assert check_call("eye_on", {"r": 0, "g": 0, "b": 255}) is None
+    assert check_call("eye_on", {"r": 0, "g": 0, "b": 300})
+    assert check_call("eye_on", {"r": 0, "g": 0})
+    assert check_call("eye_off", {}) is None
+    assert check_call("fly", {})
+    assert check_call("get_weather", '{"region": "서울"}') is None
+
+
+def test_close_colours_count_as_the_same_call():
+    a = {"name": "eye_on", "arguments": {"r": 0, "g": 0, "b": 255}}
+    assert same_call(a, {"name": "eye_on", "arguments": {"r": 20, "g": 10, "b": 230}})
+    assert not same_call(a, {"name": "eye_on", "arguments": {"r": 255, "g": 0, "b": 0}})
+
+
+def test_teacher_replies_become_examples_or_are_dropped():
+    from prompts import to_example
+
+    rng = random.Random(0)
+    chat = {"kind": "chat"}
+    good = '```json\n{"turns": [{"user": "공룡 어디 갔어?", "pibo": "아주 오래전에 사라졌어요. 화석으로 남아 있어요."}]}\n```'
+    ex = to_example(chat, good, rng)
+    assert ex["messages"][0]["content"] == SYSTEM and ex["messages"][-1]["role"] == "assistant"
+    assert to_example(chat, '{"turns": [{"user": "안녕", "pibo": "안녕하세요 😀"}]}', rng) is None
+    assert to_example(chat, "그냥 글", rng) is None
+
+    tool = {"kind": "tool", "fn": "set_motion"}
+    ok = json.dumps({"user": "춤춰 줘", "calls": [{"name": "set_motion",
+                     "arguments": {"name": "dance2"}}], "result": "완료",
+                     "pibo": "신나게 춤췄어요!"}, ensure_ascii=False)
+    ex = to_example(tool, ok, rng)
+    roles = [m["role"] for m in ex["messages"]]
+    assert roles == ["system", "user", "assistant", "tool", "assistant"]
+    bad = ok.replace("dance2", "moonwalk")
+    assert to_example(tool, bad, rng) is None
+
+
+class FakeTok:
+    """Qwen3의 대화 템플릿을 그대로 쓰는 토크나이저 흉내 (글자 하나가 토큰 하나)."""
+
+    def __init__(self):
+        jinja2 = pytest.importorskip("jinja2")
+        env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
+        env.filters["tojson"] = lambda v, **k: json.dumps(v, ensure_ascii=False)
+        self.t = env.from_string((ROOT / "templates" / "qwen3.jinja").read_text())
+
+    def apply_chat_template(self, messages, tools=None, tokenize=False,
+                            add_generation_prompt=False, enable_thinking=True):
+        return self.t.render(messages=messages, tools=tools,
+                             add_generation_prompt=add_generation_prompt,
+                             enable_thinking=enable_thinking)
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [ord(c) for c in text]}
+
+
+def test_only_pibos_turns_are_learned_and_they_end_the_turn():
+    from prompts import to_example
+    from train import targets
+
+    tok = FakeTok()
+    rng = random.Random(0)
+    tool = {"kind": "tool", "fn": "eye_on"}
+    ex = to_example(tool, json.dumps({"user": "눈 파랗게", "calls": [{"name": "eye_on",
+                    "arguments": {"r": 0, "g": 0, "b": 255}}], "result": "완료",
+                    "pibo": "파란 눈이 됐어요."}, ensure_ascii=False), rng)
+    got = list(targets(tok, ex, 4096))
+    assert None not in got and len(got) == 2
+    texts = ["".join(chr(i) for i, lab in zip(ids, labels) if lab != -100)
+             for ids, labels in got]
+    assert texts[0].endswith("</tool_call><|im_end|>\n") and '"name": "eye_on"' in texts[0]
+    assert texts[1].endswith("파란 눈이 됐어요.<|im_end|>\n")
+    # 도구 목록과 아이의 말은 읽기만 합니다
+    first_ids, first_labels = got[0]
+    prompt = "".join(chr(i) for i, lab in zip(first_ids, first_labels) if lab == -100)
+    assert "<tools>" in prompt and "눈 파랗게" in prompt
+
+
+def test_multi_turn_chat_learns_every_answer():
+    from prompts import to_example
+    from train import targets
+
+    ex = to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": "안녕", "pibo": "안녕하세요, 반가워요."},
+        {"user": "뭐 해?", "pibo": "친구를 기다리고 있었어요."}]}, ensure_ascii=False),
+        random.Random(1))
+    got = list(targets(FakeTok(), ex, 4096))
+    assert len(got) == 2 and None not in got
+
+
+def test_own_dialogues_are_read(tmp_path):
+    from train import read_extra
+
+    f = tmp_path / "extra.txt"
+    f.write_text("# 설명\n아이: 이름이 뭐야?\n파이보: 저는 파이보예요.\n\n# 아이: 무시\n"
+                 "아이: 몇 살이야?\n파이보: 저는 로봇이라 나이가 없어요.\n", encoding="utf-8")
+    got = read_extra(f)
+    assert len(got) == 2 and got[1]["messages"][-1]["content"] == "저는 로봇이라 나이가 없어요."
+
+
+def test_tool_calls_are_read_from_the_model_text():
+    from evaluate import parse_calls, say
+
+    text = '<tool_call>\n{"name": "set_motion", "arguments": {"name": "dance1"}}\n</tool_call>'
+    assert parse_calls(text) == [{"name": "set_motion", "arguments": {"name": "dance1"}}]
+    assert say("<think>\n\n</think>\n\n좋아요!") == "좋아요!"
+
+
+def test_the_robot_runs_the_tool_then_answers(monkeypatch):
+    import pibo_chat
+
+    # 잘못된 호출은 로봇에 닿기 전에 막힙니다
+    assert pibo_chat.run_tool("set_motion", {"name": "moonwalk"}).startswith("실패")
+    replies = iter([
+        {"content": "", "tool_calls": [{"id": "1", "function": {
+            "name": "set_motion", "arguments": '{"name": "dance1"}'}}]},
+        {"content": "춤췄어요!"},
+    ])
+    seen = []
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: next(replies))
+    monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: seen.append((n, a)) or "완료")
+    history = []
+    assert pibo_chat.turn("x", history, "춤춰", True) == "춤췄어요!"
+    assert seen == [("set_motion", {"name": "dance1"})]
+    assert len(TOOLS) == 6

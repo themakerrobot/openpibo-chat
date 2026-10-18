@@ -1,0 +1,6 @@
+# 5090 PC에서 (데이터 만들기, 학습, 채점). vLLM이 맞는 PyTorch를 함께 깝니다.
+vllm>=0.10
+transformers>=4.51
+accelerate
+sentencepiece
+pytest
