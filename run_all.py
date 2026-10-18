@@ -101,7 +101,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--status", action="store_true")
     p.add_argument("--stall", type=int, default=2 * 3600)
-    p.add_argument("--tries", type=int, default=3)
+    p.add_argument("--tries", type=int, default=4)
     args = p.parse_args()
     if args.status:
         report()

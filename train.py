@@ -117,13 +117,22 @@ def main():
             mask[i, :k] = 1
         return {"input_ids": ids, "labels": labels, "attention_mask": mask}
 
-    model = AutoModelForCausalLM.from_pretrained(args.base, torch_dtype=torch.bfloat16)
+    import math
+
+    import transformers
+
+    # transformers 4.56에서 torch_dtype이 dtype으로 바뀌었습니다
+    new = tuple(int(x) for x in transformers.__version__.split(".")[:2]) >= (4, 56)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base, **({"dtype": torch.bfloat16} if new else {"torch_dtype": torch.bfloat16}))
+    steps = math.ceil(len(rows) / (args.batch * args.accum)) * args.epochs
+    warmup = max(1, int(0.03 * steps))   # warmup_ratio는 5.x에서 없어져 걸음 수로
     targs = TrainingArguments(
         output_dir=str(out), num_train_epochs=args.epochs, learning_rate=args.lr,
         per_device_train_batch_size=args.batch, gradient_accumulation_steps=args.accum,
-        lr_scheduler_type="cosine", warmup_ratio=0.03, weight_decay=0.0, bf16=True,
+        lr_scheduler_type="cosine", warmup_steps=warmup, weight_decay=0.0, bf16=torch.cuda.is_available(),
         gradient_checkpointing=True, logging_steps=20, save_steps=500, save_total_limit=2,
-        report_to=[], group_by_length=False, dataloader_num_workers=2, seed=0,
+        report_to=[], dataloader_num_workers=2, seed=0,
         remove_unused_columns=False)
     trainer = Trainer(model=model, args=targs, train_dataset=rows, data_collator=collate)
     resume = any(out.glob("checkpoint-*"))

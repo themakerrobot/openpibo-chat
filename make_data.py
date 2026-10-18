@@ -17,6 +17,42 @@ from pathlib import Path
 from prompts import TEACHER_SYSTEM, requests, to_example
 
 TEACHER = "Qwen/Qwen3-32B-AWQ"   # Apache-2.0
+#: 앞의 것이 이 GPU에서 뜨지 않으면 다음 것으로 (모두 Apache-2.0)
+TEACHERS = [TEACHER, "Qwen/Qwen3-14B-AWQ", "Qwen/Qwen3-8B"]
+CHOSEN = Path("data/teacher.txt")   # 실제로 쓴 선생 모델: 채점도 같은 것으로
+
+
+def load_teacher(name: str | None = None, memory: float = 0.92):
+    """선생 모델을 띄웁니다. 정한 게 없으면 목록에서 아직 실패하지 않은 첫 번째.
+
+    뜨지 않으면 그 이름을 data/teacher-failed.txt에 적고 끝냅니다. 같은
+    프로세스에서 다음 것을 띄우면 GPU 메모리가 덜 풀려 있을 수 있어, 다음
+    후보는 run_all.py가 다시 시도할 때 새 프로세스에서 띄웁니다.
+    """
+    from vllm import LLM
+
+    failed_file = CHOSEN.with_name("teacher-failed.txt")
+    failed = set(failed_file.read_text().split()) if failed_file.exists() else set()
+    if name is None and CHOSEN.exists():
+        name = CHOSEN.read_text().strip()
+    if name is None:
+        left = [n for n in TEACHERS if n not in failed]
+        if not left:
+            raise SystemExit(f"선생 모델 후보가 모두 실패했어요: {TEACHERS}")
+        name = left[0]
+    try:
+        llm = LLM(name, max_model_len=4096, gpu_memory_utilization=memory,
+                  enable_prefix_caching=True)
+    except Exception as exc:
+        CHOSEN.parent.mkdir(parents=True, exist_ok=True)
+        with failed_file.open("a") as f:
+            f.write(name + "\n")
+        raise SystemExit(f"선생 모델 {name}을 띄우지 못함 (다음 시도는 다음 후보로): {exc}") \
+            from exc
+    CHOSEN.parent.mkdir(parents=True, exist_ok=True)
+    CHOSEN.write_text(name)
+    print(f"선생 모델: {name}", flush=True)
+    return llm
 
 
 def first_user(ex: dict) -> str:
@@ -29,7 +65,7 @@ def main():
     p.add_argument("--chat", type=int, required=True)
     p.add_argument("--tool", type=int, required=True)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--teacher", default=TEACHER)
+    p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     p.add_argument("--avoid", help="이 파일에 있는 아이 말은 빼고 (채점용 데이터)")
     p.add_argument("--batch", type=int, default=4000)
     args = p.parse_args()
@@ -49,10 +85,9 @@ def main():
     if all(count[k] >= want[k] for k in want):
         return
 
-    from vllm import LLM, SamplingParams
+    from vllm import SamplingParams
 
-    llm = LLM(args.teacher, max_model_len=4096, gpu_memory_utilization=0.92,
-              enable_prefix_caching=True)
+    llm = load_teacher(args.teacher)
     params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=700)
     rng = random.Random(args.seed)
     for rnd in range(50):

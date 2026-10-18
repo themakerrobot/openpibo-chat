@@ -17,7 +17,7 @@ import re
 import statistics
 from pathlib import Path
 
-from make_data import TEACHER
+from make_data import load_teacher
 from prompts import STYLE, first_json, tools_for
 from tools import TOOLS, check_call, same_call
 
@@ -102,11 +102,11 @@ JUDGE = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 
 
 
 def judge():
-    from vllm import LLM, SamplingParams
+    from vllm import SamplingParams
 
     qs = questions()
     files = sorted(RESULTS.glob("answers-*.json"))
-    llm = LLM(TEACHER, max_model_len=4096, gpu_memory_utilization=0.92)
+    llm = load_teacher()
     params = SamplingParams(temperature=0.0, max_tokens=80)
     for f in files:
         scored = f.with_name(f.name.replace("answers-", "scores-"))
