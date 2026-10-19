@@ -56,6 +56,15 @@ def steps():
     return s
 
 
+def step_env() -> dict:
+    """가상환경을 켜지 않고 .venv/bin/python으로 돌려도 그 안의 도구(ninja 등)를
+    찾도록: vLLM은 처음 뜰 때 ninja로 GPU 코드를 컴파일합니다."""
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env.setdefault("VIRTUAL_ENV", str(Path(sys.executable).parents[1]))
+    return env
+
+
 def run_step(name, cmd, stall) -> bool:
     log = HERE / "logs" / f"{name}.log"
     log.parent.mkdir(exist_ok=True)
@@ -63,7 +72,7 @@ def run_step(name, cmd, stall) -> bool:
         out.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 시작\n")
         out.flush()
         proc = subprocess.Popen([PY, "-u", *cmd], cwd=HERE, stdout=out, stderr=subprocess.STDOUT,
-                                env=dict(os.environ, PYTHONUNBUFFERED="1"),
+                                env=step_env(),
                                 start_new_session=True)
         while proc.poll() is None:
             time.sleep(30)

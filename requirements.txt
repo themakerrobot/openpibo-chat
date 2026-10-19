@@ -3,4 +3,5 @@ vllm>=0.10
 transformers>=4.51
 accelerate
 sentencepiece
+ninja       # vLLM이 처음 뜰 때 GPU 코드를 컴파일하는 데 씁니다
 pytest
