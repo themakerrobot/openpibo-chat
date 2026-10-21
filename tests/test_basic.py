@@ -280,6 +280,57 @@ def test_distillation_runs_only_when_switched_on(tmp_path, monkeypatch):
     (tmp_path / "state" / "kd.on").touch()
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
     cmd, needs = steps["train-qwen3-0.6b-kd"]
-    assert needs == ["kd-teacher"] and cmd[cmd.index("--kd") + 1] == "data/kd"
+    assert needs == ["data-train", "kd-teacher"] and cmd[cmd.index("--kd") + 1] == "data/kd"
     assert "eval-qwen3-0.6b-kd-Q8_0" in steps and "eval-qwen3-0.6b-kd-원본" not in steps
     assert "--kd" not in steps["train-qwen3-0.6b"][0]
+    # 거른 데이터로도: 선생 확률은 원래 데이터로 한 번만 구합니다
+    cmd, needs = steps["train-qwen3-0.6b-v2-kd"]
+    assert needs == ["data-clean", "kd-teacher"] and "data/train-clean.jsonl" in cmd
+    assert [n for n in steps if n == "kd-teacher"] == ["kd-teacher"]
+
+
+def test_dance_number_and_extra_eye_colour_do_not_make_a_call_wrong():
+    from evaluate import tool_match
+
+    want = [{"name": "set_motion", "arguments": {"name": "dance5"}}]
+    dance4 = {"name": "set_motion", "arguments": {"name": "dance4"}}
+    blue = {"name": "eye_on", "arguments": {"r": 0, "g": 0, "b": 255}}
+    assert tool_match([dance4], want) == (True, False)
+    assert tool_match([dance4, blue], want) == (True, True)      # 맞음, 덤으로 눈 색
+    assert tool_match([{"name": "set_motion", "arguments": {"name": "bow"}}], want)[0] is False
+    red = [{"name": "eye_on", "arguments": {"r": 255, "g": 0, "b": 0}}]
+    assert tool_match([blue], red) == (False, False)
+    assert tool_match([blue], red, names_only=True) == (True, False)   # 색을 말 안 한 문제
+    assert tool_match([], red) == (False, False)
+
+
+def test_tool_examples_are_judged_and_marked(tmp_path, monkeypatch):
+    import evaluate
+    from filter_tools import prompt, tool_examples, verdict
+    from prompts import to_example
+
+    rng = random.Random(0)
+    lines = [json.dumps(to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": "안녕", "pibo": "안녕하세요."}]}, ensure_ascii=False), rng), ensure_ascii=False)]
+    for user, call in (("내가 화났어", {"name": "find_objects", "arguments": {}}),
+                       ("춤춰 줘", {"name": "set_motion", "arguments": {"name": "dance2"}})):
+        lines.append(json.dumps(to_example({"kind": "tool", "fn": call["name"]}, json.dumps(
+            {"user": user, "calls": [call], "result": "완료", "pibo": "했어요."},
+            ensure_ascii=False), rng), ensure_ascii=False))
+    got = list(tool_examples(lines))
+    assert [(i, u) for i, u, _ in got] == [(1, "내가 화났어"), (2, "춤춰 줘")]
+    assert "find_objects({})" in prompt(got[0][1], got[0][2])
+    assert verdict('```json\n{"natural": false, "args_from_words": true}\n```') == \
+        {"natural": False, "args_from_words": True}
+    assert verdict("모르겠어요") == {"natural": None, "args_from_words": None}
+    # 채점: 억지(1번)는 빼고, 이름만 볼 것(2번)은 이름만
+    (tmp_path / "heldout.jsonl").write_text("\n".join(lines) + "\n")
+    (tmp_path / "marks.json").write_text(json.dumps({"bad": [1], "names_only": [2]}))
+    (tmp_path / "answers-m.json").write_text(json.dumps({"no_tools": False, "answers": [
+        "안녕하세요.", "",
+        '<tool_call>\n{"name": "set_motion", "arguments": {"name": "bow"}}\n</tool_call>']}))
+    monkeypatch.setattr(evaluate, "HELDOUT", tmp_path / "heldout.jsonl")
+    monkeypatch.setattr(evaluate, "RESULTS", tmp_path)
+    monkeypatch.setattr(evaluate, "MARKS", tmp_path / "marks.json")
+    row = next(r for r in evaluate.report().splitlines() if r.startswith("| m |"))
+    assert row.split(" | ")[6] == "100%"     # 남은 도구 문제 하나, 이름만 맞으면 정답

@@ -25,18 +25,29 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
 
-#: (이름, 학습 시작점, 학습률, 배치, 누적, 증류 폴더). 1.7B는 KV 캐시까지 합치면
-#: 파이보에서 젬마3 1B보다 램을 450MB쯤 더 써서 뺐습니다.
-STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 4, 8, None)]
-#: state/kd.on 파일이 있을 때만: 같은 0.6B를 증류로도 학습해 나란히 채점합니다
-#: (선생 확률 구하기 distill.py → train.py --kd)
-KD_STUDENT = ("qwen3-0.6b-kd", "Qwen/Qwen3-0.6B", 2e-5, 4, 8, "data/kd")
 #: 만들어서 같은 질문으로 채점해 볼 양자화 (작은 모델이라 Q4에서 많이 나빠집니다)
 QUANTS = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
+BASE = "Qwen/Qwen3-0.6B"
+#: 학생 모델. 1.7B는 KV 캐시까지 합치면 파이보에서 젬마3 1B보다 램을 450MB쯤 더 써서 뺐습니다.
+#: data: (학습 데이터, 그걸 만드는 단계), quants: 만들어서 채점할 양자화
+STUDENTS = [
+    {"name": "qwen3-0.6b", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
+     "data": ("data/train.jsonl", "data-train"), "quants": QUANTS},
+    # 도구 예시 중 선생이 억지라고 본 것을 뺀 데이터 (filter_tools.py)
+    {"name": "qwen3-0.6b-v2", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
+     "data": ("data/train-clean.jsonl", "data-clean"), "quants": ["Q6_K", "Q8_0"]},
+]
+KD = "data/kd"
 
 
 def students():
-    return STUDENTS + ([KD_STUDENT] if (HERE / "state" / "kd.on").exists() else [])
+    """state/kd.on 파일이 있으면 학생마다 증류로도 학습해 나란히 채점합니다
+    (선생 확률 구하기 distill.py → train.py --kd). 선생 확률은 원래 데이터로 한 번
+    구하고, 거른 데이터는 그 일부라 그대로 씁니다."""
+    plain = [dict(s, kd=None) for s in STUDENTS]
+    if not (HERE / "state" / "kd.on").exists():
+        return plain
+    return plain + [dict(s, name=f"{s['name']}-kd", kd=KD) for s in STUDENTS]
 
 
 def steps():
@@ -45,27 +56,33 @@ def steps():
          ("data-heldout", ["make_data.py", "--out", "data/heldout.jsonl", "--chat", "400",
                            "--tool", "300", "--seed", "999", "--avoid", "data/train.jsonl"],
           ["data-train"]),
+         ("data-clean", ["filter_tools.py", "--train", "data/train.jsonl", "--heldout",
+                         "data/heldout.jsonl", "--out", "data/train-clean.jsonl",
+                         "--marks", "data/heldout-marks.json"], ["data-train", "data-heldout"]),
          # 지금 파이보에서 쓰는 모델 (도구 형식이 없어 대화만 채점)
          ("eval-gemma3-1b", ["evaluate.py", "gen", "--model", "google/gemma-3-1b-it",
-                             "--name", "gemma3-1b-원본", "--no-tools"], ["data-heldout"])]
-    for name, base, *_ in STUDENTS:
-        s.append((f"eval-{name}-원본", ["evaluate.py", "gen", "--model", base,
-                                       "--name", f"{name}-원본"], ["data-heldout"]))
-    for name, base, lr, batch, accum, kd in students():
-        cmd = ["train.py", "--base", base, "--data", "data/train.jsonl", "--out", f"runs/{name}",
-               "--lr", str(lr), "--batch", str(batch), "--accum", str(accum)]
-        needs = ["data-train"]
-        if kd:
-            s.append(("kd-teacher", ["distill.py", "--data", "data/train.jsonl", "--base", base,
-                                     "--out", kd], ["data-train"]))
-            cmd += ["--kd", kd]
-            needs = ["kd-teacher"]
+                             "--name", "gemma3-1b-원본", "--no-tools"], ["data-heldout"]),
+         (f"eval-{STUDENTS[0]['name']}-원본", ["evaluate.py", "gen", "--model", BASE,
+                                             "--name", f"{STUDENTS[0]['name']}-원본"],
+          ["data-heldout"])]
+    for st in students():
+        name, (data, made_by) = st["name"], st["data"]
+        cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",
+               "--lr", str(st["lr"]), "--batch", str(st["batch"]), "--accum", str(st["accum"])]
+        needs = [made_by]
+        if st["kd"]:
+            if not any(n == "kd-teacher" for n, _, _ in s):
+                s.append(("kd-teacher", ["distill.py", "--data", "data/train.jsonl", "--base",
+                                         st["base"], "--out", st["kd"]], ["data-train"]))
+            cmd += ["--kd", st["kd"]]
+            needs.append("kd-teacher")
         s.append((f"train-{name}", cmd, needs))
         s.append((f"eval-{name}-파이보", ["evaluate.py", "gen", "--model",
                                         f"runs/{name}/final", "--name", f"{name}-파이보"],
                   [f"train-{name}", "data-heldout"]))
-    for name, *_ in students():
-        for quant in QUANTS:   # GGUF는 CPU만 씁니다
+    for st in students():
+        name = st["name"]
+        for quant in st["quants"]:   # GGUF는 CPU만 씁니다
             s.append((f"gguf-{name}-{quant}", ["export.py", "--model", f"runs/{name}/final",
                                                "--name", f"pibo-{name}", "--quant", quant],
                       [f"train-{name}"]))

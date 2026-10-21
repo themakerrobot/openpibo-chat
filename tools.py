@@ -137,4 +137,7 @@ def same_call(a: dict, b: dict) -> bool:
             return False
     if a["name"] == "get_weather":
         return str(x.get("region", "")).strip() == str(y.get("region", "")).strip()
+    if a["name"] == "set_motion" and all(str(c.get("name", "")).startswith("dance")
+                                         for c in (x, y)):
+        return True                          # 춤은 몇 번 춤이든 같은 일
     return x == y

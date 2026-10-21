@@ -24,6 +24,8 @@ from tools import TOOLS, check_call, same_call
 
 HELDOUT = Path("data/heldout.jsonl")
 RESULTS = Path("results")
+#: filter_tools.py가 적은 채점용 도구 문제 표시: bad(억지라 뺌), names_only(도구 이름만 봄)
+MARKS = Path("data/heldout-marks.json")
 CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
 
@@ -57,6 +59,21 @@ def parse_calls(text: str) -> list[dict]:
                 args = {}
         calls.append({"name": c.get("name"), "arguments": args})
     return calls
+
+
+def tool_match(got: list[dict], want: list[dict], names_only: bool = False):
+    """(맞았는지, 춤에 덤으로 눈 색을 바꿨는지). 정답에 눈 색이 없는 동작 문제에서
+    덤으로 부른 eye_on은 빼고 보고 따로 셉니다. names_only면 도구 이름만 봅니다."""
+    extra = False
+    if any(c["name"] == "set_motion" for c in want) and \
+            not any(c["name"] == "eye_on" for c in want):
+        kept = [c for c in got if c["name"] != "eye_on"]
+        extra, got = len(kept) < len(got), kept
+    if not got or len(got) != len(want):
+        return False, False
+    ok = all(a["name"] == b["name"] if names_only else same_call(a, b)
+             for a, b in zip(got, want, strict=True))
+    return ok, ok and extra
 
 
 def say(text: str) -> str:
@@ -174,9 +191,11 @@ def judge():
 
 def report() -> str:
     qs = questions()
+    marked = json.loads(MARKS.read_text()) if MARKS.exists() else {}
+    bad, loose = set(marked.get("bad", [])), set(marked.get("names_only", []))
     rows = [("| 모델 | 대화 점수 (5점 만점) | 한국어 | 알맞음 | 짧음 | 사실 | 도구 정답률 | "
-             "도구 형식 오류 | 잘못 부름 | 평균 글자 수 |"),
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+             "춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | 평균 글자 수 |"),
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
         data = json.loads(f.read_text())
@@ -190,27 +209,34 @@ def report() -> str:
 
         total = statistics.mean([avg(k) for k in ("korean", "fit", "short", "true")]) \
             if marks else float("nan")
-        tool_q = [i for i, q in enumerate(qs) if q["kind"] == "tool"]
+        tool_q = [i for i, q in enumerate(qs) if q["kind"] == "tool" and i not in bad]
         chat_tools = [i for i, q in enumerate(qs) if q["kind"] == "chat" and q["tools"]]
         if data.get("no_tools"):
-            right = wrong_fmt = false_call = "도구 없음"
+            right = extra = wrong_fmt = false_call = "도구 없음"
         else:
-            hits = fmt = 0
+            hits = fmt = extras = 0
             for i in tool_q:
                 got = parse_calls(answers[i])
                 fmt += any(check_call(c["name"], c["arguments"]) for c in got) or not got
-                hits += bool(got) and len(got) == len(qs[i]["calls"]) and all(
-                    same_call(a, b) for a, b in zip(got, qs[i]["calls"], strict=True))
+                ok, more = tool_match(got, qs[i]["calls"], i in loose)
+                hits += ok
+                extras += more
             fc = sum(bool(parse_calls(answers[i])) for i in chat_tools)
             right = f"{hits / max(len(tool_q), 1):.0%}"
+            extra = f"{extras / max(len(tool_q), 1):.0%}"
             wrong_fmt = f"{fmt / max(len(tool_q), 1):.0%}"
             false_call = f"{fc / max(len(chat_tools), 1):.0%}"
         chat_q = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
         length = statistics.mean(len(say(answers[i])) for i in chat_q) if chat_q else 0
         rows.append(f"| {name} | {total:.2f} | {avg('korean'):.2f} | {avg('fit'):.2f} | "
-                    f"{avg('short'):.2f} | {avg('true'):.2f} | {right} | {wrong_fmt} | "
-                    f"{false_call} | {length:.0f} |")
+                    f"{avg('short'):.2f} | {avg('true'):.2f} | {right} | {extra} | "
+                    f"{wrong_fmt} | {false_call} | {length:.0f} |")
     text = "\n".join(rows) + "\n"
+    n_tool = sum(q["kind"] == "tool" for q in qs)
+    text += (f"\n도구 정답률: 춤 번호는 따지지 않음. 춤에 덤으로 부른 눈 색은 빼고 보고 따로 셈."
+             + (f" 도구 문제 {n_tool}개 중 선생이 억지라고 본 {len(bad)}개는 빼고, 동작·색·"
+                f"지역이 아이 말로 안 정해지는 {len(loose)}개는 도구 이름만 봄." if marked else "")
+             + "\n")
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "eval.md").write_text(text)
     return text
