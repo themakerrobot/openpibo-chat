@@ -234,3 +234,52 @@ def test_status_shows_the_running_step(tmp_path, monkeypatch):
         run_all.report()
     text = (tmp_path / "REPORT.md").read_text()
     assert "- train-qwen3-0.6b: 진행 중 18%" in text and "- data-train: 끝" in text
+
+
+def test_kd_loss_is_ce_when_the_teacher_is_sure():
+    torch = pytest.importorskip("torch")
+    from train import kd_loss
+
+    torch.manual_seed(0)
+    logits = torch.randn(1, 4, 10)
+    labels = torch.tensor([[-100, 3, 7, -100]])
+    kd_ids = torch.full((1, 4, 3), -1)
+    kd_lp = torch.zeros((1, 4, 3))
+    ce, n = kd_loss(logits, labels, kd_ids, kd_lp, 0.5)   # 선생이 없으면 CE만
+    assert n == 2
+    for j in (1, 2):   # 선생이 정답에 확률 1을 주면 KL = CE
+        kd_ids[0, j] = torch.tensor([labels[0, j], 0, 1])
+        kd_lp[0, j] = torch.tensor([0.0, -1e4, -1e4])
+    both, _ = kd_loss(logits, labels, kd_ids, kd_lp, 0.7)
+    assert torch.allclose(ce, both, atol=1e-4)
+    kd_lp[0, 1] = torch.tensor([-0.1, -2.5, -9.0])          # 선생이 다른 토큰에도 확률을 주면 다름
+    assert not torch.allclose(ce, kd_loss(logits, labels, kd_ids, kd_lp, 1.0)[0])
+
+
+def test_teacher_top_k_is_taken_at_pibos_tokens():
+    from distill import top_k
+
+    class Lp:
+        def __init__(self, v):
+            self.logprob = v
+
+    # vLLM처럼: 맨 앞은 None, 자리마다 {토큰: Logprob} (실제 토큰이 상위 K 밖이면 하나 더)
+    plp = [None, {5: Lp(-0.1)}, {9: Lp(-3.0), 2: Lp(-0.2), 4: Lp(-1.0)}, {1: Lp(-0.5)}]
+    ids, lp = top_k(plp, [-100, -100, 2, 1], 2)
+    assert ids.tolist() == [[2, 4], [1, -1]]
+    assert lp[0].tolist() == pytest.approx([-0.2, -1.0], abs=1e-3)
+
+
+def test_distillation_runs_only_when_switched_on(tmp_path, monkeypatch):
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    (tmp_path / "state").mkdir()
+    names = [n for n, _, _ in run_all.steps()]
+    assert "kd-teacher" not in names and names[-1] == "judge"
+    (tmp_path / "state" / "kd.on").touch()
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    cmd, needs = steps["train-qwen3-0.6b-kd"]
+    assert needs == ["kd-teacher"] and cmd[cmd.index("--kd") + 1] == "data/kd"
+    assert "eval-qwen3-0.6b-kd-Q8_0" in steps and "eval-qwen3-0.6b-kd-원본" not in steps
+    assert "--kd" not in steps["train-qwen3-0.6b"][0]

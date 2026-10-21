@@ -9,3 +9,4 @@ logs/
 state/
 .lock
 REPORT.md
+data/kd/
