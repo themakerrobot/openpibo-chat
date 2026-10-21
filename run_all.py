@@ -117,12 +117,22 @@ def last_error(log: Path, n: int = 3) -> list[str]:
     return [h[:160] for h in (hits[-n:] or tail.strip().splitlines()[-n:])]
 
 
+def unscored() -> list[str]:
+    """답은 모았는데 선생 모델이 아직 채점하지 않은 모델: judge가 한 번 끝난 뒤에
+    새로 모은 답(젬마, 학습한 모델)도 채점하게 judge를 다시 돌립니다."""
+    answers = sorted((HERE / "results").glob("answers-*.json"))
+    return [f.stem.removeprefix("answers-") for f in answers
+            if not f.with_name(f.name.replace("answers-", "scores-")).exists()]
+
+
 def report():
     state = HERE / "state"
     lines = [f"# openpibo-chat 결과 ({time.strftime('%Y-%m-%d %H:%M')})", ""]
     for name, _, _ in steps():
         mark = ("끝" if (state / f"{name}.done").exists() else
                 "실패" if (state / f"{name}.failed").exists() else "대기")
+        if name == "judge" and unscored():
+            mark = f"대기 (아직 채점 안 한 답: {', '.join(unscored())})"
         lines.append(f"- {name}: {mark}")
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
@@ -159,6 +169,8 @@ def main():
     for rnd in range(2):
         for name, cmd, needs in steps():
             done, failed = state / f"{name}.done", state / f"{name}.failed"
+            if name == "judge" and unscored():
+                done.unlink(missing_ok=True)
             if done.exists():
                 continue
             if any(not (state / f"{n}.done").exists() for n in needs):
