@@ -24,9 +24,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
 
-#: (이름, 학습 시작점, 학습률, 배치, 누적)
-STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 4, 8),
-            ("qwen3-1.7b", "Qwen/Qwen3-1.7B", 1e-5, 2, 16)]
+#: (이름, 학습 시작점, 학습률, 배치, 누적). 1.7B는 KV 캐시까지 합치면 파이보에서
+#: 젬마3 1B보다 램을 450MB쯤 더 써서 뺐습니다.
+STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 4, 8)]
 
 
 def steps():
