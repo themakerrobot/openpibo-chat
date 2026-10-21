@@ -209,3 +209,28 @@ def test_gguf_answers_keep_tool_calls_in_the_same_form(tmp_path, monkeypatch):
     evaluate.gen_gguf("m.gguf", "m")
     answer = json.loads((tmp_path / "answers-m.json").read_text())["answers"][0]
     assert evaluate.parse_calls(answer) == [{"name": "set_motion", "arguments": {"name": "dance1"}}]
+
+
+def test_status_shows_the_running_step(tmp_path, monkeypatch):
+    import fcntl
+
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "data-train.done").touch()
+    (tmp_path / "logs" / "data-train.log").write_text(
+        "\n===== 2026-10-21 10:00:00 시작\n끝남\n===== 2026-10-21 11:00:00 끝 (코드 0)\n")
+    (tmp_path / "logs" / "train-qwen3-0.6b.log").write_text(
+        "\n===== 2026-10-21 20:00:00 시작\n학습 차례 40000개\n"
+        " 17%|█▋ | 442/2560 [16:53<1:21:47]\r 18%|█▊ | 462/2560 [17:40<1:20:40]\r")
+    assert run_all.progress(tmp_path / "logs" / "data-train.log") is None
+    assert run_all.progress(tmp_path / "logs" / "train-qwen3-0.6b.log").startswith("18%")
+    assert not run_all.runner_alive()
+    with open(tmp_path / ".lock", "w") as held:   # 실행기가 돌고 있는 것처럼
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert run_all.runner_alive()
+        run_all.report()
+    text = (tmp_path / "REPORT.md").read_text()
+    assert "- train-qwen3-0.6b: 진행 중 18%" in text and "- data-train: 끝" in text

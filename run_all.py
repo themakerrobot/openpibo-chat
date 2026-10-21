@@ -15,6 +15,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -126,6 +127,28 @@ def last_error(log: Path, n: int = 3) -> list[str]:
     return [h[:160] for h in (hits[-n:] or tail.strip().splitlines()[-n:])]
 
 
+def runner_alive() -> bool:
+    """실행기가 지금 돌고 있는지: .lock을 다른 누가 쥐고 있으면 돌고 있습니다."""
+    with open(HERE / ".lock", "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return False
+
+
+def progress(log: Path) -> str | None:
+    """마지막 시도가 아직 끝나지 않았으면 그 로그의 마지막 줄(진행률), 끝났으면 None."""
+    if not log.exists():
+        return None
+    last = log.read_text(errors="replace").rsplit("===== ", 1)[-1]
+    if not last.split("\n", 1)[0].endswith("시작"):
+        return None
+    lines = [ln.strip() for ln in re.split(r"[\r\n]", last)[1:] if ln.strip()]
+    return lines[-1][:100] if lines else ""
+
+
 def unscored() -> list[str]:
     """답은 모았는데 선생 모델이 아직 채점하지 않은 모델: judge가 한 번 끝난 뒤에
     새로 모은 답(젬마, 학습한 모델)도 채점하게 judge를 다시 돌립니다."""
@@ -137,11 +160,16 @@ def unscored() -> list[str]:
 def report():
     state = HERE / "state"
     lines = [f"# openpibo-chat 결과 ({time.strftime('%Y-%m-%d %H:%M')})", ""]
+    alive, shown = runner_alive(), False
     for name, _, _ in steps():
         mark = ("끝" if (state / f"{name}.done").exists() else
                 "실패" if (state / f"{name}.failed").exists() else "대기")
         if name == "judge" and unscored():
             mark = f"대기 (아직 채점 안 한 답: {', '.join(unscored())})"
+        if mark != "끝" and alive and not shown:
+            now = progress(HERE / "logs" / f"{name}.log")
+            if now is not None:
+                mark, shown = f"진행 중 {now}".rstrip(), True
         lines.append(f"- {name}: {mark}")
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
