@@ -86,6 +86,17 @@ def run_step(name, cmd, stall) -> bool:
     return proc.returncode == 0
 
 
+def last_error(log: Path, n: int = 3) -> list[str]:
+    """실패한 단계의 마지막 시도에서 원인이 적힌 줄 몇 개 (상태 화면에 바로 보이게)."""
+    if not log.exists():
+        return ["(로그 없음)"]
+    text = log.read_text(errors="replace")
+    tail = text.split("===== ")[-2] if text.count("===== ") >= 2 else text
+    keys = ("Error", "error:", "Exception", "SystemExit", "못함", "없어요", "401", "403")
+    hits = [ln.strip() for ln in tail.splitlines() if any(k in ln for k in keys)]
+    return [h[:160] for h in (hits[-n:] or tail.strip().splitlines()[-n:])]
+
+
 def report():
     state = HERE / "state"
     lines = [f"# openpibo-chat 결과 ({time.strftime('%Y-%m-%d %H:%M')})", ""]
@@ -93,6 +104,8 @@ def report():
         mark = ("끝" if (state / f"{name}.done").exists() else
                 "실패" if (state / f"{name}.failed").exists() else "대기")
         lines.append(f"- {name}: {mark}")
+        if mark == "실패":
+            lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
     if any((HERE / "results").glob("answers-*.json")):
         sys.path.insert(0, str(HERE))
         os.chdir(HERE)
