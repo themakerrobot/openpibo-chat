@@ -1,8 +1,9 @@
-"""학습한 모델을 GGUF Q4로 바꾸고, llama-server로 대화와 도구 호출이 되는지 봅니다.
+"""학습한 모델을 GGUF로 바꾸고, llama-server로 대화와 도구 호출이 되는지 봅니다.
 
     python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b
+    python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b --quant Q8_0
 
-결과: out/<name>-Q4_K_M.gguf (파이보로 복사할 파일)과 out/<name>-check.json.
+결과: out/<name>-<quant>.gguf (파이보로 복사할 파일)과 out/<name>-<quant>-check.json.
 llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (setup 단계가 해 둡니다).
 
 바꾸기 전에 대화 템플릿을 '늘 생각 없이'로 고칩니다. 학습은 늘 빈 생각 칸
@@ -14,6 +15,7 @@ llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (setup 단계가 해 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -74,24 +76,36 @@ def post(url, body, timeout=300):
         return json.loads(r.read())
 
 
-def check(gguf: Path) -> dict:
-    """CPU의 llama-server로 그냥 대화 한 번, 도구를 불러야 하는 말 두 번.
-    파이보 앱처럼 생각 끄기를 따로 보내지 않고 묻습니다."""
-    port = 8399
-    server = subprocess.Popen([str(LLAMA / "build" / "bin" / "llama-server"), "-m", str(gguf),
-                               "--jinja", "-c", "4096", "--port", str(port), "-t", "8"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+@contextlib.contextmanager
+def server(gguf: Path, port: int):
+    """PC의 CPU로 llama-server를 띄웁니다 (파이보처럼 --jinja, 한 자리)."""
+    proc = subprocess.Popen([str(LLAMA / "build" / "bin" / "llama-server"), "-m", str(gguf),
+                             "--jinja", "-c", "4096", "-np", "1", "--port", str(port),
+                             "-t", "8"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(120):
+            if proc.poll() is not None:
+                raise SystemExit(f"llama-server가 꺼졌어요: {gguf}")
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
                 break
             except OSError:
                 time.sleep(1)
-        out = {}
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
+
+
+def check(gguf: Path) -> dict:
+    """그냥 대화 한 번, 도구를 불러야 하는 말 두 번.
+    파이보 앱처럼 생각 끄기를 따로 보내지 않고 묻습니다."""
+    out = {}
+    with server(gguf, 8399) as url:
         for key, text in (("대화", "공룡은 왜 없어졌어?"), ("춤", "파이보야 춤춰 줘"),
                           ("눈", "눈 빨갛게 해 봐")):
-            r = post(f"http://127.0.0.1:{port}/v1/chat/completions", {
+            r = post(f"{url}/v1/chat/completions", {
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": text}],
                 "tools": TOOLS, "temperature": 0, "max_tokens": 150})
@@ -100,10 +114,7 @@ def check(gguf: Path) -> dict:
                         "도구": [c["function"] for c in msg.get("tool_calls") or []]}
             if msg.get("reasoning_content"):
                 out[key]["생각"] = msg["reasoning_content"][:200]
-        return out
-    finally:
-        server.terminate()
-        server.wait(timeout=30)
+    return out
 
 
 def main():
@@ -128,8 +139,7 @@ def main():
     if THINK_IF in gguf_template(q):
         raise SystemExit(f"{q}: 템플릿에 생각 끄기가 들어가지 않았어요")
     result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}
-    (OUT / f"{args.name}-check.json").write_text(json.dumps(result, ensure_ascii=False,
-                                                            indent=1))
+    (OUT / f"{q.stem}-check.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     print(json.dumps(result, ensure_ascii=False, indent=1))
     calls = [c["name"] for k in ("춤", "눈") for c in result["check"][k]["도구"]]
     if calls != ["set_motion", "eye_on"]:

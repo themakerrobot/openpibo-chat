@@ -1,6 +1,7 @@
 """모델마다 같은 채점용 질문에 답하게 하고, 선생 모델이 대화를 채점합니다.
 
     python evaluate.py gen --model runs/qwen3-0.6b/final --name qwen3-0.6b-파이보
+    python evaluate.py gguf --gguf out/pibo-qwen3-0.6b-Q8_0.gguf --name qwen3-0.6b-Q8_0
     python evaluate.py judge          # 답이 모인 모델 전부 채점
     python evaluate.py report         # results/eval.md
 
@@ -85,6 +86,50 @@ def gen(model: str, name: str, no_tools: bool):
     (RESULTS / f"answers-{name}.json").write_text(json.dumps(
         {"model": model, "no_tools": no_tools, "answers": answers}, ensure_ascii=False,
         indent=1))
+
+
+def gen_gguf(gguf: str, name: str):
+    """GGUF를 PC의 llama-server(CPU)로 같은 질문에 답하게 합니다: 파이보와 같은 길
+    (llama.cpp의 템플릿과 도구 호출 읽기)로 묻고, 양자화로 얼마나 나빠지는지 봅니다."""
+    from export import post, server
+
+    import urllib.error
+
+    qs = questions()
+    answers = [""] * len(qs)
+    broken = 0
+    with server(Path(gguf), 8397) as url:
+        # 도구 목록이 있는 질문끼리 이어서 물어야 서버가 앞부분을 다시 읽지 않습니다
+        order = sorted(range(len(qs)), key=lambda i: qs[i]["tools"])
+        for n, i in enumerate(order, 1):
+            if n % 100 == 0:
+                print(f"{n}/{len(qs)}", flush=True)
+            body = {"messages": qs[i]["messages"], "temperature": 0, "max_tokens": 200}
+            if qs[i]["tools"]:
+                body["tools"] = TOOLS
+            try:
+                msg = post(f"{url}/v1/chat/completions", body)["choices"][0]["message"]
+            except urllib.error.HTTPError:   # 서버가 모델의 도구 호출을 못 읽음: 빈 답으로
+                broken += 1
+                continue
+            text = msg.get("content") or ""
+            for c in msg.get("tool_calls") or []:
+                f = c["function"]
+                args = f.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                text += "\n<tool_call>\n" + json.dumps(
+                    {"name": f.get("name"), "arguments": args}, ensure_ascii=False) + \
+                    "\n</tool_call>"
+            answers[i] = text
+    if broken:
+        print(f"서버가 읽지 못한 답 {broken}개는 빈 답으로 둠", flush=True)
+    RESULTS.mkdir(exist_ok=True)
+    (RESULTS / f"answers-{name}.json").write_text(json.dumps(
+        {"model": gguf, "no_tools": False, "answers": answers}, ensure_ascii=False, indent=1))
 
 
 JUDGE = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 말과 파이보의 대답입니다.
@@ -173,13 +218,16 @@ def report() -> str:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("what", choices=["gen", "judge", "report"])
+    p.add_argument("what", choices=["gen", "gguf", "judge", "report"])
     p.add_argument("--model")
+    p.add_argument("--gguf")
     p.add_argument("--name")
     p.add_argument("--no-tools", action="store_true", help="도구 형식이 없는 모델 (젬마3)")
     args = p.parse_args()
     if args.what == "gen":
         gen(args.model, args.name, args.no_tools)
+    elif args.what == "gguf":
+        gen_gguf(args.gguf, args.name)
     elif args.what == "judge":
         judge()
     else:

@@ -27,6 +27,8 @@ PY = sys.executable
 #: (이름, 학습 시작점, 학습률, 배치, 누적). 1.7B는 KV 캐시까지 합치면 파이보에서
 #: 젬마3 1B보다 램을 450MB쯤 더 써서 뺐습니다.
 STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 4, 8)]
+#: 만들어서 같은 질문으로 채점해 볼 양자화 (작은 모델이라 Q4에서 많이 나빠집니다)
+QUANTS = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
 
 
 def steps():
@@ -49,10 +51,17 @@ def steps():
         s.append((f"eval-{name}-파이보", ["evaluate.py", "gen", "--model",
                                         f"runs/{name}/final", "--name", f"{name}-파이보"],
                   [f"train-{name}", "data-heldout"]))
-    s.append(("judge", ["evaluate.py", "judge"], ["data-heldout"]))
     for name, *_ in STUDENTS:
-        s.append((f"gguf-{name}", ["export.py", "--model", f"runs/{name}/final",
-                                   "--name", f"pibo-{name}"], [f"train-{name}"]))
+        for quant in QUANTS:   # GGUF는 CPU만 씁니다
+            s.append((f"gguf-{name}-{quant}", ["export.py", "--model", f"runs/{name}/final",
+                                               "--name", f"pibo-{name}", "--quant", quant],
+                      [f"train-{name}"]))
+            s.append((f"eval-{name}-{quant}", ["evaluate.py", "gguf", "--gguf",
+                                               f"out/pibo-{name}-{quant}.gguf",
+                                               "--name", f"{name}-{quant}"],
+                      [f"gguf-{name}-{quant}", "data-heldout"]))
+    # 모은 답을 한꺼번에 채점 (나중에 새로 모은 답이 있으면 다시 돌아 그것만 채점)
+    s.append(("judge", ["evaluate.py", "judge"], ["data-heldout"]))
     return s
 
 

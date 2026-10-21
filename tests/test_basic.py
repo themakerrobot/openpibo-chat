@@ -187,3 +187,25 @@ def test_chat_window_starts_with_the_child(monkeypatch):
     monkeypatch.setattr(pibo_chat, "FAKE", True)
     assert pibo_chat.run_tool("get_weather", {"region": "부산"}) == "부산 맑음 18도"
     assert pibo_chat.run_tool("set_motion", {"name": "moonwalk"}).startswith("실패")
+
+
+def test_gguf_answers_keep_tool_calls_in_the_same_form(tmp_path, monkeypatch):
+    import contextlib
+
+    import evaluate
+    import export
+    from prompts import to_example
+
+    ex = to_example({"kind": "tool", "fn": "set_motion"}, json.dumps(
+        {"user": "춤춰 줘", "calls": [{"name": "set_motion", "arguments": {"name": "dance1"}}],
+         "result": "완료", "pibo": "춤췄어요."}, ensure_ascii=False), random.Random(0))
+    (tmp_path / "heldout.jsonl").write_text(json.dumps(ex, ensure_ascii=False) + "\n")
+    monkeypatch.setattr(evaluate, "HELDOUT", tmp_path / "heldout.jsonl")
+    monkeypatch.setattr(evaluate, "RESULTS", tmp_path)
+    monkeypatch.setattr(export, "server", lambda gguf, port: contextlib.nullcontext("x"))
+    monkeypatch.setattr(export, "post", lambda url, body: {"choices": [{"message": {
+        "content": "", "tool_calls": [{"function": {
+            "name": "set_motion", "arguments": '{"name": "dance1"}'}}]}}]})
+    evaluate.gen_gguf("m.gguf", "m")
+    answer = json.loads((tmp_path / "answers-m.json").read_text())["answers"][0]
+    assert evaluate.parse_calls(answer) == [{"name": "set_motion", "arguments": {"name": "dance1"}}]
