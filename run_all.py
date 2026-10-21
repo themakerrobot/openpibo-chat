@@ -36,6 +36,12 @@ STUDENTS = [
     # 도구 예시 중 선생이 억지라고 본 것을 뺀 데이터 (filter_tools.py)
     {"name": "qwen3-0.6b-v2", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
      "data": ("data/train-clean.jsonl", "data-clean"), "quants": ["Q6_K", "Q8_0"]},
+    # Qwen3.5-0.8B (2026-03, Apache-2.0): 한국어가 낫고(글자당 2.73비트, Qwen3-0.6B 3.27)
+    # 한국어 토큰이 23% 적고 KV 캐시가 작음. 어휘가 커서(24만) 배치는 2×16. 선생(Qwen3)과
+    # 토크나이저가 달라 증류는 하지 않습니다.
+    {"name": "qwen3.5-0.8b-v2", "base": "Qwen/Qwen3.5-0.8B", "lr": 2e-5, "batch": 2,
+     "accum": 16, "data": ("data/train-clean.jsonl", "data-clean"), "quants": ["Q6_K", "Q8_0"],
+     "no_kd": True, "eval_base": "qwen3.5-0.8b-원본"},
 ]
 KD = "data/kd"
 
@@ -47,7 +53,8 @@ def students():
     plain = [dict(s, kd=None) for s in STUDENTS]
     if not (HERE / "state" / "kd.on").exists():
         return plain
-    return plain + [dict(s, name=f"{s['name']}-kd", kd=KD) for s in STUDENTS]
+    return plain + [dict(s, name=f"{s['name']}-kd", kd=KD) for s in STUDENTS
+                    if not s.get("no_kd")]
 
 
 def steps():
@@ -65,6 +72,10 @@ def steps():
          (f"eval-{STUDENTS[0]['name']}-원본", ["evaluate.py", "gen", "--model", BASE,
                                              "--name", f"{STUDENTS[0]['name']}-원본"],
           ["data-heldout"])]
+    for st in STUDENTS:                      # 다른 시작점은 원본도 채점해 둡니다
+        if st.get("eval_base"):
+            s.append((f"eval-{st['eval_base']}", ["evaluate.py", "gen", "--model", st["base"],
+                                                  "--name", st["eval_base"]], ["data-heldout"]))
     for st in students():
         name, (data, made_by) = st["name"], st["data"]
         cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",

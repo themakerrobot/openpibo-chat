@@ -143,12 +143,12 @@ def test_the_robot_runs_the_tool_then_answers(monkeypatch):
 
 
 def test_gguf_template_never_thinks():
-    from export import THINK_IF, force_no_think
+    from export import force_no_think, thinks
 
     jinja2 = pytest.importorskip("jinja2")
     original = (ROOT / "templates" / "qwen3.jinja").read_text()
     fixed = force_no_think(original)
-    assert THINK_IF not in fixed and force_no_think(fixed) == fixed
+    assert thinks(original) and not thinks(fixed) and force_no_think(fixed) == fixed
     env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
     env.filters["tojson"] = lambda v, **k: json.dumps(v, ensure_ascii=False)
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "안녕"}]
@@ -334,3 +334,38 @@ def test_tool_examples_are_judged_and_marked(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluate, "MARKS", tmp_path / "marks.json")
     row = next(r for r in evaluate.report().splitlines() if r.startswith("| m |"))
     assert row.split(" | ")[6] == "100%"     # 남은 도구 문제 하나, 이름만 맞으면 정답
+
+
+def test_qwen35_template_never_thinks_and_its_tool_calls_are_read():
+    from evaluate import parse_calls
+    from export import force_no_think, thinks
+
+    jinja2 = pytest.importorskip("jinja2")
+    src = ("{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n"
+           "    {%- if enable_thinking is defined and enable_thinking is true %}\n"
+           "        {{- '<think>\\n' }}\n    {%- else %}\n"
+           "        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}")
+    fixed = force_no_think(src)
+    assert not thinks(fixed) and force_no_think(fixed) == fixed
+    out = jinja2.Environment().from_string(fixed).render(add_generation_prompt=True,
+                                                         enable_thinking=True)
+    assert out.endswith("assistant\n<think>\n\n</think>\n\n")
+    text = ("<tool_call>\n<function=eye_on>\n<parameter=r>\n255\n</parameter>\n"
+            "<parameter=g>\n0\n</parameter>\n<parameter=b>\n0\n</parameter>\n</function>\n"
+            "</tool_call>\n<tool_call>\n<function=get_weather>\n<parameter=region>\n부산\n"
+            "</parameter>\n</function>\n</tool_call>")
+    assert parse_calls(text) == [{"name": "eye_on", "arguments": {"r": 255, "g": 0, "b": 0}},
+                                 {"name": "get_weather", "arguments": {"region": "부산"}}]
+
+
+def test_qwen35_student_is_trained_on_clean_data_without_distillation(tmp_path, monkeypatch):
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "kd.on").touch()
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    cmd, needs = steps["train-qwen3.5-0.8b-v2"]
+    assert needs == ["data-clean"] and "Qwen/Qwen3.5-0.8B" in cmd and "--kd" not in cmd
+    assert "train-qwen3.5-0.8b-v2-kd" not in steps
+    assert "eval-qwen3.5-0.8b-원본" in steps and "eval-qwen3.5-0.8b-v2-Q8_0" in steps

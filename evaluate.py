@@ -26,7 +26,10 @@ HELDOUT = Path("data/heldout.jsonl")
 RESULTS = Path("results")
 #: filter_tools.py가 적은 채점용 도구 문제 표시: bad(억지라 뺌), names_only(도구 이름만 봄)
 MARKS = Path("data/heldout-marks.json")
-CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+#: Qwen3.5의 도구 호출: <function=이름> 안에 <parameter=인자>값</parameter>
+FUNC = re.compile(r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL)
+PARAM = re.compile(r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
 
 
 def questions():
@@ -46,8 +49,18 @@ def questions():
 def parse_calls(text: str) -> list[dict]:
     calls = []
     for m in CALL.finditer(text):
+        body = m.group(1)
+        if f := FUNC.search(body):           # Qwen3.5 (XML)
+            args = {}
+            for k, v in PARAM.findall(f.group(2)):
+                try:
+                    args[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    args[k] = v
+            calls.append({"name": f.group(1), "arguments": args})
+            continue
         try:
-            c = json.loads(m.group(1))
+            c = json.loads(body)
         except json.JSONDecodeError:
             calls.append({"name": "?", "arguments": {}})
             continue

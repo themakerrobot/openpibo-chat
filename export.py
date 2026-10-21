@@ -30,22 +30,36 @@ from tools import SYSTEM, TOOLS
 LLAMA = Path(os.environ.get("LLAMA_CPP", "~/llama.cpp")).expanduser()
 OUT = Path("out")
 
-#: Qwen3 템플릿에서 생각을 끌지 말지 고르는 곳: 고르지 말고 늘 빈 생각 칸을 붙이게
-THINK_IF = "enable_thinking is defined and enable_thinking is false"
-NO_THINK = re.compile(r"\{%-?\s*if " + THINK_IF + r"\s*-?%\}\s*"
-                      r"(\{\{-?\s*'<think>\\n\\n</think>\\n\\n'\s*-?\}\})\s*"
-                      r"\{%-?\s*endif\s*-?%\}")
+#: 템플릿에서 생각을 할지 고르는 곳: 고르지 말고 늘 빈 생각 칸을 붙이게 바꿉니다.
+#: Qwen3: "false면 빈 칸", Qwen3.5: "true면 <think>, 아니면 빈 칸"
+EMPTY = r"(\{\{-?\s*'<think>\\n\\n</think>\\n\\n'\s*-?\}\})"
+THINK_IFS = {
+    "enable_thinking is defined and enable_thinking is false": re.compile(
+        r"\{%-?\s*if enable_thinking is defined and enable_thinking is false\s*-?%\}\s*"
+        + EMPTY + r"\s*\{%-?\s*endif\s*-?%\}"),
+    "enable_thinking is defined and enable_thinking is true": re.compile(
+        r"\{%-?\s*if enable_thinking is defined and enable_thinking is true\s*-?%\}\s*"
+        r"\{\{-?\s*'<think>\\n'\s*-?\}\}\s*\{%-?\s*else\s*-?%\}\s*"
+        + EMPTY + r"\s*\{%-?\s*endif\s*-?%\}"),
+}
+
+
+def thinks(template: str) -> bool:
+    """템플릿이 아직 생각을 고를 수 있는지."""
+    return any(cond in template for cond in THINK_IFS)
 
 
 def force_no_think(template: str) -> str:
-    if THINK_IF not in template:
+    if not thinks(template):
         if "<think>\\n\\n</think>\\n\\n" in template:
             return template                  # 이미 고쳤음
-        raise SystemExit("대화 템플릿이 Qwen3와 달라 생각 끄기를 넣지 못했어요")
-    fixed, n = NO_THINK.subn(lambda m: m.group(1), template)
-    if n != 1:
-        raise SystemExit(f"대화 템플릿에서 생각 고르는 곳을 {n}개 찾았어요 (1개여야 함)")
-    return fixed
+        raise SystemExit("대화 템플릿이 Qwen3·Qwen3.5와 달라 생각 끄기를 넣지 못했어요")
+    for cond, pattern in THINK_IFS.items():
+        if cond in template:
+            template, n = pattern.subn(lambda m: m.group(1), template)
+            if n != 1:
+                raise SystemExit(f"대화 템플릿에서 생각 고르는 곳을 {n}개 찾았어요 (1개여야 함)")
+    return template
 
 
 def fix_template(model: Path) -> None:
@@ -60,6 +74,22 @@ def fix_template(model: Path) -> None:
         config.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     elif not jinja.exists():
         raise SystemExit(f"{model}에 대화 템플릿이 없어요")
+
+
+def mtp_flags(model: Path) -> list[str]:
+    """Qwen3.5 설정에는 다음 토큰 미리 맞히기(MTP) 층이 있다고 적혀 있지만, 학습한 뒤 저장한
+    글 모델에는 그 가중치가 없습니다. 새 llama.cpp 변환기는 그 층을 찾다 실패하므로
+    --no-mtp를 줍니다 (그 설정이 없는 옛 변환기는 MTP를 다루지 않아 그냥 됩니다)."""
+    from safetensors import safe_open
+
+    if not json.loads((model / "config.json").read_text()).get("mtp_num_hidden_layers"):
+        return []
+    for f in model.glob("*.safetensors"):
+        with safe_open(str(f), "pt") as st:
+            if any(k.startswith(("mtp.", "model.mtp.")) for k in st.keys()):
+                return []
+    converter = (LLAMA / "convert_hf_to_gguf.py").read_text()
+    return ["--no-mtp"] if "--no-mtp" in converter else []
 
 
 def gguf_template(path: Path) -> str:
@@ -126,17 +156,18 @@ def main():
     OUT.mkdir(exist_ok=True)
     f16 = OUT / f"{args.name}-f16.gguf"
     q = OUT / f"{args.name}-{args.quant}.gguf"
-    if q.exists() and THINK_IF in gguf_template(q):
+    if q.exists() and thinks(gguf_template(q)):
         print(f"{q}: 생각 끄기 전 템플릿이라 다시 만듭니다", flush=True)
         q.unlink()
     if not q.exists():
         fix_template(Path(args.model))
         subprocess.run([sys.executable, str(LLAMA / "convert_hf_to_gguf.py"), args.model,
-                        "--outfile", str(f16), "--outtype", "f16"], check=True)
+                        "--outfile", str(f16), "--outtype", "f16",
+                        *mtp_flags(Path(args.model))], check=True)
         subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"), str(f16), str(q),
                         args.quant], check=True)
         f16.unlink()
-    if THINK_IF in gguf_template(q):
+    if thinks(gguf_template(q)):
         raise SystemExit(f"{q}: 템플릿에 생각 끄기가 들어가지 않았어요")
     result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}
     (OUT / f"{q.stem}-check.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
