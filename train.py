@@ -125,18 +125,39 @@ def main():
     new = tuple(int(x) for x in transformers.__version__.split(".")[:2]) >= (4, 56)
     model = AutoModelForCausalLM.from_pretrained(
         args.base, **({"dtype": torch.bfloat16} if new else {"torch_dtype": torch.bfloat16}))
-    steps = math.ceil(len(rows) / (args.batch * args.accum)) * args.epochs
-    warmup = max(1, int(0.03 * steps))   # warmup_ratio는 5.x에서 없어져 걸음 수로
-    targs = TrainingArguments(
-        output_dir=str(out), num_train_epochs=args.epochs, learning_rate=args.lr,
-        per_device_train_batch_size=args.batch, gradient_accumulation_steps=args.accum,
-        lr_scheduler_type="cosine", warmup_steps=warmup, weight_decay=0.0, bf16=torch.cuda.is_available(),
-        gradient_checkpointing=True, logging_steps=20, save_steps=500, save_total_limit=2,
-        report_to=[], dataloader_num_workers=2, seed=0,
-        remove_unused_columns=False)
-    trainer = Trainer(model=model, args=targs, train_dataset=rows, data_collator=collate)
-    resume = any(out.glob("checkpoint-*"))
-    trainer.train(resume_from_checkpoint=resume or None)
+    import gc
+    import shutil
+
+    batch, accum = args.batch, args.accum
+    while True:
+        steps = math.ceil(len(rows) / (batch * accum)) * args.epochs
+        warmup = max(1, int(0.03 * steps))   # warmup_ratio는 5.x에서 없어져 걸음 수로
+        targs = TrainingArguments(
+            output_dir=str(out), num_train_epochs=args.epochs, learning_rate=args.lr,
+            per_device_train_batch_size=batch, gradient_accumulation_steps=accum,
+            lr_scheduler_type="cosine", warmup_steps=warmup, weight_decay=0.0,
+            bf16=torch.cuda.is_available(), gradient_checkpointing=True, logging_steps=20,
+            save_steps=500, save_total_limit=2, report_to=[], dataloader_num_workers=2,
+            seed=0, remove_unused_columns=False)
+        trainer = Trainer(model=model, args=targs, train_dataset=rows, data_collator=collate)
+        resume = any(out.glob("checkpoint-*"))
+        print(f"배치 {batch} × 누적 {accum} (한 걸음에 {batch * accum}개)", flush=True)
+        try:
+            trainer.train(resume_from_checkpoint=resume or None)
+            break
+        except torch.OutOfMemoryError:
+            if batch == 1:
+                raise
+            # 메모리가 모자라면 배치를 반으로, 누적을 두 배로: 한 걸음에 보는 양은 같게
+            batch, accum = batch // 2, accum * 2
+            print(f"GPU 메모리 부족: 배치 {batch}로 줄여 처음부터 다시", flush=True)
+            del trainer
+            gc.collect()
+            torch.cuda.empty_cache()
+            for ck in out.glob("checkpoint-*"):
+                shutil.rmtree(ck)
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base, **({"dtype": torch.bfloat16} if new else {"torch_dtype": torch.bfloat16}))
     trainer.save_model(str(out / "final"))
     tok.save_pretrained(str(out / "final"))
     print(f"저장: {out / 'final'}", flush=True)

@@ -25,8 +25,8 @@ HERE = Path(__file__).resolve().parent
 PY = sys.executable
 
 #: (이름, 학습 시작점, 학습률, 배치, 누적)
-STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 16, 2),
-            ("qwen3-1.7b", "Qwen/Qwen3-1.7B", 1e-5, 8, 4)]
+STUDENTS = [("qwen3-0.6b", "Qwen/Qwen3-0.6B", 2e-5, 4, 8),
+            ("qwen3-1.7b", "Qwen/Qwen3-1.7B", 1e-5, 2, 16)]
 
 
 def steps():
@@ -61,11 +61,31 @@ def step_env() -> dict:
     찾도록: vLLM은 처음 뜰 때 ninja로 GPU 코드를 컴파일합니다."""
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     env.setdefault("VIRTUAL_ENV", str(Path(sys.executable).parents[1]))
     return env
 
 
+def wait_gpu_free(limit_mb: int = 2000, wait_s: int = 600) -> None:
+    """앞 단계의 GPU 프로세스(vLLM)가 다 내려갈 때까지 기다립니다: 바로 시작하면
+    아직 잡혀 있는 메모리 때문에 다음 단계가 메모리 부족으로 죽습니다."""
+    end = time.time() + wait_s
+    while time.time() < end:
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
+                                  "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=30, check=False).stdout
+            used = max(int(x) for x in out.split())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return                                   # GPU가 없거나 nvidia-smi가 없음
+        if used < limit_mb:
+            return
+        time.sleep(10)
+    print(f"GPU 메모리가 {wait_s}초 동안 비지 않았지만 시작합니다", flush=True)
+
+
 def run_step(name, cmd, stall) -> bool:
+    wait_gpu_free()
     log = HERE / "logs" / f"{name}.log"
     log.parent.mkdir(exist_ok=True)
     with log.open("a") as out:
