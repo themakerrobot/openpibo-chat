@@ -1,8 +1,9 @@
 """파이보에서: llama-server의 모델과 대화하고, 모델이 부른 도구를 openpibo로 실행합니다.
 
-    llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 --port 8080 &
+    llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --port 8080 &
     python3 pibo_chat.py                 # 키보드로 말하기
     python3 pibo_chat.py --no-tools      # 대화만 (도구 목록을 보내지 않아 더 빠름)
+    python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 도구는 흉내만
 
 대화(chat)와 도구 실행만 합니다. 음성 인식·합성은 speak()/listen()을 지금
 쓰는 것으로 바꿔 끼우면 됩니다. 이 파일은 tools.py 하나만 있으면 됩니다.
@@ -18,6 +19,7 @@ import urllib.request
 from tools import SYSTEM, TOOLS, check_call
 
 HISTORY = 6   # 기억하는 최근 메시지 수: 길수록 파이보에서 느려집니다
+FAKE = False  # --fake: 로봇 없이 도구를 부른 척만 합니다
 
 
 def speak(text: str) -> None:
@@ -56,10 +58,18 @@ def find_objects() -> str:
     return ", ".join(sorted({n for n in names if n})) or "아무것도 안 보임"
 
 
+def fake_tool(name: str, args: dict) -> str:
+    """학습 데이터의 결과와 같은 모양으로 지어낸 결과."""
+    return {"get_battery": "배터리 80%", "find_objects": "컵, 사과",
+            "get_weather": f"{args.get('region', '서울')} 맑음 18도"}.get(name, "완료")
+
+
 def run_tool(name: str, args: dict) -> str:
     problem = check_call(name, args)
     if problem:
         return f"실패: {problem}"
+    if FAKE:
+        return fake_tool(name, args)
     try:
         if name == "set_motion":
             _part("motion").set_motion(args["name"])
@@ -93,7 +103,10 @@ def ask(url: str, messages: list, tools: bool) -> dict:
 
 def turn(url: str, history: list, text: str, tools: bool) -> str:
     history.append({"role": "user", "content": text})
-    msgs = [{"role": "system", "content": SYSTEM}] + history[-HISTORY:]
+    recent = history[-HISTORY:]
+    while recent and recent[0]["role"] != "user":   # 젬마 템플릿은 아이 말로 시작해야 합니다
+        recent = recent[1:]
+    msgs = [{"role": "system", "content": SYSTEM}] + recent
     reply = ask(url, msgs, tools)
     for _ in range(3):                       # 도구 → 결과 → 다시 묻기, 세 번까지
         calls = reply.get("tool_calls") or []
@@ -119,13 +132,19 @@ def turn(url: str, history: list, text: str, tools: bool) -> str:
 
 
 def main():
+    global FAKE
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://127.0.0.1:8080")
     p.add_argument("--no-tools", action="store_true")
+    p.add_argument("--fake", action="store_true", help="openpibo 없이 도구를 부른 척만")
     args = p.parse_args()
+    FAKE = args.fake
     history: list = []
     while True:
-        text = listen()
+        try:
+            text = listen()
+        except EOFError:
+            break
         if not text:
             continue
         if text in ("그만", "종료", "quit"):

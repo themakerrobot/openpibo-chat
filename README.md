@@ -34,16 +34,33 @@ python show.py 30            # 만든 데이터 훑어보기
 
 로그는 `logs/<단계>.log`, 결과는 `REPORT.md`, 파이보로 보낼 파일은 `out/*.gguf`.
 
+## PC에서 먼저 대화해 보기
+
+`out/*.gguf`가 생기면 PC의 CPU로 바로 대화해 볼 수 있습니다(GPU는 쓰지 않습니다).
+openpibo가 없으니 `--fake`로 도구는 부른 척만 합니다.
+
+```bash
+~/llama.cpp/build/bin/llama-server -m out/pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --port 8080 > /tmp/pibo-llama.log 2>&1 &
+.venv/bin/python pibo_chat.py --fake         # 그만 하려면 "그만", 서버는 kill %1
+```
+
 ## 파이보에서
 
 ```bash
-llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 --port 8080 &
+llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 --port 8080 &
 python3 pibo_chat.py                         # tools.py 와 같은 폴더에서
 bash pi_bench.sh 지금쓰는-gemma.gguf pibo-qwen3-0.6b-Q4_K_M.gguf
 ```
 
-`--jinja`가 있어야 도구 호출을 알아듣습니다. 도구 목록(약 800토큰)은 처음 한 번만
-읽고 그다음부터는 llama-server가 기억해 둔 것을 씁니다.
+- `--jinja`가 있어야 도구 호출을 알아듣습니다. 도구 목록(약 800토큰)은 처음 한 번만
+  읽고 그다음부터는 llama-server가 기억해 둔 것을 씁니다.
+- `-c 2048`을 꼭 주세요. 새 llama.cpp는 안 주면 모델이 배운 최대 길이(Qwen3 4만 토큰)로
+  KV 캐시를 잡으려 합니다. Qwen3는 KV 캐시가 젬마3 1B보다 훨씬 커서(2048토큰에 224MB,
+  젬마는 30MB) 램 2GB에서는 모자랍니다. 더 줄이려면 `-ctk q8_0 -ctv q8_0 -fa on`(절반).
+- `-np 1`: 새 llama.cpp는 기본으로 4명 몫의 자리를 만듭니다. 파이보는 한 명이면 됩니다.
+- `--cache-ram 0`: 새 llama.cpp는 지난 질문을 램에 8GB까지 쌓아 둡니다. 옛 버전에는
+  이 설정이 없으니(없다고 나오면) 빼세요.
+- 생각(thinking)은 GGUF의 템플릿에서 꺼 두었습니다(`export.py`). 앱이 따로 보낼 것은 없습니다.
 
 ## 라이선스
 

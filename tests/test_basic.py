@@ -140,3 +140,50 @@ def test_the_robot_runs_the_tool_then_answers(monkeypatch):
     assert pibo_chat.turn("x", history, "춤춰", True) == "춤췄어요!"
     assert seen == [("set_motion", {"name": "dance1"})]
     assert len(TOOLS) == 6
+
+
+def test_gguf_template_never_thinks():
+    from export import THINK_IF, force_no_think
+
+    jinja2 = pytest.importorskip("jinja2")
+    original = (ROOT / "templates" / "qwen3.jinja").read_text()
+    fixed = force_no_think(original)
+    assert THINK_IF not in fixed and force_no_think(fixed) == fixed
+    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
+    env.filters["tojson"] = lambda v, **k: json.dumps(v, ensure_ascii=False)
+    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "안녕"}]
+    # llama-server는 따로 말하지 않으면 생각하는 쪽(enable_thinking 참)으로 펼칩니다
+    for kwargs in ({}, {"enable_thinking": True}, {"enable_thinking": False}):
+        out = env.from_string(fixed).render(messages=msgs, tools=TOOLS,
+                                            add_generation_prompt=True, **kwargs)
+        assert out.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    # 학습 때 펼친 글은 그대로
+    done = msgs + [{"role": "assistant", "content": "안녕하세요."}]
+    for src in (original, fixed):
+        assert env.from_string(src).render(messages=done, tools=TOOLS) == \
+            env.from_string(original).render(messages=done, tools=TOOLS)
+
+
+def test_judge_runs_again_for_new_answers(tmp_path, monkeypatch):
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    (tmp_path / "results").mkdir()
+    for name in ("answers-a", "scores-a", "answers-b"):
+        (tmp_path / "results" / f"{name}.json").write_text("{}")
+    assert run_all.unscored() == ["b"]
+
+
+def test_chat_window_starts_with_the_child(monkeypatch):
+    import pibo_chat
+
+    sent = []
+    monkeypatch.setattr(pibo_chat, "ask",
+                        lambda url, msgs, tools: sent.append(msgs) or {"content": "네."})
+    history = []
+    for text in ("하나", "둘", "셋", "넷"):
+        pibo_chat.turn("x", history, text, False)
+    assert all(m[1]["role"] == "user" for m in sent)
+    monkeypatch.setattr(pibo_chat, "FAKE", True)
+    assert pibo_chat.run_tool("get_weather", {"region": "부산"}) == "부산 맑음 18도"
+    assert pibo_chat.run_tool("set_motion", {"name": "moonwalk"}).startswith("실패")
