@@ -140,9 +140,16 @@ def main():
     log_path = Path(args.out).with_name("chat-check.jsonl")
     checked: dict[int, dict] = {}
     if log_path.exists():
-        for row in log_path.read_text().splitlines():
-            r = json.loads(row)
+        rows = log_path.read_text().splitlines()
+        for row in rows:
+            try:
+                r = json.loads(row)
+            except json.JSONDecodeError:     # 쓰다가 끊긴 마지막 줄: 그 예시는 다시 봅니다
+                continue
             checked[r["line"]] = r
+        good = [row for row in rows if row.strip().endswith("}")]
+        if len(good) != len(rows):
+            log_path.write_text("".join(row + "\n" for row in good))
     left = [it for it in items if it[0] not in checked]
     print(f"대화 예시 {len(items)}개 중 {len(items) - len(left)}개는 이미 검사함", flush=True)
     if left:
