@@ -590,3 +590,21 @@ def test_rejected_teacher_replies_say_why():
     assert build_example(req, reply("가" * 121), rng) == (None, "파이보 말이 120자 넘음")
     ex, why = build_example(req, reply("안녕하세요."), rng)
     assert why is None and ex["grade"] == "초저"
+
+
+def test_teacher_turns_written_one_side_at_a_time_are_paired():
+    from prompts import build_example
+
+    rng = random.Random(0)
+    req = {"kind": "chat", "grade": "중"}
+    split = ('{"turns": [{"user": "숙제 많아서 힘들어..."}, {"pibo": "많이 힘들겠어요. 나눠서 해 봐요."}, '
+             '{"user": "응 해볼게"}, {"pibo": "좋아요, 응원할게요."}, {"user": "그나저나')
+    ex, why = build_example(req, split, rng)
+    assert why is None
+    assert [m["content"] for m in ex["messages"][1:]] == [
+        "숙제 많아서 힘들어...", "많이 힘들겠어요. 나눠서 해 봐요.", "응 해볼게", "좋아요, 응원할게요."]
+    broken = ('{"turns": [{"user": "인공지능은 뭐야? \\"AI\\" 말이야"}, "pibo": "컴퓨터가 사람처럼 '
+              '생각하는 거예요."}]}')
+    ex, why = build_example(req, broken, rng)
+    assert why is None and ex["messages"][1]["content"] == '인공지능은 뭐야? "AI" 말이야'
+    assert build_example(req, '{"turns": [{"pibo": "안녕"}, {"user": "응"}]}', rng)[0] is None

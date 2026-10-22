@@ -95,7 +95,8 @@ def school_chat_request(rng: random.Random) -> dict:
 (반말, 줄임말, 맞춤법이 조금 틀린 말도 됩니다).
 {school_style(grade)}
 파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
-출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}]}}"""
+turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
     return {"kind": "chat", "topic": topic, "asker": asker, "grade": grade, "prompt": text}
 
 
@@ -199,16 +200,39 @@ def to_example(req: dict, reply: str, rng: random.Random) -> dict | None:
     return build_example(req, reply, rng)[0]
 
 
+SAID = re.compile(r'"(user|pibo)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def chat_turns(data, reply: str) -> list[dict] | None:
+    """대화 답의 주고받기들 [{"user", "pibo"}]. 선생이 항목 하나에 한쪽 말만 쓰거나
+    ([{"user"}, {"pibo"}, ...]) 괄호가 어긋나 JSON이 깨진 답이 많아(초·중·고 데이터에서 4천 개
+    중 3천 개), 그때는 나온 순서대로 아이 말과 파이보 말의 짝을 맞춥니다. 길이에서 잘려
+    끝에 남은 아이 말은 버립니다."""
+    turns = data.get("turns") if isinstance(data, dict) else None
+    if isinstance(turns, list) and turns and all(
+            isinstance(t, dict) and "user" in t and "pibo" in t for t in turns):
+        return turns
+    try:
+        said = [(k, json.loads(f'"{v}"')) for k, v in SAID.findall(reply)]
+    except json.JSONDecodeError:
+        return None
+    pairs = []
+    for i in range(0, len(said) - 1, 2):
+        (a, user), (b, pibo) = said[i], said[i + 1]
+        if (a, b) != ("user", "pibo"):
+            return None
+        pairs.append({"user": user, "pibo": pibo})
+    return pairs or None
+
+
 def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | None, str | None]:
     """(학습 예시, None) 또는 (None, 버린 까닭)."""
     data = first_json(reply)
-    if not isinstance(data, dict):
-        return None, "JSON을 못 읽음"
     msgs = [{"role": "system", "content": SYSTEM}]
     if req["kind"] == "chat":
-        turns = data.get("turns")
-        if not isinstance(turns, list) or not turns:
-            return None, "turns 없음"
+        turns = chat_turns(data, reply)
+        if not turns:
+            return None, "JSON을 못 읽음" if not isinstance(data, dict) else "turns 모양이 다름"
         limit = max_len(req)
         for t in turns:
             if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
@@ -222,6 +246,8 @@ def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | Non
         if req.get("grade"):
             ex["grade"] = req["grade"]
         return ex, None
+    if not isinstance(data, dict):
+        return None, "JSON을 못 읽음"
     user, calls, result, pibo = (data.get(k) for k in ("user", "calls", "result", "pibo"))
     if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
             and 1 <= len(calls) <= 2 and isinstance(result, str)):
