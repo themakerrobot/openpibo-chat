@@ -129,7 +129,9 @@ def main():
         # 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다
         n_chat = min(args.batch, int(need["chat"] * 1.4) + 8) if need["chat"] else 0
         n_tool = min(args.batch, int(need["tool"] * 1.6) + 8) if need["tool"] else 0
-        reqs = requests(n_chat, n_tool, seed=args.seed * 1000 + rnd, audience=args.audience)
+        # 이어서 만들 때 처음과 같은 요청을 다시 청하지 않게 이미 쓴 수만큼 건너뜁니다
+        reqs = requests(n_chat, n_tool, seed=args.seed * 1000 + rnd + len(have) * 7919,
+                        audience=args.audience)
         convs = [[{"role": "system", "content": TEACHER_SYSTEM},
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
