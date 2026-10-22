@@ -369,6 +369,7 @@ def test_qwen35_student_is_trained_on_clean_data_without_distillation(tmp_path, 
     assert needs == ["data-clean"] and "Qwen/Qwen3.5-0.8B" in cmd and "--kd" not in cmd
     assert "train-qwen3.5-0.8b-v2-kd" not in steps
     assert "eval-qwen3.5-0.8b-원본" in steps and "eval-qwen3.5-0.8b-v2-Q8_0" in steps
+    assert "eval-qwen3.5-0.8b-v2-Q4_K_M" in steps
 
 
 def test_chat_examples_are_fact_checked_and_rewritten():
@@ -423,3 +424,11 @@ def test_fact_checked_student_comes_after_qwen35_and_judge_counts_facts(tmp_path
     assert evaluate.fact_marks(['<think>\n음\n</think>\n{"wrong": true, "dodged": false}',
                                 "<think>\n잘림"]) == \
         [{"wrong": True, "dodged": False}, {"wrong": None, "dodged": None}]
+
+
+def test_detected_names_are_said_in_korean():
+    from pibo_chat import korean_names
+
+    assert korean_names(["cup", "person", "cup", "Teddy_Bear", "robot"]) == "robot, 곰 인형, 사람, 컵"
+    assert korean_names(["tvmonitor", "sports ball"]) == "공, 텔레비전"
+    assert korean_names([]) == korean_names([None, " "]) == "아무것도 안 보임"

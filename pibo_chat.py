@@ -46,6 +46,41 @@ def _part(name):
     return _parts[name]
 
 
+#: YOLO 같은 검출기의 COCO 이름(VOC 이름도) → 한국어. 학습 데이터의 도구 결과가
+#: "컵, 사과"처럼 한국어라, 영어 이름을 그대로 주면 모델이 영어 낱말을 소리 내 읽습니다.
+KOREAN = {
+    "person": "사람", "bicycle": "자전거", "car": "자동차", "motorcycle": "오토바이",
+    "motorbike": "오토바이", "airplane": "비행기", "aeroplane": "비행기", "bus": "버스",
+    "train": "기차", "truck": "트럭", "boat": "배", "traffic light": "신호등",
+    "fire hydrant": "소화전", "stop sign": "멈춤 표지판", "parking meter": "주차 요금기",
+    "bench": "벤치", "bird": "새", "cat": "고양이", "dog": "강아지", "horse": "말",
+    "sheep": "양", "cow": "소", "elephant": "코끼리", "bear": "곰", "zebra": "얼룩말",
+    "giraffe": "기린", "backpack": "가방", "umbrella": "우산", "handbag": "손가방",
+    "tie": "넥타이", "suitcase": "여행 가방", "frisbee": "원반", "skis": "스키",
+    "snowboard": "스노보드", "sports ball": "공", "kite": "연", "baseball bat": "야구 방망이",
+    "baseball glove": "야구 글러브", "skateboard": "스케이트보드", "surfboard": "서핑보드",
+    "tennis racket": "테니스 라켓", "bottle": "병", "wine glass": "유리잔", "cup": "컵",
+    "fork": "포크", "knife": "칼", "spoon": "숟가락", "bowl": "그릇", "banana": "바나나",
+    "apple": "사과", "sandwich": "샌드위치", "orange": "오렌지", "broccoli": "브로콜리",
+    "carrot": "당근", "hot dog": "핫도그", "pizza": "피자", "donut": "도넛", "cake": "케이크",
+    "chair": "의자", "couch": "소파", "sofa": "소파", "potted plant": "화분",
+    "pottedplant": "화분", "bed": "침대", "dining table": "식탁", "diningtable": "식탁",
+    "toilet": "변기", "tv": "텔레비전", "tvmonitor": "텔레비전", "laptop": "노트북",
+    "mouse": "마우스", "remote": "리모컨", "keyboard": "키보드", "cell phone": "휴대폰",
+    "microwave": "전자레인지", "oven": "오븐", "toaster": "토스터", "sink": "싱크대",
+    "refrigerator": "냉장고", "book": "책", "clock": "시계", "vase": "꽃병",
+    "scissors": "가위", "teddy bear": "곰 인형", "hair drier": "드라이기",
+    "toothbrush": "칫솔",
+}
+
+
+def korean_names(names) -> str:
+    """검출된 이름들 → "사람, 컵" (겹치면 하나, 모르는 이름은 그대로)."""
+    said = {KOREAN.get(str(n).strip().lower().replace("_", " "), str(n).strip())
+            for n in names if n and str(n).strip()}
+    return ", ".join(sorted(said)) or "아무것도 안 보임"
+
+
 def find_objects() -> str:
     try:
         from openpibo.vision_camera import Camera
@@ -54,8 +89,7 @@ def find_objects() -> str:
         from openpibo.vision import Camera, Detect
     img = Camera().read()
     items = Detect().detect_object(img)
-    names = [i.get("name") if isinstance(i, dict) else str(i) for i in items or []]
-    return ", ".join(sorted({n for n in names if n})) or "아무것도 안 보임"
+    return korean_names(i.get("name") if isinstance(i, dict) else i for i in items or [])
 
 
 def fake_tool(name: str, args: dict) -> str:

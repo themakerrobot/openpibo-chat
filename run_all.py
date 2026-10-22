@@ -39,8 +39,10 @@ STUDENTS = [
     # Qwen3.5-0.8B (2026-03, Apache-2.0): 한국어가 낫고(글자당 2.73비트, Qwen3-0.6B 3.27)
     # 한국어 토큰이 23% 적고 KV 캐시가 작음. 어휘가 커서(24만) 배치는 2×16. 선생(Qwen3)과
     # 토크나이저가 달라 증류는 하지 않습니다.
+    # Q4_K_M은 505MiB로 Qwen3-0.6B Q6_K(450MiB)와 Q8_0(610MiB) 사이: KV 캐시까지 치면 가장 작음
     {"name": "qwen3.5-0.8b-v2", "base": "Qwen/Qwen3.5-0.8B", "lr": 2e-5, "batch": 2,
-     "accum": 16, "data": ("data/train-clean.jsonl", "data-clean"), "quants": ["Q6_K", "Q8_0"],
+     "accum": 16, "data": ("data/train-clean.jsonl", "data-clean"),
+     "quants": ["Q4_K_M", "Q6_K", "Q8_0"],
      "no_kd": True, "eval_base": "qwen3.5-0.8b-원본"},
     # 대화 예시의 틀린 사실·얼버무림·어색한 한국어를 선생이 생각을 켜고 고친 데이터
     # (filter_chat.py). 증류는 v1보다 나빠서(대화 4.64, 도구 92%) 하지 않습니다.
