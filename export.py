@@ -111,6 +111,38 @@ def convert(model: Path, f16: Path) -> None:
     subprocess.run([sys.executable, "-c", code, str(LLAMA), pre, *argv], check=True)
 
 
+def calibration(model: Path, data: str, out: Path, n: int = 400) -> Path:
+    """imatrix용 글: 학습 데이터 n개를 모델이 실제로 보는 모양(대화 템플릿, 도구 목록)으로."""
+    import random
+
+    from transformers import AutoTokenizer
+
+    from prompts import tools_for
+
+    tok = AutoTokenizer.from_pretrained(model)
+    lines = Path(data).read_text().splitlines()
+    picked = random.Random(0).sample(lines, min(n, len(lines)))
+    text = "\n".join(tok.apply_chat_template(json.loads(x)["messages"], tools=tools_for(json.loads(x)),
+                                             tokenize=False, enable_thinking=False) for x in picked)
+    out.write_text(text)
+    return out
+
+
+def imatrix(f16: Path, model: Path, data: str) -> Path:
+    """양자화할 때 중요한 가중치를 덜 깎도록 학습 데이터로 활성값 크기를 재 둡니다
+    (llama-imatrix). 작은 모델의 Q4에서 특히 차이가 납니다."""
+    bin_ = LLAMA / "build" / "bin" / "llama-imatrix"
+    calib = calibration(model, data, f16.with_suffix(".calib.txt"))
+    out = f16.with_suffix(".imatrix.gguf")
+    special = "--parse-special" in subprocess.run([str(bin_), "--help"], capture_output=True,
+                                                  text=True, check=False).stdout
+    subprocess.run([str(bin_), "-m", str(f16), "-f", str(calib), "-o", str(out), "-c", "512",
+                    "-t", "8", "--no-ppl", *(["--parse-special"] if special else []),
+                    *gpu_flags()], check=True)
+    calib.unlink()
+    return out
+
+
 def gguf_template(path: Path) -> str:
     from gguf import GGUFReader
 
@@ -140,12 +172,23 @@ def gpu_flags() -> list[str]:
     return ["-ngl", "99"] if "CUDA" in out.stdout + out.stderr else []
 
 
+def kv_flags(kind: str | None) -> list[str]:
+    """KV 캐시를 kind(q8_0 등)로: 파이보에서 KV 캐시 메모리가 반으로 줍니다. 양자화한 V
+    캐시는 flash attention이 있어야 해서 함께 켭니다 (옛 llama.cpp는 -fa만, 새것은 -fa on)."""
+    if not kind:
+        return []
+    help_ = subprocess.run([str(LLAMA / "build" / "bin" / "llama-server"), "--help"],
+                           capture_output=True, text=True, check=False).stdout
+    fa = ["-fa", "on"] if "[on|off|auto]" in help_ else ["-fa"]
+    return ["-ctk", kind, "-ctv", kind, *fa]
+
+
 @contextlib.contextmanager
-def server(gguf: Path, port: int):
+def server(gguf: Path, port: int, kv: str | None = None):
     """PC에서 llama-server를 띄웁니다 (파이보처럼 --jinja, 한 자리)."""
     proc = subprocess.Popen([str(LLAMA / "build" / "bin" / "llama-server"), "-m", str(gguf),
                              "--jinja", "-c", "4096", "-np", "1", "--port", str(port),
-                             "-t", "8", *gpu_flags()],
+                             "-t", "8", *gpu_flags(), *kv_flags(kv)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(120):
@@ -186,6 +229,8 @@ def main():
     p.add_argument("--model", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--quant", default="Q4_K_M")
+    p.add_argument("--imatrix", metavar="DATA",
+                   help="이 학습 데이터로 imatrix를 재서 양자화 (llama-imatrix)")
     args = p.parse_args()
     OUT.mkdir(exist_ok=True)
     f16 = OUT / f"{args.name}-f16.gguf"
@@ -196,9 +241,13 @@ def main():
     if not q.exists():
         fix_template(Path(args.model))
         convert(Path(args.model), f16)
-        subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"), str(f16), str(q),
+        imat = imatrix(f16, Path(args.model), args.imatrix) if args.imatrix else None
+        subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"),
+                        *(["--imatrix", str(imat)] if imat else []), str(f16), str(q),
                         args.quant], check=True)
         f16.unlink()
+        if imat:
+            imat.unlink()
     if thinks(gguf_template(q)):
         raise SystemExit(f"{q}: 템플릿에 생각 끄기가 들어가지 않았어요")
     result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}

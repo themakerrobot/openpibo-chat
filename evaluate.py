@@ -139,7 +139,7 @@ def gen(model: str, name: str, no_tools: bool):
         indent=1))
 
 
-def gen_gguf(gguf: str, name: str):
+def gen_gguf(gguf: str, name: str, kv: str | None = None):
     """GGUF를 PC의 llama-server(CPU)로 같은 질문에 답하게 합니다: 파이보와 같은 길
     (llama.cpp의 템플릿과 도구 호출 읽기)로 묻고, 양자화로 얼마나 나빠지는지 봅니다."""
     from export import post, server
@@ -149,7 +149,7 @@ def gen_gguf(gguf: str, name: str):
     qs = questions()
     answers = [""] * len(qs)
     broken = 0
-    with server(Path(gguf), 8397) as url:
+    with server(Path(gguf), 8397, kv) as url:
         # 도구 목록이 있는 질문끼리 이어서 물어야 서버가 앞부분을 다시 읽지 않습니다
         order = sorted(range(len(qs)), key=lambda i: qs[i]["tools"])
         for n, i in enumerate(order, 1):
@@ -331,6 +331,7 @@ def main():
     p.add_argument("what", choices=["gen", "gguf", "judge", "report"])
     p.add_argument("--model")
     p.add_argument("--gguf")
+    p.add_argument("--kv", help="KV 캐시 양자화 (q8_0 등): 파이보에서 KV 캐시 메모리를 줄일 때")
     p.add_argument("--name")
     p.add_argument("--no-tools", action="store_true", help="도구 형식이 없는 모델 (젬마3)")
     p.add_argument("--set", choices=list(SETS), default="kids")
@@ -339,7 +340,7 @@ def main():
     if args.what == "gen":
         gen(args.model, args.name, args.no_tools)
     elif args.what == "gguf":
-        gen_gguf(args.gguf, args.name)
+        gen_gguf(args.gguf, args.name, args.kv)
     elif args.what == "judge":
         judge()
     else:

@@ -33,15 +33,20 @@ BASE = "Qwen/Qwen3-0.6B"
 #: set: 채점용 질문 묶음 (kids: 처음 만든 미취학~초저, school: 초·중·고)
 QWEN35 = "Qwen/Qwen3.5-0.8B"
 #: 어휘를 줄인 모델(prune_vocab.py)로도 만들 양자화: 한국어는 원래와 똑같이 나뉘고 이모지 등
-#: 안 쓰는 토큰만 빠져, Q4_K_M이 Qwen3-0.6B 379→약 280MiB, Qwen3.5 505→322MiB
+#: 안 쓰는 토큰만 빠져, Q4_K_M이 Qwen3-0.6B 379→약 280MiB, Qwen3.5 505→322MiB.
+#: 줄인 Q4_K_M은 학습 데이터로 imatrix를 재서 양자화합니다 (줄이기는 결과를 거의 안 바꾸므로
+#: 그냥 Q4_K_M과의 차이가 imatrix의 효과).
 SMALL = ["Q4_K_M", "Q6_K"]
+IMATRIX = {"Q4_K_M"}
 STUDENTS = [
     # 초·중·고 친구 대화(학년 고르게, 초등 70자·중고 120자, 호기심 질문 15%)를 선생이
     # 생각을 켜고 사실·한국어를 다시 본 데이터 + 거른 도구 예시 (filter_chat.py).
     # 증류는 어린이 데이터에서 v1보다 나빠서(대화 4.64, 도구 92%) 하지 않습니다.
+    # kv8: 줄인 Q4_K_M을 KV 캐시 q8_0으로도 채점 (-c 2048에서 KV 캐시 224→119MiB)
     {"name": "qwen3-0.6b-school", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
      "data": ("data/train-school.jsonl", "data-school-clean"),
-     "quants": ["Q4_K_M", "Q6_K", "Q8_0"], "no_kd": True, "set": "school", "small": SMALL},
+     "quants": ["Q4_K_M", "Q6_K", "Q8_0"], "no_kd": True, "set": "school", "small": SMALL,
+     "kv8": True},
     # Qwen3.5-0.8B (2026-03, Apache-2.0): 한국어가 낫고(글자당 2.73비트, Qwen3-0.6B 3.27)
     # 한국어 토큰이 23% 적고 KV 캐시가 작음. 어휘가 커서(24만) 배치는 2×16. 선생(Qwen3)과
     # 토크나이저가 달라 증류는 못 합니다. Q4_K_M은 505MiB로 KV 캐시까지 치면 가장 작음.
@@ -150,13 +155,18 @@ def steps():
                                         if st.get("set") == "school" else "data/heldout.jsonl"],
                       [f"train-{name}", *wait]))
         for quant in st.get("small", []):
+            imat = ["--imatrix", st["data"][0]] if quant in IMATRIX else []
+            gguf = f"out/pibo-{name}-small-{quant}.gguf"
             s.append((f"gguf-{name}-small-{quant}", ["export.py", "--model", f"runs/{name}/small",
                                                      "--name", f"pibo-{name}-small",
-                                                     "--quant", quant], [f"small-{name}"]))
-            s.append((f"eval-{name}-small-{quant}", ["evaluate.py", "gguf", "--gguf",
-                                                     f"out/pibo-{name}-small-{quant}.gguf",
+                                                     "--quant", quant, *imat], [f"small-{name}"]))
+            s.append((f"eval-{name}-small-{quant}", ["evaluate.py", "gguf", "--gguf", gguf,
                                                      "--name", f"{name}-small-{quant}", *extra],
                       [f"gguf-{name}-small-{quant}", *wait]))
+            if st.get("kv8") and quant == "Q4_K_M":
+                s.append((f"eval-{name}-small-{quant}-kv8", [
+                    "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}-kv8",
+                    "--kv", "q8_0", *extra], [f"gguf-{name}-small-{quant}", *wait]))
     # 모은 답을 한꺼번에 채점 (나중에 새로 모은 답이 있으면 다시 돌아 그것만 채점)
     for which, (made_by, _, judge) in SETS.items():
         extra = ["--set", which] if which != "kids" else []

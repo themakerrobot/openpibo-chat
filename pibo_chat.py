@@ -125,8 +125,8 @@ def run_tool(name: str, args: dict) -> str:
 
 # ------------------------------------------------------------ talking
 
-def ask(url: str, messages: list, tools: bool) -> dict:
-    body = {"messages": messages, "temperature": 0.6, "max_tokens": 150}
+def ask(url: str, messages: list, tools: bool, max_tokens: int = 150) -> dict:
+    body = {"messages": messages, "temperature": 0.6, "max_tokens": max_tokens}
     if tools:
         body["tools"] = TOOLS
     req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
@@ -165,6 +165,16 @@ def turn(url: str, history: list, text: str, tools: bool) -> str:
     return text
 
 
+def warm_up(url: str, tools: bool) -> None:
+    """시스템 글과 도구 목록(약 1천 토큰)을 서버가 미리 읽어 두게 합니다: 파이보 CPU에서는
+    이걸 읽는 데 수십 초가 걸려, 첫 말이 그만큼 늦어집니다. 다음부터는 서버가 앞부분을
+    기억해(같은 자리, 같은 앞부분) 새로 한 말만 읽습니다."""
+    t = time.time()
+    ask(url, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "안녕"}],
+        tools, max_tokens=1)
+    print(f"  (준비 {time.time() - t:.1f}초)", flush=True)
+
+
 def main():
     global FAKE
     p = argparse.ArgumentParser()
@@ -173,6 +183,7 @@ def main():
     p.add_argument("--fake", action="store_true", help="openpibo 없이 도구를 부른 척만")
     args = p.parse_args()
     FAKE = args.fake
+    warm_up(args.url, not args.no_tools)
     history: list = []
     while True:
         try:

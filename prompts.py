@@ -104,7 +104,7 @@ TOOL_TEXT = "\n".join(
     "\n동작 이름: " + ", ".join(f"{k}({v})" for k, v in MOTIONS.items())
     + "\n눈 색 예: " + ", ".join(f"{k} {v}" for k, v in COLORS.items()))
 
-TEACHER_SYSTEM = ("당신은 어린이용 교육 로봇 '파이보'의 대화 학습 데이터를 쓰는 작가입니다. "
+TEACHER_SYSTEM = ("당신은 교육용 로봇 '파이보'의 대화 학습 데이터를 쓰는 작가입니다. "
                   "요청한 JSON 하나만 출력하고, 다른 말은 쓰지 않습니다.")
 
 

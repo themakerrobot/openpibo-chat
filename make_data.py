@@ -97,7 +97,7 @@ def main():
     from vllm import SamplingParams
 
     llm = load_teacher(args.teacher)
-    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=700)
+    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1000)  # 중·고 3번 주고받기도 들어가게
     rng = random.Random(args.seed)
     for rnd in range(50):
         need = {k: max(0, want[k] - count[k]) for k in want}

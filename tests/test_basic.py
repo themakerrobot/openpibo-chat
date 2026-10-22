@@ -202,7 +202,7 @@ def test_gguf_answers_keep_tool_calls_in_the_same_form(tmp_path, monkeypatch):
     (tmp_path / "heldout.jsonl").write_text(json.dumps(ex, ensure_ascii=False) + "\n")
     monkeypatch.setattr(evaluate, "HELDOUT", tmp_path / "heldout.jsonl")
     monkeypatch.setattr(evaluate, "RESULTS", tmp_path)
-    monkeypatch.setattr(export, "server", lambda gguf, port: contextlib.nullcontext("x"))
+    monkeypatch.setattr(export, "server", lambda gguf, port, kv=None: contextlib.nullcontext("x"))
     monkeypatch.setattr(export, "post", lambda url, body: {"choices": [{"message": {
         "content": "", "tool_calls": [{"function": {
             "name": "set_motion", "arguments": '{"name": "dance1"}'}}]}}]})
@@ -540,3 +540,10 @@ def test_school_students_are_also_built_with_a_smaller_vocab(tmp_path, monkeypat
     cmd, needs = steps["eval-qwen3-0.6b-school-small-Q4_K_M"]
     assert "out/pibo-qwen3-0.6b-school-small-Q4_K_M.gguf" in cmd and cmd[-2:] == ["--set", "school"]
     assert "gguf-qwen3-0.6b-small-Q4_K_M" not in steps          # 어린이 데이터 모델은 그대로
+    cmd = steps["gguf-qwen3-0.6b-school-small-Q4_K_M"][0]
+    assert cmd[cmd.index("--imatrix") + 1] == "data/train-school.jsonl"
+    assert "--imatrix" not in steps["gguf-qwen3-0.6b-school-small-Q6_K"][0]
+    assert "--imatrix" not in steps["gguf-qwen3-0.6b-school-Q4_K_M"][0]
+    cmd, needs = steps["eval-qwen3-0.6b-school-small-Q4_K_M-kv8"]
+    assert cmd[cmd.index("--kv") + 1] == "q8_0" and needs[0] == "gguf-qwen3-0.6b-school-small-Q4_K_M"
+    assert "eval-qwen3.5-0.8b-school-small-Q4_K_M-kv8" not in steps   # KV 캐시가 원래 작음
