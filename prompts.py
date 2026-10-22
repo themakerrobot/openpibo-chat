@@ -104,6 +104,13 @@ def first_json(text: str):
     return None
 
 
+def after_think(text: str) -> str:
+    """생각을 켜고 받은 답에서 생각 뒤의 글만. 생각이 길어 잘렸으면 빈 글."""
+    if "</think>" in text:
+        return text.rsplit("</think>", 1)[1]
+    return "" if "<think>" in text else text
+
+
 def to_example(req: dict, reply: str, rng: random.Random) -> dict | None:
     """선생 모델의 답을 학습 예시로. 규칙에 어긋나면 None."""
     data = first_json(reply)

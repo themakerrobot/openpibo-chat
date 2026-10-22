@@ -169,9 +169,9 @@ def test_judge_runs_again_for_new_answers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     (tmp_path / "results").mkdir()
-    for name in ("answers-a", "scores-a", "answers-b"):
+    for name in ("answers-a", "scores-a", "facts-a", "answers-b", "answers-c", "scores-c"):
         (tmp_path / "results" / f"{name}.json").write_text("{}")
-    assert run_all.unscored() == ["b"]
+    assert run_all.unscored() == ["b", "c"]       # c는 사실 검사가 아직
 
 
 def test_chat_window_starts_with_the_child(monkeypatch):
@@ -333,7 +333,7 @@ def test_tool_examples_are_judged_and_marked(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluate, "RESULTS", tmp_path)
     monkeypatch.setattr(evaluate, "MARKS", tmp_path / "marks.json")
     row = next(r for r in evaluate.report().splitlines() if r.startswith("| m |"))
-    assert row.split(" | ")[6] == "100%"     # 남은 도구 문제 하나, 이름만 맞으면 정답
+    assert row.split(" | ")[8] == "100%"     # 남은 도구 문제 하나, 이름만 맞으면 정답
 
 
 def test_qwen35_template_never_thinks_and_its_tool_calls_are_read():
@@ -369,3 +369,57 @@ def test_qwen35_student_is_trained_on_clean_data_without_distillation(tmp_path, 
     assert needs == ["data-clean"] and "Qwen/Qwen3.5-0.8B" in cmd and "--kd" not in cmd
     assert "train-qwen3.5-0.8b-v2-kd" not in steps
     assert "eval-qwen3.5-0.8b-원본" in steps and "eval-qwen3.5-0.8b-v2-Q8_0" in steps
+
+
+def test_chat_examples_are_fact_checked_and_rewritten():
+    from filter_chat import chat_examples, decide, prompt, rewrite
+    from prompts import after_think, to_example
+
+    rng = random.Random(0)
+    chat = json.dumps(to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": "공룡은 왜 없어졌어?", "pibo": "아직 아무도 몰라요."},
+        {"user": "언제 살았어?", "pibo": "아주 오래전에 살았어요."}]}, ensure_ascii=False), rng),
+        ensure_ascii=False)
+    tool = json.dumps(to_example({"kind": "tool", "fn": "eye_off"}, json.dumps(
+        {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
+         "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
+    lines = [chat, tool, chat]
+    items = list(chat_examples(lines))
+    assert [i for i, _, _ in items] == [0, 2]
+    _, users, pibos = items[0]
+    text = prompt(users, pibos)
+    assert "파이보 2: 아주 오래전에 살았어요." in text and "말 2개" in text
+    # 생각 뒤의 답만 읽고, 생각이 잘렸으면 못 읽음
+    assert after_think("<think>\n{\"x\": 1} 고민\n</think>\n\n{\"ok\": true}") == "\n\n{\"ok\": true}"
+    assert after_think("<think>\n끝없이 생각") == ""
+    fixed = ["큰 소행성이 떨어져서 사라졌어요.", "아주 오래전에 살았어요."]
+    good = "<think>음</think>" + json.dumps({"ok": False, "problem": "얼버무림", "fixed": fixed},
+                                            ensure_ascii=False)
+    assert decide(good, pibos)["verdict"] == "fixed"
+    assert decide('<think>음</think>{"ok": true}', pibos) == \
+        {"verdict": "ok", "after": pibos, "problem": None}
+    assert decide("<think>끝없이", pibos)["verdict"] == "drop"
+    assert decide(json.dumps({"ok": False, "fixed": fixed[:1]}), pibos)["verdict"] == "drop"
+    assert decide(json.dumps({"ok": False, "fixed": ["좋아요 😀", "네."]}), pibos)["verdict"] == "drop"
+    out = rewrite(lines, {0: decide(good, pibos), 2: decide("모름", pibos)})
+    assert len(out) == 2 and out[1] == tool       # 2번 대화는 빠지고 도구 예시는 그대로
+    said = [m["content"] for m in json.loads(out[0])["messages"] if m["role"] == "assistant"]
+    assert said == fixed
+
+
+def test_fact_checked_student_comes_after_qwen35_and_judge_counts_facts(tmp_path, monkeypatch):
+    import evaluate
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    names = [n for n, _, _ in run_all.steps()]
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    assert names.index("train-qwen3.5-0.8b-v2") < names.index("data-facts") \
+        < names.index("train-qwen3-0.6b-v3")
+    assert steps["data-facts"][1] == ["data-clean"]
+    cmd, needs = steps["train-qwen3-0.6b-v3"]
+    assert needs == ["data-facts"] and "data/train-v3.jsonl" in cmd and "--kd" not in cmd
+    assert "eval-qwen3-0.6b-v3-Q8_0" in steps and names.count("data-facts") == 1
+    assert evaluate.fact_marks(['<think>\n음\n</think>\n{"wrong": true, "dodged": false}',
+                                "<think>\n잘림"]) == \
+        [{"wrong": True, "dodged": False}, {"wrong": None, "dodged": None}]

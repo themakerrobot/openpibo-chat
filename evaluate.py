@@ -5,7 +5,9 @@
     python evaluate.py judge          # 답이 모인 모델 전부 채점
     python evaluate.py report         # results/eval.md
 
-대화: 아이의 첫마디에 대한 대답을 선생 모델이 네 가지로 1~5점 채점합니다.
+대화: 아이의 첫마디에 대한 대답을 선생 모델이 네 가지로 1~5점 채점합니다. 따로
+선생이 생각을 켜고 틀린 사실과 정설을 얼버무린 대답을 찾습니다 (생각을 끈 채점은
+선생 자신이 데이터에 넣은 것과 같은 실수를 못 잡았습니다).
 도구: 불러야 할 도구와 인자를 맞혔는지(정답률), 그냥 대화인데 도구를 부른 비율
 (잘못 부름)을 셉니다.
 """
@@ -18,8 +20,8 @@ import re
 import statistics
 from pathlib import Path
 
-from make_data import load_teacher
-from prompts import STYLE, first_json, tools_for
+from make_data import load_teacher, thinking_params
+from prompts import STYLE, after_think, first_json, tools_for
 from tools import TOOLS, check_call, same_call
 
 HELDOUT = Path("data/heldout.jsonl")
@@ -176,6 +178,30 @@ JUDGE = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 
 출력 형식: {{"korean": 0, "fit": 0, "short": 0, "true": 0}}"""
 
 
+FACT = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 말과 파이보의 대답입니다.
+아이들은 파이보의 말을 그대로 믿고 배웁니다.
+
+아이: {user}
+파이보: {reply}
+
+두 가지를 판단해 JSON 하나로만 답하세요.
+- wrong: 틀린 사실(과학, 자연, 역사, 생활 상식, 숫자, 연대)이 하나라도 있으면 true
+- dodged: 널리 받아들여진 사실이나 정설을 "아직 몰라요", "여러 가지 설이 있어요",
+  "연구하고 있어요"로 피했으면 true. 정말 아무도 모르는 것을 모른다고 한 것은 false
+사실을 말하지 않는 대답(인사, 위로, 되묻기)은 둘 다 false입니다.
+출력 형식: {{"wrong": false, "dodged": false}}"""
+
+
+def fact_marks(texts: list[str]) -> list[dict]:
+    """선생의 사실 판단 → [{"wrong": bool|None, "dodged": bool|None}] (못 읽으면 None)."""
+    out = []
+    for t in texts:
+        d = first_json(after_think(t)) or {}
+        out.append({k: d.get(k) if isinstance(d.get(k), bool) else None
+                    for k in ("wrong", "dodged")})
+    return out
+
+
 def judge():
     from vllm import SamplingParams
 
@@ -183,32 +209,39 @@ def judge():
     files = sorted(RESULTS.glob("answers-*.json"))
     llm = load_teacher()
     params = SamplingParams(temperature=0.0, max_tokens=80)
+    idx = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
     for f in files:
-        scored = f.with_name(f.name.replace("answers-", "scores-"))
-        if scored.exists():
-            continue
         answers = json.loads(f.read_text())["answers"]
-        idx = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
-        convs = [[{"role": "user", "content": JUDGE.format(
-            style=STYLE, user=qs[i]["messages"][-1]["content"], reply=say(answers[i]) or "(말 없음)")}]
-            for i in idx]
-        outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
-                        use_tqdm=False)
-        marks = {}
-        for i, o in zip(idx, outs, strict=True):
-            d = first_json(o.outputs[0].text) or {}
-            marks[i] = {k: d.get(k) for k in ("korean", "fit", "short", "true")}
-        scored.write_text(json.dumps(marks, ensure_ascii=False))
-        print(f"채점: {f.name}", flush=True)
+        pairs = [(qs[i]["messages"][-1]["content"], say(answers[i]) or "(말 없음)") for i in idx]
+        scored = f.with_name(f.name.replace("answers-", "scores-"))
+        if not scored.exists():
+            convs = [[{"role": "user", "content": JUDGE.format(style=STYLE, user=u, reply=r)}]
+                     for u, r in pairs]
+            outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
+                            use_tqdm=False)
+            marks = {}
+            for i, o in zip(idx, outs, strict=True):
+                d = first_json(o.outputs[0].text) or {}
+                marks[i] = {k: d.get(k) for k in ("korean", "fit", "short", "true")}
+            scored.write_text(json.dumps(marks, ensure_ascii=False))
+            print(f"채점: {f.name}", flush=True)
+        facts = f.with_name(f.name.replace("answers-", "facts-"))
+        if not facts.exists():
+            convs = [[{"role": "user", "content": FACT.format(user=u, reply=r)}] for u, r in pairs]
+            outs = llm.chat(convs, thinking_params(1536),
+                            chat_template_kwargs={"enable_thinking": True}, use_tqdm=False)
+            marks = fact_marks([o.outputs[0].text for o in outs])
+            facts.write_text(json.dumps(dict(zip(idx, marks, strict=True)), ensure_ascii=False))
+            print(f"사실 검사: {f.name}", flush=True)
 
 
 def report() -> str:
     qs = questions()
     marked = json.loads(MARKS.read_text()) if MARKS.exists() else {}
     bad, loose = set(marked.get("bad", [])), set(marked.get("names_only", []))
-    rows = [("| 모델 | 대화 점수 (5점 만점) | 한국어 | 알맞음 | 짧음 | 사실 | 도구 정답률 | "
-             "춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | 평균 글자 수 |"),
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    rows = [("| 모델 | 대화 점수 (5점 만점) | 한국어 | 알맞음 | 짧음 | 사실 | 틀린 사실 | 얼버무림 | "
+             "도구 정답률 | 춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | 평균 글자 수 |"),
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
         data = json.loads(f.read_text())
@@ -222,6 +255,13 @@ def report() -> str:
 
         total = statistics.mean([avg(k) for k in ("korean", "fit", "short", "true")]) \
             if marks else float("nan")
+        ff = f.with_name(f.name.replace("answers-", "facts-"))
+        facts = json.loads(ff.read_text()) if ff.exists() else {}
+
+        def rate(key, facts=facts):
+            v = [m[key] for m in facts.values() if isinstance(m.get(key), bool)]
+            return f"{sum(v) / len(v):.0%}" if v else "-"
+
         tool_q = [i for i, q in enumerate(qs) if q["kind"] == "tool" and i not in bad]
         chat_tools = [i for i, q in enumerate(qs) if q["kind"] == "chat" and q["tools"]]
         if data.get("no_tools"):
@@ -242,10 +282,13 @@ def report() -> str:
         chat_q = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
         length = statistics.mean(len(say(answers[i])) for i in chat_q) if chat_q else 0
         rows.append(f"| {name} | {total:.2f} | {avg('korean'):.2f} | {avg('fit'):.2f} | "
-                    f"{avg('short'):.2f} | {avg('true'):.2f} | {right} | {extra} | "
+                    f"{avg('short'):.2f} | {avg('true'):.2f} | {rate('wrong')} | "
+                    f"{rate('dodged')} | {right} | {extra} | "
                     f"{wrong_fmt} | {false_call} | {length:.0f} |")
     text = "\n".join(rows) + "\n"
     n_tool = sum(q["kind"] == "tool" for q in qs)
+    text += ("\n틀린 사실·얼버무림: 선생이 생각을 켜고 본 대화 대답의 비율 (낮을수록 좋음)."
+             " 사실 칸(1~5점)은 생각을 끈 채점이라 이런 실수를 잘 못 잡습니다.\n")
     text += (f"\n도구 정답률: 춤 번호는 따지지 않음. 춤에 덤으로 부른 눈 색은 빼고 보고 따로 셈."
              + (f" 도구 문제 {n_tool}개 중 선생이 억지라고 본 {len(bad)}개는 빼고, 동작·색·"
                 f"지역이 아이 말로 안 정해지는 {len(loose)}개는 도구 이름만 봄." if marked else "")

@@ -42,8 +42,17 @@ STUDENTS = [
     {"name": "qwen3.5-0.8b-v2", "base": "Qwen/Qwen3.5-0.8B", "lr": 2e-5, "batch": 2,
      "accum": 16, "data": ("data/train-clean.jsonl", "data-clean"), "quants": ["Q6_K", "Q8_0"],
      "no_kd": True, "eval_base": "qwen3.5-0.8b-원본"},
+    # 대화 예시의 틀린 사실·얼버무림·어색한 한국어를 선생이 생각을 켜고 고친 데이터
+    # (filter_chat.py). 증류는 v1보다 나빠서(대화 4.64, 도구 92%) 하지 않습니다.
+    {"name": "qwen3-0.6b-v3", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
+     "data": ("data/train-v3.jsonl", "data-facts"), "quants": ["Q6_K", "Q8_0"], "no_kd": True},
 ]
 KD = "data/kd"
+#: 학생이 처음 쓸 때 그 앞에 끼워 넣는 데이터 단계: 앞의 학생들이 먼저 돕니다
+DATA_STEPS = {
+    "data-facts": (["filter_chat.py", "--data", "data/train-clean.jsonl",
+                    "--out", "data/train-v3.jsonl"], ["data-clean"]),
+}
 
 
 def students():
@@ -81,6 +90,8 @@ def steps():
         cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",
                "--lr", str(st["lr"]), "--batch", str(st["batch"]), "--accum", str(st["accum"])]
         needs = [made_by]
+        if made_by in DATA_STEPS and not any(n == made_by for n, _, _ in s):
+            s.append((made_by, *DATA_STEPS[made_by]))
         if st["kd"]:
             if not any(n == "kd-teacher" for n, _, _ in s):
                 s.append(("kd-teacher", ["distill.py", "--data", "data/train.jsonl", "--base",
@@ -190,11 +201,12 @@ def progress(log: Path) -> str | None:
 
 
 def unscored() -> list[str]:
-    """답은 모았는데 선생 모델이 아직 채점하지 않은 모델: judge가 한 번 끝난 뒤에
-    새로 모은 답(젬마, 학습한 모델)도 채점하게 judge를 다시 돌립니다."""
+    """답은 모았는데 선생 모델이 아직 채점(또는 사실 검사)하지 않은 모델: judge가 한 번
+    끝난 뒤에 새로 모은 답(젬마, 학습한 모델)도 채점하게 judge를 다시 돌립니다."""
     answers = sorted((HERE / "results").glob("answers-*.json"))
     return [f.stem.removeprefix("answers-") for f in answers
-            if not f.with_name(f.name.replace("answers-", "scores-")).exists()]
+            if not all(f.with_name(f.name.replace("answers-", k)).exists()
+                       for k in ("scores-", "facts-"))]
 
 
 def report():

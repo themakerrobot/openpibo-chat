@@ -55,6 +55,13 @@ def load_teacher(name: str | None = None, memory: float = 0.92):
     return llm
 
 
+def thinking_params(max_tokens: int):
+    """선생이 생각을 켜고 답할 때의 설정 (Qwen3 권장값: 생각할 때 탐욕 디코딩은 되풀이에 빠짐)."""
+    from vllm import SamplingParams
+
+    return SamplingParams(temperature=0.6, top_p=0.95, top_k=20, max_tokens=max_tokens, seed=0)
+
+
 def first_user(ex: dict) -> str:
     return next(m["content"] for m in ex["messages"] if m["role"] == "user")
 
