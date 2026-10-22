@@ -1,6 +1,7 @@
 """대화 예시 사실 검사: 선생 모델이 생각을 켜고 파이보의 말을 하나하나 다시 봅니다.
 
-    python filter_chat.py --data data/train-clean.jsonl --out data/train-v3.jsonl
+    python filter_chat.py --data data/school.jsonl --tools-from data/train-clean.jsonl \\
+        --out data/train-school.jsonl
 
 선생이 생각을 끄고 쓴 대화에 틀린 사실("공룡은 수천 년 전에 살았어요"), 정설을
 얼버무린 말("공룡이 왜 사라졌는지는 아직 몰라요"), 어색한 한국어가 섞였고, 학생
@@ -9,7 +10,10 @@
 - 문제가 없으면 그대로, 있으면 선생이 고쳐 쓴 말로 바꿉니다. 고친 말이 규칙
   (pibo_ok)에 어긋나거나 선생의 답을 못 읽으면(생각이 길어 잘림 등) 그 예시를 뺍니다.
   빼기만 하면 공룡처럼 아이들이 자주 묻는 주제가 데이터에서 사라지므로 고쳐 씁니다.
-- 도구 예시는 그대로 둡니다 (filter_tools.py가 이미 봄).
+- 도구 예시는 그대로 둡니다 (filter_tools.py가 이미 봄). --tools-from을 주면 그 파일의
+  도구 예시를 붙이고 시스템 글을 지금 것(tools.SYSTEM)으로 맞춥니다: 초·중·고 대화
+  데이터는 대화만 만들고 도구 예시는 거른 어린이 데이터의 것을 다시 씁니다.
+- 학년이 적힌 예시(초·중·고)는 그 학년의 말투 규칙과 길이로 봅니다.
 - 판단은 data/chat-check.jsonl에 하나씩 남기고 (사람이 훑어보기용), 중간에 끊기면
   거기서 이어 갑니다.
 """
@@ -21,10 +25,11 @@ import json
 from pathlib import Path
 
 from make_data import load_teacher, thinking_params
-from prompts import STYLE, after_think, first_json, pibo_ok
+from prompts import after_think, first_json, max_len, pibo_ok, style_for
+from tools import SYSTEM
 
-CHECK = """어린이용 교육 로봇 '파이보'의 대화 학습 데이터를 검사합니다.
-아이들은 파이보의 말을 그대로 믿고 배우므로 사실이 정확해야 합니다.
+CHECK = """교육용 로봇 '파이보'의 대화 학습 데이터를 검사합니다.
+학생들은 파이보의 말을 그대로 믿고 배우므로 사실이 정확해야 합니다.
 
 {style}
 
@@ -38,11 +43,11 @@ CHECK = """어린이용 교육 로봇 '파이보'의 대화 학습 데이터를 
   "과학자들이 연구하고 있어요"로 피함 (예: 공룡이 사라진 까닭은 큰 소행성이 떨어진 것이 정설)
 - 어색한 한국어: 문법이 틀렸거나 한국 사람이 쓰지 않는 말, 같은 말 되풀이, 아이 말에 맞지 않는 대답
 정말 아무도 모르는 것(외계인이 있는지 등)을 모른다고 한 것은 문제가 아닙니다.
-아이의 말은 맞춤법이 틀려도 따지지 않습니다.
+아이나 학생의 말은 맞춤법이 틀려도 따지지 않습니다.
 
 문제가 없으면 {{"ok": true}}로 답하세요.
 하나라도 있으면 파이보의 말 {n}개를 차례대로 모두 적되 문제 있는 말만 고쳐 쓰세요.
-고친 말도 위 말투 규칙을 지키고, 앞뒤 아이의 말과 이어져야 합니다.
+고친 말도 위 말투 규칙을 지키고, 앞뒤 말과 이어져야 합니다.
 JSON 하나로만 답하세요.
 출력 형식: {{"ok": false, "problem": "무엇이 문제인지 짧게", "fixed": ["...", "..."]}}"""
 
@@ -51,23 +56,24 @@ CHUNK = 1000
 
 
 def chat_examples(lines: list[str]):
-    """(줄 번호, 아이 말들, 파이보 말들) — 대화 예시만."""
+    """(줄 번호, 예시, 아이 말들, 파이보 말들) — 대화 예시만."""
     for i, line in enumerate(lines):
         ex = json.loads(line)
         if ex["kind"] != "chat":
             continue
         msgs = ex["messages"]
-        yield (i, [m["content"] for m in msgs if m["role"] == "user"],
+        yield (i, ex, [m["content"] for m in msgs if m["role"] == "user"],
                [m["content"] for m in msgs if m["role"] == "assistant"])
 
 
-def prompt(users: list[str], pibos: list[str]) -> str:
-    dialog = "\n".join(f"아이: {u}\n파이보 {k}: {p}"
+def prompt(ex: dict, users: list[str], pibos: list[str]) -> str:
+    who = "학생" if ex.get("grade") else "아이"
+    dialog = "\n".join(f"{who}: {u}\n파이보 {k}: {p}"
                        for k, (u, p) in enumerate(zip(users, pibos, strict=True), 1))
-    return CHECK.format(style=STYLE, dialog=dialog, n=len(pibos))
+    return CHECK.format(style=style_for(ex), dialog=dialog, n=len(pibos))
 
 
-def decide(text: str, pibos: list[str]) -> dict:
+def decide(text: str, pibos: list[str], limit: int = 120) -> dict:
     """선생의 답 → {"verdict": "ok"|"fixed"|"drop", "after": 고친 말들, "problem": ...}."""
     d = first_json(after_think(text))
     if not isinstance(d, dict) or not isinstance(d.get("ok"), bool):
@@ -76,14 +82,25 @@ def decide(text: str, pibos: list[str]) -> dict:
         return {"verdict": "ok", "after": pibos, "problem": None}
     fixed = d.get("fixed")
     problem = str(d.get("problem") or "")
-    if not (isinstance(fixed, list) and len(fixed) == len(pibos) and all(map(pibo_ok, fixed))):
+    if not (isinstance(fixed, list) and len(fixed) == len(pibos)
+            and all(pibo_ok(f, limit) for f in fixed)):
         return {"verdict": "drop", "after": None, "problem": problem or "고친 말이 규칙에 어긋남"}
     fixed = [f.strip() for f in fixed]
     return {"verdict": "fixed" if fixed != pibos else "ok", "after": fixed, "problem": problem}
 
 
-def rewrite(lines: list[str], checked: dict[int, dict]) -> list[str]:
-    """검사 결과대로 고치거나 뺀 줄들. 검사하지 않은 대화 줄은 없어야 합니다."""
+def with_system(line: str) -> str:
+    """예시의 시스템 글을 지금 것으로."""
+    ex = json.loads(line)
+    for m in ex["messages"]:
+        if m["role"] == "system":
+            m["content"] = SYSTEM
+    return json.dumps(ex, ensure_ascii=False)
+
+
+def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = ()) -> list[str]:
+    """검사 결과대로 고치거나 뺀 줄들 (+ tools_from의 도구 예시). 검사하지 않은 대화
+    줄은 없어야 합니다."""
     out = []
     for i, line in enumerate(lines):
         ex = json.loads(line)
@@ -100,6 +117,7 @@ def rewrite(lines: list[str], checked: dict[int, dict]) -> list[str]:
                     m["content"] = next(said)
             line = json.dumps(ex, ensure_ascii=False)
         out.append(line)
+    out += [with_system(line) for line in tools_from if json.loads(line)["kind"] == "tool"]
     return out
 
 
@@ -107,6 +125,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--tools-from", help="이 파일의 도구 예시를 붙임 (시스템 글은 지금 것으로)")
     args = p.parse_args()
 
     lines = Path(args.data).read_text().splitlines()
@@ -124,19 +143,21 @@ def main():
         params = thinking_params(2048)
         for start in range(0, len(left), CHUNK):
             part = left[start:start + CHUNK]
-            outs = llm.chat([[{"role": "user", "content": prompt(u, b)}] for _, u, b in part],
+            outs = llm.chat([[{"role": "user", "content": prompt(ex, u, b)}]
+                             for _, ex, u, b in part],
                             params, chat_template_kwargs={"enable_thinking": True},
                             use_tqdm=False)
             with log_path.open("a") as log:
-                for (i, users, pibos), o in zip(part, outs, strict=True):
+                for (i, ex, users, pibos), o in zip(part, outs, strict=True):
                     r = {"line": i, "users": users, "before": pibos,
-                         **decide(o.outputs[0].text, pibos)}
+                         **decide(o.outputs[0].text, pibos, max_len(ex))}
                     checked[i] = r
                     log.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"검사 {len(items) - len(left) + start + len(part)}/{len(items)}", flush=True)
-    kept = rewrite(lines, checked)
+    tools = Path(args.tools_from).read_text().splitlines() if args.tools_from else []
+    kept = rewrite(lines, checked, tools)
     Path(args.out).write_text("\n".join(kept) + "\n")
-    count = {v: sum(checked[i]["verdict"] == v for i, _, _ in items)
+    count = {v: sum(checked[i]["verdict"] == v for i, _, _, _ in items)
              for v in ("ok", "fixed", "drop")}
     print(f"대화 예시 {len(items)}개: 그대로 {count['ok']}, 고침 {count['fixed']}, "
           f"뺌 {count['drop']} → {args.out} ({len(kept)}줄)", flush=True)

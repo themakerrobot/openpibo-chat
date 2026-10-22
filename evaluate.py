@@ -4,6 +4,7 @@
     python evaluate.py gguf --gguf out/pibo-qwen3-0.6b-Q8_0.gguf --name qwen3-0.6b-Q8_0
     python evaluate.py judge          # 답이 모인 모델 전부 채점
     python evaluate.py report         # results/eval.md
+    python evaluate.py ... --set school   # 초·중·고 질문으로 (results-school/)
 
 대화: 아이의 첫마디에 대한 대답을 선생 모델이 네 가지로 1~5점 채점합니다. 따로
 선생이 생각을 켜고 틀린 사실과 정설을 얼버무린 대답을 찾습니다 (생각을 끈 채점은
@@ -21,30 +22,48 @@ import statistics
 from pathlib import Path
 
 from make_data import load_teacher, thinking_params
-from prompts import STYLE, after_think, first_json, tools_for
-from tools import TOOLS, check_call, same_call
+from prompts import after_think, first_json, style_for, tools_for
+from tools import SYSTEM, TOOLS, check_call, same_call
 
 HELDOUT = Path("data/heldout.jsonl")
 RESULTS = Path("results")
 #: filter_tools.py가 적은 채점용 도구 문제 표시: bad(억지라 뺌), names_only(도구 이름만 봄)
 MARKS = Path("data/heldout-marks.json")
+#: 채점용 질문 묶음: (답과 점수를 두는 곳, 대화 질문을 바꿔 넣을 파일).
+#: school은 어린이 채점용 질문의 대화 질문을 같은 자리에서 초·중·고 대화로 바꾸고 (도구
+#: 문제와 그 표시는 그대로), 시스템 글은 지금 것(tools.SYSTEM)으로 묻습니다.
+SETS = {"kids": (Path("results"), None),
+        "school": (Path("results-school"), Path("data/heldout-school.jsonl"))}
+SCHOOL_CHAT: Path | None = None
 CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 #: Qwen3.5의 도구 호출: <function=이름> 안에 <parameter=인자>값</parameter>
 FUNC = re.compile(r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL)
 PARAM = re.compile(r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
 
 
+def use_set(name: str) -> None:
+    global RESULTS, SCHOOL_CHAT
+    RESULTS, SCHOOL_CHAT = SETS[name]
+
+
 def questions():
+    school = iter(SCHOOL_CHAT.read_text().splitlines()) if SCHOOL_CHAT else None
     out = []
     for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
+        if school is not None:
+            if ex["kind"] == "chat":
+                ex = json.loads(next(school))
+            for m in ex["messages"]:
+                if m["role"] == "system":
+                    m["content"] = SYSTEM
         msgs = ex["messages"]
         user_at = next(i for i, m in enumerate(msgs) if m["role"] == "user")
         expect = msgs[user_at + 1]
         out.append({"kind": ex["kind"], "tools": tools_for(ex) is not None,
                     "messages": msgs[:user_at + 1],
                     "calls": [c["function"] for c in expect.get("tool_calls", [])],
-                    "reference": expect.get("content", "")})
+                    "reference": expect.get("content", ""), "grade": ex.get("grade")})
     return out
 
 
@@ -192,6 +211,12 @@ FACT = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 �
 출력 형식: {{"wrong": false, "dodged": false}}"""
 
 
+def for_school(text: str) -> str:
+    """채점 글을 초·중·고 질문용으로 (어린이 질문은 원래 글 그대로 채점해 점수가 이어지게)."""
+    return (text.replace("어린이용 교육 로봇 '파이보'에게 아이가", "교육용 로봇 '파이보'에게 학생이")
+            .replace("아이들은", "학생들은").replace("아이: {user}", "학생: {user}"))
+
+
 def fact_marks(texts: list[str]) -> list[dict]:
     """선생의 사실 판단 → [{"wrong": bool|None, "dodged": bool|None}] (못 읽으면 None)."""
     out = []
@@ -210,13 +235,15 @@ def judge():
     llm = load_teacher()
     params = SamplingParams(temperature=0.0, max_tokens=80)
     idx = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
+    judge_text, fact_text = ((for_school(JUDGE), for_school(FACT)) if SCHOOL_CHAT
+                             else (JUDGE, FACT))
     for f in files:
         answers = json.loads(f.read_text())["answers"]
         pairs = [(qs[i]["messages"][-1]["content"], say(answers[i]) or "(말 없음)") for i in idx]
         scored = f.with_name(f.name.replace("answers-", "scores-"))
         if not scored.exists():
-            convs = [[{"role": "user", "content": JUDGE.format(style=STYLE, user=u, reply=r)}]
-                     for u, r in pairs]
+            convs = [[{"role": "user", "content": judge_text.format(
+                style=style_for(qs[i]), user=u, reply=r)}] for i, (u, r) in zip(idx, pairs)]
             outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
                             use_tqdm=False)
             marks = {}
@@ -227,7 +254,8 @@ def judge():
             print(f"채점: {f.name}", flush=True)
         facts = f.with_name(f.name.replace("answers-", "facts-"))
         if not facts.exists():
-            convs = [[{"role": "user", "content": FACT.format(user=u, reply=r)}] for u, r in pairs]
+            convs = [[{"role": "user", "content": fact_text.format(user=u, reply=r)}]
+                     for u, r in pairs]
             outs = llm.chat(convs, thinking_params(1536),
                             chat_template_kwargs={"enable_thinking": True}, use_tqdm=False)
             marks = fact_marks([o.outputs[0].text for o in outs])
@@ -305,7 +333,9 @@ def main():
     p.add_argument("--gguf")
     p.add_argument("--name")
     p.add_argument("--no-tools", action="store_true", help="도구 형식이 없는 모델 (젬마3)")
+    p.add_argument("--set", choices=list(SETS), default="kids")
     args = p.parse_args()
+    use_set(args.set)
     if args.what == "gen":
         gen(args.model, args.name, args.no_tools)
     elif args.what == "gguf":

@@ -75,6 +75,8 @@ def main():
     p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     p.add_argument("--avoid", help="이 파일에 있는 아이 말은 빼고 (채점용 데이터)")
     p.add_argument("--batch", type=int, default=4000)
+    p.add_argument("--audience", choices=["kids", "school"], default="kids",
+                   help="kids: 미취학~초저(처음 데이터), school: 초·중·고 학년 고르게")
     args = p.parse_args()
 
     out = Path(args.out)
@@ -104,7 +106,7 @@ def main():
         # 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다
         n_chat = min(args.batch, int(need["chat"] * 1.4) + 8) if need["chat"] else 0
         n_tool = min(args.batch, int(need["tool"] * 1.6) + 8) if need["tool"] else 0
-        reqs = requests(n_chat, n_tool, seed=args.seed * 1000 + rnd)
+        reqs = requests(n_chat, n_tool, seed=args.seed * 1000 + rnd, audience=args.audience)
         convs = [[{"role": "system", "content": TEACHER_SYSTEM},
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},

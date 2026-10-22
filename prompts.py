@@ -29,6 +29,76 @@ STYLE = """파이보의 말투 규칙:
 - 위험한 일, 아픈 곳, 낯선 사람 이야기는 꼭 어른에게 알리라고 말해요.
 - 이름, 주소 같은 개인정보는 묻지 않아요."""
 
+# ------------------------------------------------------------- 초·중·고 (school)
+#: 학년 묶음마다 같은 비율로. 대답 길이는 초등 70자, 중·고 120자 안쪽
+GRADES = {
+    "초저": ["초등학교 1학년", "초등학교 2학년", "초등학교 3학년"],
+    "초고": ["초등학교 4학년", "초등학교 5학년", "초등학교 6학년"],
+    "중": ["중학교 1학년", "중학교 2학년", "중학교 3학년"],
+    "고": ["고등학교 1학년", "고등학교 2학년", "고등학교 3학년"],
+}
+LIMIT = {"초저": 70, "초고": 70, "중": 120, "고": 120}
+GRADE_WORDS = {"초저": "초등학교 저학년", "초고": "초등학교 고학년", "중": "중학생", "고": "고등학생"}
+MOODS = ["", "", "수줍은 ", "장난스러운 ", "고민이 있는 ", "신이 난 ", "피곤한 ", "속상한 ",
+         "궁금한 게 많은 "]
+#: 친구처럼 하는 대화 (대부분)
+TALK = ["새 학기", "짝꿍", "친구 사귀기", "친구랑 다툼", "화해", "단짝 친구", "친구 관계 고민",
+        "학교생활", "쉬는 시간", "급식", "체육 시간", "동아리", "학교 축제", "운동회", "현장 체험 학습",
+        "수학여행", "방학 계획", "방과 후", "학원", "숙제", "시험 걱정", "성적 고민", "수행평가",
+        "공부 방법", "집중이 안 될 때", "계획 세우기", "시간 관리", "선생님", "반장 선거", "발표 긴장",
+        "게임", "유튜브", "웹툰", "만화", "아이돌", "좋아하는 노래", "춤", "그림 그리기", "운동",
+        "축구", "농구", "배드민턴", "자전거", "책 읽기", "영화", "드라마", "요리", "사진 찍기",
+        "악기 배우기", "레고", "코딩", "로봇 만들기", "인공지능", "스마트폰 사용 시간", "반려동물",
+        "강아지", "고양이", "스트레스", "걱정", "짜증 날 때", "외로움", "자신감", "칭찬받은 일",
+        "실수했을 때", "실패", "긴장될 때", "잠이 안 올 때", "피곤함", "사춘기", "외모 고민",
+        "좋아하는 사람", "가족", "형제자매", "부모님과 다툼", "용돈", "꿈", "장래희망", "진로 고민",
+        "대학", "아르바이트", "생일", "명절", "여행", "좋아하는 음식", "간식", "건강", "운동 습관",
+        "날씨", "계절", "환경 보호", "안전", "인터넷 예절", "고마운 사람", "오늘 있었던 일",
+        "주말에 한 일", "심심할 때", "농담", "수수께끼", "끝말잇기", "퀴즈"]
+#: 가끔 나오는 호기심·공부 질문 (적게: 작은 모델이라 사실이 틀릴 위험이 큼)
+CURIOUS = ["우주", "별과 행성", "공룡", "동물", "바다 생물", "날씨가 생기는 까닭", "몸과 건강",
+           "과학 실험", "발명", "우리 역사", "세계 여러 나라", "수학 퍼즐", "영어 공부", "맞춤법",
+           "속담", "컴퓨터의 원리", "에너지", "지구 환경"]
+CURIOUS_SHARE = 0.15
+#: 초등 저학년에게는 어색한 주제 (다시 고릅니다)
+OLDER = {"대학", "아르바이트", "진로 고민", "사춘기", "외모 고민", "좋아하는 사람", "수행평가",
+         "성적 고민", "시간 관리", "스마트폰 사용 시간"}
+
+
+def school_style(grade: str) -> str:
+    length = ("한두 문장, 70자 안쪽" if LIMIT[grade] <= 70 else "두세 문장, 120자 안쪽")
+    return f"""파이보의 말투 규칙:
+- 친근한 존댓말("~해요", "~예요")로, {GRADE_WORDS[grade]}에게 맞는 낱말과 깊이로 {length}.
+- 소리로 읽어 주는 말이라 이모지, 특수기호, 괄호, 목록, 영어 약어를 쓰지 않아요.
+- 친구처럼 공감하고, 가끔 짧게 되묻거나 칭찬해요. 훈계하거나 길게 가르치지 않아요.
+- 널리 알려진 사실은 쉽게 단정해서 말하고, 정말 아무도 모르는 것만 모른다고 해요.
+  숫자나 연대는 확실할 때만 말해요.
+- 괴롭힘, 다침, 위험한 일, 마음이 많이 힘든 이야기는 공감한 뒤 꼭 부모님이나 선생님 같은
+  믿을 만한 어른에게 알리라고 말해요.
+- 이름, 주소, 학교 같은 개인정보는 묻지 않아요."""
+
+
+def style_for(example: dict) -> str:
+    """예시(또는 채점용 질문)에 맞는 말투 규칙: 학년이 있으면 그 학년, 없으면 어린이 규칙."""
+    return school_style(example["grade"]) if example.get("grade") else STYLE
+
+
+def school_chat_request(rng: random.Random) -> dict:
+    grade = rng.choice(list(GRADES))
+    asker = rng.choice(MOODS) + rng.choice(GRADES[grade]) + " 학생"
+    topic = rng.choice(CURIOUS if rng.random() < CURIOUS_SHARE else TALK)
+    while grade == "초저" and topic in OLDER:
+        topic = rng.choice(TALK)
+    turns = rng.choice([1, 1, 2, 2, 3])
+    text = f"""{asker}이 로봇 파이보와 '{topic}'에 대해 이야기하는 짧은 대화를 하나 써 주세요.
+주고받기는 {turns}번입니다. 학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게
+(반말, 줄임말, 맞춤법이 조금 틀린 말도 됩니다).
+{school_style(grade)}
+파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}]}}"""
+    return {"kind": "chat", "topic": topic, "asker": asker, "grade": grade, "prompt": text}
+
+
 TOOL_TEXT = "\n".join(
     f"- {f['name']}: {f['description']}" for f in BY_NAME.values()) + (
     "\n동작 이름: " + ", ".join(f"{k}({v})" for k, v in MOTIONS.items())
@@ -69,9 +139,10 @@ def tool_request(rng: random.Random) -> dict:
     return {"kind": "tool", "fn": fn, "asker": asker, "prompt": text}
 
 
-def requests(n_chat: int, n_tool: int, seed: int) -> list[dict]:
+def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids") -> list[dict]:
     rng = random.Random(seed)
-    out = [chat_request(rng) for _ in range(n_chat)] + [tool_request(rng) for _ in range(n_tool)]
+    chat = school_chat_request if audience == "school" else chat_request
+    out = [chat(rng) for _ in range(n_chat)] + [tool_request(rng) for _ in range(n_tool)]
     rng.shuffle(out)
     return out
 
@@ -81,8 +152,8 @@ def requests(n_chat: int, n_tool: int, seed: int) -> list[dict]:
 BAD_CHARS = re.compile(r"[\U0001F300-\U0001FAFF☀-➿*#`|<>\[\]{}~^_=]")
 
 
-def pibo_ok(text) -> bool:
-    return (isinstance(text, str) and 1 <= len(text.strip()) <= 120
+def pibo_ok(text, limit: int = 120) -> bool:
+    return (isinstance(text, str) and 1 <= len(text.strip()) <= limit
             and not BAD_CHARS.search(text) and "파이보:" not in text)
 
 
@@ -121,14 +192,18 @@ def to_example(req: dict, reply: str, rng: random.Random) -> dict | None:
         turns = data.get("turns")
         if not isinstance(turns, list) or not turns:
             return None
+        limit = max_len(req)
         for t in turns:
             if not (isinstance(t, dict) and isinstance(t.get("user"), str)
-                    and t["user"].strip() and pibo_ok(t.get("pibo"))):
+                    and t["user"].strip() and pibo_ok(t.get("pibo"), limit)):
                 return None
             msgs += [{"role": "user", "content": t["user"].strip()},
                      {"role": "assistant", "content": t["pibo"].strip()}]
         # 도구 목록이 있어도 그냥 대화일 때는 부르지 않는 걸 배우도록 절반은 도구와 함께
-        return {"kind": "chat", "tools": rng.random() < 0.5, "messages": msgs}
+        ex = {"kind": "chat", "tools": rng.random() < 0.5, "messages": msgs}
+        if req.get("grade"):
+            ex["grade"] = req["grade"]
+        return ex
     user, calls, result, pibo = (data.get(k) for k in ("user", "calls", "result", "pibo"))
     if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
             and 1 <= len(calls) <= 2 and pibo_ok(pibo) and isinstance(result, str)):
@@ -149,6 +224,11 @@ def to_example(req: dict, reply: str, rng: random.Random) -> dict | None:
     msgs += [{"role": "tool", "content": result.strip()} for _ in tool_calls]
     msgs.append({"role": "assistant", "content": pibo.strip()})
     return {"kind": "tool", "tools": True, "messages": msgs}
+
+
+def max_len(example: dict) -> int:
+    """파이보 말 하나의 최대 글자 수: 규칙의 길이에 여유를 둡니다 (중·고는 120자 → 160자)."""
+    return 160 if LIMIT.get(example.get("grade"), 70) > 70 else 120
 
 
 def tools_for(example: dict):

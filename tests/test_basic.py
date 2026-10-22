@@ -276,7 +276,7 @@ def test_distillation_runs_only_when_switched_on(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     (tmp_path / "state").mkdir()
     names = [n for n, _, _ in run_all.steps()]
-    assert "kd-teacher" not in names and names[-1] == "judge"
+    assert "kd-teacher" not in names and names[-2:] == ["judge", "judge-school"]
     (tmp_path / "state" / "kd.on").touch()
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
     cmd, needs = steps["train-qwen3-0.6b-kd"]
@@ -358,18 +358,31 @@ def test_qwen35_template_never_thinks_and_its_tool_calls_are_read():
                                  {"name": "get_weather", "arguments": {"region": "부산"}}]
 
 
-def test_qwen35_student_is_trained_on_clean_data_without_distillation(tmp_path, monkeypatch):
+def test_school_students_come_first_on_fact_checked_school_data(tmp_path, monkeypatch):
     import run_all
 
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "kd.on").touch()
+    names = [n for n, _, _ in run_all.steps()]
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
-    cmd, needs = steps["train-qwen3.5-0.8b-v2"]
-    assert needs == ["data-clean"] and "Qwen/Qwen3.5-0.8B" in cmd and "--kd" not in cmd
-    assert "train-qwen3.5-0.8b-v2-kd" not in steps
-    assert "eval-qwen3.5-0.8b-원본" in steps and "eval-qwen3.5-0.8b-v2-Q8_0" in steps
-    assert "eval-qwen3.5-0.8b-v2-Q4_K_M" in steps
+    assert steps["data-school"][0][:3] == ["make_data.py", "--audience", "school"]
+    assert steps["data-school-clean"][1] == ["data-school", "data-clean"]
+    for st in ("qwen3-0.6b-school", "qwen3.5-0.8b-school"):
+        cmd, needs = steps[f"train-{st}"]
+        assert needs == ["data-school-clean"] and "data/train-school.jsonl" in cmd
+        assert "--kd" not in cmd and f"train-{st}-kd" not in steps
+        cmd, needs = steps[f"eval-{st}-Q4_K_M"]
+        assert cmd[-2:] == ["--set", "school"] and "data-school-heldout" in needs
+        # 학교 학생이 어린이 데이터의 남은 단계보다 먼저
+        assert names.index(f"train-{st}") < names.index("train-qwen3-0.6b")
+        assert names.index(f"eval-{st}-Q8_0") < names.index("eval-qwen3-0.6b-Q4_K_M")
+    assert "Qwen/Qwen3.5-0.8B" in steps["train-qwen3.5-0.8b-school"][0]
+    # 원본 모델은 두 묶음 모두에서 (어린이 쪽 단계 이름은 처음 그대로)
+    assert "eval-gemma3-1b" in steps and "eval-qwen3.5-0.8b-원본" in steps
+    cmd, needs = steps["eval-school-gemma3-1b"]
+    assert "--set" in cmd and "--no-tools" in cmd and needs == ["data-heldout", "data-school-heldout"]
+    assert steps["judge-school"][0] == ["evaluate.py", "judge", "--set", "school"]
 
 
 def test_chat_examples_are_fact_checked_and_rewritten():
@@ -386,10 +399,10 @@ def test_chat_examples_are_fact_checked_and_rewritten():
          "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
     lines = [chat, tool, chat]
     items = list(chat_examples(lines))
-    assert [i for i, _, _ in items] == [0, 2]
-    _, users, pibos = items[0]
-    text = prompt(users, pibos)
-    assert "파이보 2: 아주 오래전에 살았어요." in text and "말 2개" in text
+    assert [i for i, _, _, _ in items] == [0, 2]
+    _, ex, users, pibos = items[0]
+    text = prompt(ex, users, pibos)
+    assert "아이: 언제 살았어?\n파이보 2: 아주 오래전에 살았어요." in text and "말 2개" in text
     # 생각 뒤의 답만 읽고, 생각이 잘렸으면 못 읽음
     assert after_think("<think>\n{\"x\": 1} 고민\n</think>\n\n{\"ok\": true}") == "\n\n{\"ok\": true}"
     assert after_think("<think>\n끝없이 생각") == ""
@@ -406,21 +419,76 @@ def test_chat_examples_are_fact_checked_and_rewritten():
     assert len(out) == 2 and out[1] == tool       # 2번 대화는 빠지고 도구 예시는 그대로
     said = [m["content"] for m in json.loads(out[0])["messages"] if m["role"] == "assistant"]
     assert said == fixed
+    # 다른 파일의 도구 예시를 붙이면 시스템 글을 지금 것으로
+    old = json.loads(tool)
+    old["messages"][0]["content"] = "옛 시스템 글"
+    out = rewrite([chat], {0: decide(good, pibos)}, [chat, json.dumps(old, ensure_ascii=False)])
+    assert len(out) == 2 and json.loads(out[1])["messages"][0]["content"] == SYSTEM
 
 
-def test_fact_checked_student_comes_after_qwen35_and_judge_counts_facts(tmp_path, monkeypatch):
+def test_school_requests_cover_every_grade_and_length():
+    from filter_chat import decide, prompt
+    from prompts import GRADES, max_len, requests, style_for, to_example
+
+    reqs = requests(400, 0, seed=1, audience="school")
+    grades = [r["grade"] for r in reqs]
+    assert all(80 <= grades.count(g) <= 120 for g in GRADES)   # 학년 묶음 고르게
+    curious = sum(r["topic"] not in __import__("prompts").TALK for r in reqs)
+    assert 30 <= curious <= 90                                 # 호기심 질문 15% 안팎
+    r = next(r for r in reqs if r["grade"] == "고")
+    assert "고등학교" in r["prompt"] and "120자" in r["prompt"]
+    assert "70자" in next(r for r in reqs if r["grade"] == "초저")["prompt"]
+    long = "수행평가 때문에 걱정이 많군요. 오늘 할 일을 작게 나눠서 하나씩 해 보면 훨씬 덜 막막할 거예요. " \
+           "어떤 과목이 제일 걱정돼요? 오늘 저녁에 한 가지만 먼저 끝내 보고, 내일 다시 같이 계획을 세워 봐요. 할 수 있어요!"
+    assert 120 < len(long) <= 160
+    reply = json.dumps({"turns": [{"user": "수행평가 망할 듯", "pibo": long}]}, ensure_ascii=False)
+    ex = to_example(r, reply, random.Random(0))
+    assert ex["grade"] == "고" and max_len(ex) == 160
+    assert to_example(dict(r, grade="초저"), reply, random.Random(0)) is None   # 초등은 120자까지
+    assert "고등학생에게" in style_for(ex) and "학생: 수행평가 망할 듯" in prompt(
+        ex, ["수행평가 망할 듯"], [long])
+    fixed = json.dumps({"ok": False, "problem": "x", "fixed": [long]}, ensure_ascii=False)
+    assert decide(fixed, ["다른 말"], max_len(ex))["verdict"] == "fixed"
+    assert decide(fixed, ["다른 말"])["verdict"] == "drop"
+
+
+def test_school_questions_replace_chat_in_place_and_keep_tool_marks(tmp_path, monkeypatch):
     import evaluate
-    import run_all
+    from prompts import to_example
+    from tools import SYSTEM_KIDS
 
-    monkeypatch.setattr(run_all, "HERE", tmp_path)
-    names = [n for n, _, _ in run_all.steps()]
-    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
-    assert names.index("train-qwen3.5-0.8b-v2") < names.index("data-facts") \
-        < names.index("train-qwen3-0.6b-v3")
-    assert steps["data-facts"][1] == ["data-clean"]
-    cmd, needs = steps["train-qwen3-0.6b-v3"]
-    assert needs == ["data-facts"] and "data/train-v3.jsonl" in cmd and "--kd" not in cmd
-    assert "eval-qwen3-0.6b-v3-Q8_0" in steps and names.count("data-facts") == 1
+    rng = random.Random(0)
+
+    def chat(user, grade=None):
+        ex = to_example({"kind": "chat", **({"grade": grade} if grade else {})}, json.dumps(
+            {"turns": [{"user": user, "pibo": "네."}]}, ensure_ascii=False), rng)
+        return json.dumps(ex, ensure_ascii=False)
+
+    tool = json.loads(json.dumps(to_example({"kind": "tool", "fn": "eye_off"}, json.dumps(
+        {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
+         "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False))
+    tool["messages"][0]["content"] = SYSTEM_KIDS
+    (tmp_path / "heldout.jsonl").write_text("\n".join(
+        [chat("공룡 어디 갔어?"), json.dumps(tool, ensure_ascii=False), chat("안녕")]) + "\n")
+    (tmp_path / "school.jsonl").write_text(chat("시험 망했어", "중") + "\n" + chat("배고파", "초저") + "\n")
+    monkeypatch.setattr(evaluate, "HELDOUT", tmp_path / "heldout.jsonl")
+    monkeypatch.setitem(evaluate.SETS, "school", (tmp_path / "rs", tmp_path / "school.jsonl"))
+    evaluate.use_set("school")
+    try:
+        qs = evaluate.questions()
+    finally:
+        evaluate.use_set("kids")
+    assert [q["messages"][-1]["content"] for q in qs] == ["시험 망했어", "눈 꺼 줘", "배고파"]
+    assert [q["grade"] for q in qs] == ["중", None, "초저"]
+    assert all(q["messages"][0]["content"] == SYSTEM for q in qs)
+    assert "학생: {user}" in evaluate.for_school(evaluate.JUDGE)
+    assert "학생들은" in evaluate.for_school(evaluate.FACT)
+    assert evaluate.RESULTS == Path("results") and evaluate.SCHOOL_CHAT is None
+
+
+def test_judge_counts_facts():
+    import evaluate
+
     assert evaluate.fact_marks(['<think>\n음\n</think>\n{"wrong": true, "dodged": false}',
                                 "<think>\n잘림"]) == \
         [{"wrong": True, "dodged": False}, {"wrong": None, "dodged": None}]

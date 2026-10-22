@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import re
@@ -106,12 +107,27 @@ def post(url, body, timeout=300):
         return json.loads(r.read())
 
 
+@functools.cache
+def gpu_flags() -> list[str]:
+    """llama.cpp가 CUDA로 빌드돼 있으면 모델을 GPU에 올립니다: 채점용 질문 700개를 CPU로
+    물으면 양자화 하나에 몇 시간이 걸립니다. 계산 순서가 달라 글자가 조금 다를 수는
+    있지만 양자화끼리 비교하는 데는 상관없습니다. PIBO_EVAL_CPU=1이면 CPU로."""
+    if os.environ.get("PIBO_EVAL_CPU"):
+        return []
+    try:
+        out = subprocess.run([str(LLAMA / "build" / "bin" / "llama-server"), "--list-devices"],
+                             capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return ["-ngl", "99"] if "CUDA" in out.stdout + out.stderr else []
+
+
 @contextlib.contextmanager
 def server(gguf: Path, port: int):
-    """PC의 CPU로 llama-server를 띄웁니다 (파이보처럼 --jinja, 한 자리)."""
+    """PC에서 llama-server를 띄웁니다 (파이보처럼 --jinja, 한 자리)."""
     proc = subprocess.Popen([str(LLAMA / "build" / "bin" / "llama-server"), "-m", str(gguf),
                              "--jinja", "-c", "4096", "-np", "1", "--port", str(port),
-                             "-t", "8"],
+                             "-t", "8", *gpu_flags()],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(120):
