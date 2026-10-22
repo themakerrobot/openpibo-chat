@@ -93,6 +93,24 @@ def mtp_flags(model: Path) -> list[str]:
     return ["--no-mtp"] if "--no-mtp" in converter else []
 
 
+def convert(model: Path, f16: Path) -> None:
+    """HF 모델 → f16 GGUF. 어휘를 줄인 모델(prune_vocab.py)은 토크나이저 해시가 달라
+    변환기가 토크나이저 종류를 못 알아보므로, 줄이기 전의 종류(pruned.json)를 알려 줍니다."""
+    argv = [str(model), "--outfile", str(f16), "--outtype", "f16", *mtp_flags(model)]
+    pruned = model / "pruned.json"
+    if not pruned.exists():
+        subprocess.run([sys.executable, str(LLAMA / "convert_hf_to_gguf.py"), *argv], check=True)
+        return
+    pre = json.loads(pruned.read_text())["pre"]
+    if not pre:
+        raise SystemExit(f"{pruned}: 토크나이저 종류를 몰라요 (prune_vocab.PRE에 추가)")
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); pre = sys.argv[2]; "
+            "sys.argv = ['convert_hf_to_gguf.py', *sys.argv[3:]]; "
+            "import convert_hf_to_gguf as c; from conversion import base; "
+            "base.TextModel.get_vocab_base_pre = lambda self, tokenizer: pre; c.main()")
+    subprocess.run([sys.executable, "-c", code, str(LLAMA), pre, *argv], check=True)
+
+
 def gguf_template(path: Path) -> str:
     from gguf import GGUFReader
 
@@ -177,9 +195,7 @@ def main():
         q.unlink()
     if not q.exists():
         fix_template(Path(args.model))
-        subprocess.run([sys.executable, str(LLAMA / "convert_hf_to_gguf.py"), args.model,
-                        "--outfile", str(f16), "--outtype", "f16",
-                        *mtp_flags(Path(args.model))], check=True)
+        convert(Path(args.model), f16)
         subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"), str(f16), str(q),
                         args.quant], check=True)
         f16.unlink()

@@ -500,3 +500,43 @@ def test_detected_names_are_said_in_korean():
     assert korean_names(["cup", "person", "cup", "Teddy_Bear", "robot"]) == "robot, 곰 인형, 사람, 컵"
     assert korean_names(["tvmonitor", "sports ball"]) == "공, 텔레비전"
     assert korean_names([]) == korean_names([None, " "]) == "아무것도 안 보임"
+
+
+def test_vocab_pruning_keeps_korean_and_used_tokens_with_their_merge_parents():
+    from prune_vocab import byte_decoder, keep_set, korean
+
+    enc = {b: c for c, b in byte_decoder().items()}
+
+    def bl(text):                                  # 글 → 바이트 수준 BPE 글자
+        return "".join(enc[b] for b in text.encode())
+
+    assert korean(bl("안녕"), byte_decoder()) and korean(bl(" 안"), byte_decoder())
+    assert korean(bl("안")[:2], byte_decoder())             # 한글 글자의 바이트 조각
+    assert korean(bl('"') + bl("안")[:2], byte_decoder())    # 앞에 기호 한 바이트
+    assert not korean(bl("game"), byte_decoder()) and not korean(bl("😀"), byte_decoder())
+    assert not korean(bl("我"), byte_decoder())
+    singles = [enc[b] for b in range(256)]
+    an = bl("안")
+    vocab = {t: i for i, t in enumerate(singles + [an[:2], an, "ga", "gam", "game", bl("😀")[:2],
+                                                   bl("😀"), "zz"])}
+    merges = [f"{an[0]} {an[1]}", f"{an[:2]} {an[2]}", "g a", "ga m", "gam e",
+              f"{bl('😀')[0]} {bl('😀')[1]}", f"{bl('😀')[:2]} {bl('😀')[2:]}", "z z"]
+    tj = {"model": {"vocab": vocab, "merges": merges}}
+    keep = keep_set(tj, used={"game"}, ascii_merges=0)
+    assert {an, an[:2], "game", "gam", "ga"} <= keep           # 쓴 토큰의 재료까지
+    assert bl("😀") not in keep and "zz" not in keep
+    assert "zz" in keep_set(tj, used=set(), ascii_merges=len(merges))   # 흔한 영어 조각
+
+
+def test_school_students_are_also_built_with_a_smaller_vocab(tmp_path, monkeypatch):
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    cmd, needs = steps["small-qwen3.5-0.8b-school"]
+    assert cmd[0] == "prune_vocab.py" and "runs/qwen3.5-0.8b-school/small" in cmd
+    assert cmd[cmd.index("--check") + 1] == "data/heldout-school.jsonl"
+    assert needs[0] == "train-qwen3.5-0.8b-school"
+    cmd, needs = steps["eval-qwen3-0.6b-school-small-Q4_K_M"]
+    assert "out/pibo-qwen3-0.6b-school-small-Q4_K_M.gguf" in cmd and cmd[-2:] == ["--set", "school"]
+    assert "gguf-qwen3-0.6b-small-Q4_K_M" not in steps          # 어린이 데이터 모델은 그대로
