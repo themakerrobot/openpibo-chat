@@ -608,3 +608,25 @@ def test_teacher_turns_written_one_side_at_a_time_are_paired():
     ex, why = build_example(req, broken, rng)
     assert why is None and ex["messages"][1]["content"] == '인공지능은 뭐야? "AI" 말이야'
     assert build_example(req, '{"turns": [{"pibo": "안녕"}, {"user": "응"}]}', rng)[0] is None
+
+
+def test_school_requests_are_varied_and_fit_the_grade():
+    import prompts
+
+    reqs = prompts.requests(3000, 0, seed=4, audience="school")
+    assert not any(r["topic"] in prompts.HIGH and r["grade"] != "고" for r in reqs)
+    assert not any(r["topic"] in prompts.OLDER and r["grade"] == "초저" for r in reqs)
+    assert len({r["scene"] for r in reqs}) == len(prompts.SCENES)
+    assert len({(r["topic"], r["scene"], r["opener"]) for r in reqs}) > 2900   # 거의 안 겹침
+    assert all("장면:" in r["prompt"] for r in reqs)
+
+
+def test_tool_examples_can_be_repeated_to_keep_their_share():
+    from filter_chat import rewrite
+    from prompts import to_example
+
+    rng = random.Random(0)
+    tool = json.dumps(to_example({"kind": "tool", "fn": "eye_off"}, json.dumps(
+        {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
+         "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
+    assert len(rewrite([], {}, [tool], repeat=2)) == 2

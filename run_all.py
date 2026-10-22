@@ -101,9 +101,10 @@ def steps():
          ("data-clean", ["filter_tools.py", "--train", "data/train.jsonl", "--heldout",
                          "data/heldout.jsonl", "--out", "data/train-clean.jsonl",
                          "--marks", "data/heldout-marks.json"], ["data-train", "data-heldout"]),
-         # 초·중·고: 대화만 새로 만들고, 채점용 대화 질문 400개(어린이 채점용과 같은 수)도
+         # 초·중·고: 대화만 새로 6만 개 (주제 약 200 × 학년 12 × 장면 22 × 말 꺼내는 방식 14 ×
+         # 흐름), 채점용 대화 질문 400개(어린이 채점용과 같은 수)도
          ("data-school", ["make_data.py", "--audience", "school", "--out", "data/school.jsonl",
-                          "--chat", "24000", "--tool", "0", "--seed", "1"], []),
+                          "--chat", "60000", "--tool", "0", "--seed", "1"], []),
          ("data-school-heldout", ["make_data.py", "--audience", "school", "--out",
                                   "data/heldout-school.jsonl", "--chat", "400", "--tool", "0",
                                   "--seed", "998", "--avoid", "data/school.jsonl"],
@@ -117,6 +118,7 @@ def steps():
                                            *extra, *(["--no-tools"] if no_tools else [])], needs))
     s.append(("data-school-clean", ["filter_chat.py", "--data", "data/school.jsonl",
                                     "--tools-from", "data/train-clean.jsonl",
+                                    "--tools-repeat", "2",   # 대화 6만 개에 도구 약 1만 6천
                                     "--out", "data/train-school.jsonl"],
               ["data-school", "data-clean"]))
     for st in students():

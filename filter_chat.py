@@ -99,7 +99,8 @@ def with_system(line: str) -> str:
     return json.dumps(ex, ensure_ascii=False)
 
 
-def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = ()) -> list[str]:
+def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = (),
+            repeat: int = 1) -> list[str]:
     """검사 결과대로 고치거나 뺀 줄들 (+ tools_from의 도구 예시). 검사하지 않은 대화
     줄은 없어야 합니다."""
     out = []
@@ -118,7 +119,7 @@ def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = 
                     m["content"] = next(said)
             line = json.dumps(ex, ensure_ascii=False)
         out.append(line)
-    out += [with_system(line) for line in tools_from if json.loads(line)["kind"] == "tool"]
+    out += [with_system(line) for line in tools_from if json.loads(line)["kind"] == "tool"] * repeat
     return out
 
 
@@ -127,6 +128,8 @@ def main():
     p.add_argument("--data", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--tools-from", help="이 파일의 도구 예시를 붙임 (시스템 글은 지금 것으로)")
+    p.add_argument("--tools-repeat", type=int, default=1,
+                   help="붙인 도구 예시를 몇 번씩 넣을지: 대화가 많을 때 도구 비율을 지키려고")
     args = p.parse_args()
 
     lines = Path(args.data).read_text().splitlines()
@@ -156,7 +159,7 @@ def main():
                     log.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"검사 {len(items) - len(left) + start + len(part)}/{len(items)}", flush=True)
     tools = Path(args.tools_from).read_text().splitlines() if args.tools_from else []
-    kept = rewrite(lines, checked, tools)
+    kept = rewrite(lines, checked, tools, args.tools_repeat)
     Path(args.out).write_text("\n".join(kept) + "\n")
     count = {v: sum(checked[i]["verdict"] == v for i, _, _, _ in items)
              for v in ("ok", "fixed", "drop")}
