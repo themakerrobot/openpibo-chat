@@ -152,9 +152,21 @@ def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids") -> lis
 BAD_CHARS = re.compile(r"[\U0001F300-\U0001FAFF☀-➿*#`|<>\[\]{}~^_=]")
 
 
+def pibo_problem(text, limit: int = 120) -> str | None:
+    """파이보 말이 규칙에 어긋난 까닭 (괜찮으면 None)."""
+    if not isinstance(text, str) or not text.strip():
+        return "파이보 말 없음"
+    if len(text.strip()) > limit:
+        return f"파이보 말이 {limit}자 넘음"
+    if bad := BAD_CHARS.search(text):
+        return f"파이보 말에 기호 {bad.group()!r}"
+    if "파이보:" in text:
+        return "파이보 말에 '파이보:'"
+    return None
+
+
 def pibo_ok(text, limit: int = 120) -> bool:
-    return (isinstance(text, str) and 1 <= len(text.strip()) <= limit
-            and not BAD_CHARS.search(text) and "파이보:" not in text)
+    return pibo_problem(text, limit) is None
 
 
 def first_json(text: str):
@@ -184,46 +196,54 @@ def after_think(text: str) -> str:
 
 def to_example(req: dict, reply: str, rng: random.Random) -> dict | None:
     """선생 모델의 답을 학습 예시로. 규칙에 어긋나면 None."""
+    return build_example(req, reply, rng)[0]
+
+
+def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | None, str | None]:
+    """(학습 예시, None) 또는 (None, 버린 까닭)."""
     data = first_json(reply)
     if not isinstance(data, dict):
-        return None
+        return None, "JSON을 못 읽음"
     msgs = [{"role": "system", "content": SYSTEM}]
     if req["kind"] == "chat":
         turns = data.get("turns")
         if not isinstance(turns, list) or not turns:
-            return None
+            return None, "turns 없음"
         limit = max_len(req)
         for t in turns:
-            if not (isinstance(t, dict) and isinstance(t.get("user"), str)
-                    and t["user"].strip() and pibo_ok(t.get("pibo"), limit)):
-                return None
+            if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
+                return None, "아이 말 없음"
+            if why := pibo_problem(t.get("pibo"), limit):
+                return None, why
             msgs += [{"role": "user", "content": t["user"].strip()},
                      {"role": "assistant", "content": t["pibo"].strip()}]
         # 도구 목록이 있어도 그냥 대화일 때는 부르지 않는 걸 배우도록 절반은 도구와 함께
         ex = {"kind": "chat", "tools": rng.random() < 0.5, "messages": msgs}
         if req.get("grade"):
             ex["grade"] = req["grade"]
-        return ex
+        return ex, None
     user, calls, result, pibo = (data.get(k) for k in ("user", "calls", "result", "pibo"))
     if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
-            and 1 <= len(calls) <= 2 and pibo_ok(pibo) and isinstance(result, str)):
-        return None
+            and 1 <= len(calls) <= 2 and isinstance(result, str)):
+        return None, "도구 예시 모양이 다름"
+    if why := pibo_problem(pibo):
+        return None, why
     tool_calls = []
     for c in calls:
         if not isinstance(c, dict):
-            return None
+            return None, "도구 예시 모양이 다름"
         args = c.get("arguments") or {}
-        if check_call(c.get("name"), args) is not None:
-            return None
+        if (why := check_call(c.get("name"), args)) is not None:
+            return None, f"도구 호출: {why}"
         tool_calls.append({"type": "function",
                            "function": {"name": c["name"], "arguments": args}})
     if req["fn"] not in [c["function"]["name"] for c in tool_calls]:
-        return None
+        return None, "청한 도구를 안 부름"
     msgs += [{"role": "user", "content": user.strip()},
              {"role": "assistant", "content": "", "tool_calls": tool_calls}]
     msgs += [{"role": "tool", "content": result.strip()} for _ in tool_calls]
     msgs.append({"role": "assistant", "content": pibo.strip()})
-    return {"kind": "tool", "tools": True, "messages": msgs}
+    return {"kind": "tool", "tools": True, "messages": msgs}, None
 
 
 def max_len(example: dict) -> int:

@@ -574,3 +574,19 @@ def test_teacher_is_not_marked_failed_when_the_gpu_is_busy(tmp_path, monkeypatch
     with pytest.raises(SystemExit, match="비어 있어"):
         make_data.load_teacher()
     assert not (tmp_path / "teacher-failed.txt").exists()
+
+
+def test_rejected_teacher_replies_say_why():
+    from prompts import build_example
+
+    rng = random.Random(0)
+    req = {"kind": "chat", "grade": "초저"}
+
+    def reply(pibo):
+        return json.dumps({"turns": [{"user": "안녕", "pibo": pibo}]}, ensure_ascii=False)
+
+    assert build_example(req, "글", rng) == (None, "JSON을 못 읽음")
+    assert build_example(req, reply("좋아요~"), rng) == (None, "파이보 말에 기호 '~'")
+    assert build_example(req, reply("가" * 121), rng) == (None, "파이보 말이 120자 넘음")
+    ex, why = build_example(req, reply("안녕하세요."), rng)
+    assert why is None and ex["grade"] == "초저"

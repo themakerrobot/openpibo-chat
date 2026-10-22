@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
+from collections import Counter
 from pathlib import Path
 
-from prompts import TEACHER_SYSTEM, requests, to_example
+from prompts import TEACHER_SYSTEM, build_example, requests
 
 TEACHER = "Qwen/Qwen3-32B-AWQ"   # Apache-2.0
 #: 앞의 것이 이 GPU에서 뜨지 않으면 다음 것으로 (모두 Apache-2.0)
@@ -101,6 +103,7 @@ def main():
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    rejected = out.with_name(f"rejected-{out.stem}.jsonl")   # 버린 답 몇 개씩 (훑어보기용)
     have = ([json.loads(line) for line in out.read_text().splitlines()]
             if out.exists() else [])
     seen = {first_user(e) for e in have}
@@ -131,19 +134,30 @@ def main():
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
                         use_tqdm=False)
-        kept = 0
-        with out.open("a") as f:
+        kept, why, shown = 0, Counter(), Counter()
+        with out.open("a") as f, rejected.open("a") as rej:
             for r, o in zip(reqs, outs, strict=True):
                 if count[r["kind"]] >= want[r["kind"]]:
                     continue
-                ex = to_example(r, o.outputs[0].text, rng)
-                if ex is None or first_user(ex) in seen:
+                ex, reason = build_example(r, o.outputs[0].text, rng)
+                if reason is None and first_user(ex) in seen:
+                    reason = "아이 말이 앞의 것과 같음"
+                if reason is not None and o.outputs[0].finish_reason == "length":
+                    reason = f"{params.max_tokens}토큰에서 잘림"
+                if reason is not None:
+                    why[reason] += 1
+                    key = re.sub(r"'.*'", "", reason)
+                    if shown[key] < 20:        # 까닭마다 몇 개씩 남겨 사람이 봅니다
+                        shown[key] += 1
+                        rej.write(json.dumps({"why": reason, "reply": o.outputs[0].text},
+                                             ensure_ascii=False) + "\n")
                     continue
                 seen.add(first_user(ex))
                 count[ex["kind"]] += 1
                 kept += 1
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
         print(f"라운드 {rnd}: {len(reqs)}개 청해서 {kept}개 남김, 지금 {count}", flush=True)
+        print("  버린 까닭: " + ", ".join(f"{k} {v}" for k, v in why.most_common(8)), flush=True)
     if any(count[k] < want[k] for k in want):
         raise SystemExit(f"목표에 못 미침: {count} / {want}")
 
