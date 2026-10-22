@@ -184,12 +184,52 @@ def step_env() -> dict:
     return env
 
 
+def gpu_holders() -> list[tuple[int, str, int]]:
+    """GPU 메모리를 쥔 계산 프로세스들: (pid, 이름, MiB)."""
+    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+                          "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, timeout=30, check=False).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) == 3 and parts[0].isdigit():
+            rows.append((int(parts[0]), parts[1], int(parts[2]) if parts[2].isdigit() else 0))
+    return rows
+
+
+def parent_pid(pid: int) -> int | None:
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def kill_orphan_engines() -> list[int]:
+    """부모가 죽어 혼자 남은 vLLM 엔진(VLLM::EngineCore, 부모 pid 1)을 끕니다: 단계를 밖에서
+    멈추면(pkill) 엔진만 남아 GPU 메모리를 쥔 채 아무 일도 하지 않고, 다음 단계는 메모리가
+    없어 뜨지 못합니다."""
+    killed = []
+    for pid, name, _ in gpu_holders():
+        if "VLLM" in name.upper() and parent_pid(pid) == 1:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    break
+                time.sleep(10)
+            killed.append(pid)
+    if killed:
+        print(f"혼자 남은 vLLM 엔진을 껐어요: {killed}", flush=True)
+    return killed
+
+
 def wait_gpu_free(limit_mb: int = 2000, wait_s: int = 600) -> None:
     """앞 단계의 GPU 프로세스(vLLM)가 다 내려갈 때까지 기다립니다: 바로 시작하면
     아직 잡혀 있는 메모리 때문에 다음 단계가 메모리 부족으로 죽습니다."""
     end = time.time() + wait_s
     while time.time() < end:
         try:
+            kill_orphan_engines()
             out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
                                   "--format=csv,noheader,nounits"],
                                  capture_output=True, text=True, timeout=30, check=False).stdout
@@ -199,7 +239,9 @@ def wait_gpu_free(limit_mb: int = 2000, wait_s: int = 600) -> None:
         if used < limit_mb:
             return
         time.sleep(10)
-    print(f"GPU 메모리가 {wait_s}초 동안 비지 않았지만 시작합니다", flush=True)
+    holders = ", ".join(f"{name}(pid {pid}, {mb}MiB)" for pid, name, mb in gpu_holders())
+    print(f"GPU 메모리가 {wait_s}초 동안 비지 않았지만 시작합니다. 쥐고 있는 것: {holders}",
+          flush=True)
 
 
 def run_step(name, cmd, stall) -> bool:

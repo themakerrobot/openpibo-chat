@@ -2,6 +2,7 @@
 
 import json
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -547,3 +548,29 @@ def test_school_students_are_also_built_with_a_smaller_vocab(tmp_path, monkeypat
     cmd, needs = steps["eval-qwen3-0.6b-school-small-Q4_K_M-kv8"]
     assert cmd[cmd.index("--kv") + 1] == "q8_0" and needs[0] == "gguf-qwen3-0.6b-school-small-Q4_K_M"
     assert "eval-qwen3.5-0.8b-school-small-Q4_K_M-kv8" not in steps   # KV 캐시가 원래 작음
+
+
+def test_orphaned_vllm_engines_are_stopped_before_a_step(monkeypatch):
+    import run_all
+
+    smi = "1099455, VLLM::EngineCore, 31100\n2000, VLLM::EngineCore, 900\n3000, python, 500\n"
+    monkeypatch.setattr(run_all.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, smi, ""))
+    monkeypatch.setattr(run_all, "parent_pid", {1099455: 1, 2000: 4242, 3000: 1}.get)
+    monkeypatch.setattr(run_all.time, "sleep", lambda s: None)
+    sent = []
+    monkeypatch.setattr(run_all.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    assert run_all.kill_orphan_engines() == [1099455]     # 부모가 살아 있는 엔진과 다른 것은 그대로
+    assert [p for p, _ in sent] == [1099455, 1099455]
+
+
+def test_teacher_is_not_marked_failed_when_the_gpu_is_busy(tmp_path, monkeypatch):
+    import make_data
+
+    monkeypatch.setattr(make_data, "CHOSEN", tmp_path / "teacher.txt")
+    monkeypatch.setattr(make_data, "gpu_free_fraction", lambda: 0.01)
+    monkeypatch.setitem(sys.modules, "vllm", type(sys)("vllm"))
+    sys.modules["vllm"].LLM = None
+    with pytest.raises(SystemExit, match="비어 있어"):
+        make_data.load_teacher()
+    assert not (tmp_path / "teacher-failed.txt").exists()

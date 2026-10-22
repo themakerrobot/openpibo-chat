@@ -22,6 +22,21 @@ TEACHERS = [TEACHER, "Qwen/Qwen3-14B-AWQ", "Qwen/Qwen3-8B"]
 CHOSEN = Path("data/teacher.txt")   # 실제로 쓴 선생 모델: 채점도 같은 것으로
 
 
+def gpu_free_fraction() -> float | None:
+    """GPU 메모리 중 비어 있는 몫 (nvidia-smi가 없으면 None). vLLM보다 먼저 CUDA를 건드리지
+    않도록 nvidia-smi로 봅니다."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free,memory.total",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                             timeout=30, check=False).stdout.splitlines()[0]
+        free, total = (float(x) for x in out.split(","))
+        return free / total
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 def load_teacher(name: str | None = None, memory: float = 0.92):
     """선생 모델을 띄웁니다. 정한 게 없으면 목록에서 아직 실패하지 않은 첫 번째.
 
@@ -40,6 +55,11 @@ def load_teacher(name: str | None = None, memory: float = 0.92):
         if not left:
             raise SystemExit(f"선생 모델 후보가 모두 실패했어요: {TEACHERS}")
         name = left[0]
+    free = gpu_free_fraction()
+    if free is not None and free < memory:
+        # 모델 탓이 아니므로 실패로 적지 않습니다 (적으면 다음에는 더 작은 선생으로 갑니다)
+        raise SystemExit(f"GPU 메모리가 {free:.0%}만 비어 있어 선생 모델을 띄우지 않아요 "
+                         f"({memory:.0%} 필요): nvidia-smi로 GPU를 쥔 프로세스를 확인하세요")
     try:
         llm = LLM(name, max_model_len=4096, gpu_memory_utilization=memory,
                   enable_prefix_caching=True)
