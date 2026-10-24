@@ -630,3 +630,25 @@ def test_tool_examples_can_be_repeated_to_keep_their_share():
         {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
          "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
     assert len(rewrite([], {}, [tool], repeat=2)) == 2
+
+
+def test_banmal_left_in_pibos_words_is_found():
+    from filter_chat import BANMAL
+
+    rude = ["문어는 팔이 여덟 개예요. 재미있지?", "아 그런 일이 생겼구나. 힘들었겠네.",
+            "안녕하세요! 네가 인사하면 반가워요.", "먹을 거예요. 넌 뭐야?",
+            "레고는 많은 사람들이 좋아해요. 너는 어떤 레고를 좋아해?",
+            "파이보도 너처럼 배워서 도와줄 수 있어요.", "힘들겠네. 그래도 괜찮아요.",
+            "같이 해 볼까?"]
+    polite = ["멋진 소리가 나는 거 좋아요.", "정말 잘했어요!", "제가 도와드릴게요.",
+              "너무 재미있겠네요!", "같이 해 볼까요?", "그 마음 이해돼요."]
+    assert all(BANMAL.search(s) for s in rude)
+    assert not any(BANMAL.search(s) for s in polite)
+
+
+def test_check_log_from_other_data_is_not_reused():
+    from filter_chat import matches
+
+    r = {"line": 0, "users": ["공룡 얘기"], "before": ["오래전에 살았어요."], "verdict": "ok"}
+    assert matches(r, ["공룡 얘기"], ["오래전에 살았어요."])
+    assert not matches(r, ["시험 망했어", "응"], ["힘들겠어요.", "응원할게요."])

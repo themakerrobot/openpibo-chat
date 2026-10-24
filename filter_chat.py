@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from make_data import load_teacher, thinking_params
@@ -57,6 +58,20 @@ JSON 하나로만 답하세요.
 
 #: 이만큼씩 선생에게 보내고 결과를 적습니다 (진행률이 로그에 남고, 끊겨도 이어 감)
 CHUNK = 1000
+
+#: 파이보 말에 남은 반말 (사실 검사가 절반만 고친 것: "너는 강해서요. 괜찮겠네.")
+BANMAL = re.compile(r"(^|[\s,.!?])(너는|너도|너가|너를|너랑|너처럼|너한테|넌|니가|네가|내가)(?=\s|$|[,.!?])"
+                    r"|(겠네|했네|거든|구나|잖아|했어|할게|줄게|볼까|있지|좋지|맞지|그치)[.!?]?$"
+                    r"|(겠네|했네|거든|구나|잖아)[.!?]\s")
+
+POLITE = """교육용 로봇 '파이보'의 대답을 다듬습니다. 파이보는 늘 친근한 존댓말("~해요", "~예요")로
+말하고, 학생을 "너"라고 부르지 않으며, 자기를 "저", "제가"라고 합니다.
+
+{dialog}
+
+파이보의 말 {n}개에서 반말("~했네", "~지?", "~거든", "너는", "내가" 등)을 존댓말로만 바꾸세요.
+뜻과 길이는 그대로 두고, 반말이 없는 말은 글자 하나 바꾸지 마세요.
+JSON 하나로만 답하세요. 출력 형식: {{"fixed": ["...", "..."]}}"""
 
 
 def chat_examples(lines: list[str]):
@@ -126,6 +141,45 @@ def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = 
     return out
 
 
+def matches(r: dict, users: list[str], pibos: list[str]) -> bool:
+    """기록이 지금 데이터의 그 줄과 같은 대화인지: 같은 이름의 기록 파일을 다른 데이터
+    (어린이 데이터 검사)가 썼으면 줄 번호만 같고 대화가 달라, 말 개수가 안 맞습니다."""
+    return r.get("users") == users and r.get("before") == pibos
+
+
+def polite(llm, todo: list, checked: dict, log_path: Path, limit_of) -> int:
+    """반말이 남은 파이보 말을 선생이 존댓말로만 고칩니다 (생각 없이, 빠름). 고친 말이 규칙에
+    어긋나거나 반말이 그대로면 그 대화를 뺍니다. 고친 수를 돌려줍니다."""
+    from vllm import SamplingParams
+
+    convs = []
+    for i, ex, users, _ in todo:
+        who = "학생" if ex.get("grade") else "아이"
+        dialog = "\n".join(f"{who}: {u}\n파이보 {k}: {p}" for k, (u, p) in
+                           enumerate(zip(users, checked[i]["after"], strict=True), 1))
+        convs.append([{"role": "user", "content": POLITE.format(dialog=dialog,
+                                                                n=len(users))}])
+    outs = llm.chat(convs, SamplingParams(temperature=0.0, max_tokens=800),
+                    chat_template_kwargs={"enable_thinking": False}, use_tqdm=False)
+    done = 0
+    with log_path.open("a") as log:
+        for (i, ex, _, pibos), o in zip(todo, outs, strict=True):
+            d = first_json(o.outputs[0].text) or {}
+            fixed = d.get("fixed")
+            r = dict(checked[i], polite=True)
+            if (isinstance(fixed, list) and len(fixed) == len(pibos)
+                    and all(pibo_ok(f, limit_of(ex)) for f in fixed)
+                    and not any(BANMAL.search(f.strip()) for f in fixed)):
+                r.update(verdict="fixed", after=[f.strip() for f in fixed])
+                done += 1
+            else:
+                r.update(verdict="drop", after=None,
+                         problem=(r.get("problem") or "") + " / 반말을 못 고침")
+            checked[i] = r
+            log.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return done
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True)
@@ -138,22 +192,28 @@ def main():
     lines = Path(args.data).read_text().splitlines()
     items = list(chat_examples(lines))
     log_path = Path(args.out).with_name("chat-check.jsonl")
+    by_line = {i: (users, pibos) for i, _, users, pibos in items}
     checked: dict[int, dict] = {}
     if log_path.exists():
-        rows = log_path.read_text().splitlines()
+        rows, kept_rows, other = log_path.read_text().splitlines(), [], 0
         for row in rows:
             try:
                 r = json.loads(row)
             except json.JSONDecodeError:     # 쓰다가 끊긴 마지막 줄: 그 예시는 다시 봅니다
                 continue
+            if r.get("line") not in by_line or not matches(r, *by_line[r["line"]]):
+                other += 1                   # 다른 데이터의 기록: 버리고 다시 봅니다
+                continue
             checked[r["line"]] = r
-        good = [row for row in rows if row.strip().endswith("}")]
-        if len(good) != len(rows):
-            log_path.write_text("".join(row + "\n" for row in good))
+            kept_rows.append(row)
+        if len(kept_rows) != len(rows):
+            print(f"기록 {len(rows)}줄 중 이 데이터와 안 맞는 {other}줄을 버림", flush=True)
+            log_path.write_text("".join(row + "\n" for row in kept_rows))
     left = [it for it in items if it[0] not in checked]
     print(f"대화 예시 {len(items)}개 중 {len(items) - len(left)}개는 이미 검사함", flush=True)
+    llm = None
     if left:
-        llm = load_teacher()
+        llm = llm or load_teacher()
         params = thinking_params(2048)
         for start in range(0, len(left), CHUNK):
             part = left[start:start + CHUNK]
@@ -168,6 +228,16 @@ def main():
                     checked[i] = r
                     log.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"검사 {len(items) - len(left) + start + len(part)}/{len(items)}", flush=True)
+    rude = [it for it in items if checked[it[0]]["verdict"] != "drop"
+            and not checked[it[0]].get("polite")
+            and any(BANMAL.search(s) for s in checked[it[0]]["after"])]
+    said = sum(len(checked[i]["after"]) for i, _, _, _ in items if checked[i]["verdict"] != "drop")
+    print(f"반말이 남은 대화 {len(rude)}개 (파이보 말 {said}개 중)", flush=True)
+    for start in range(0, len(rude), CHUNK * 4):
+        llm = llm or load_teacher()
+        part = rude[start:start + CHUNK * 4]
+        n = polite(llm, part, checked, log_path, max_len)
+        print(f"존댓말로 고침 {start + len(part)}/{len(rude)} (이번에 고친 것 {n})", flush=True)
     tools = Path(args.tools_from).read_text().splitlines() if args.tools_from else []
     kept = rewrite(lines, checked, tools, args.tools_repeat)
     Path(args.out).write_text("\n".join(kept) + "\n")
