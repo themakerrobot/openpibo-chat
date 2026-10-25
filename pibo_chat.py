@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 import urllib.request
 
@@ -28,6 +29,10 @@ def speak(text: str) -> None:
 
 
 def listen() -> str:
+    # 원격 터미널에서 한글을 지우고 다시 쓰면 글자 조각(깨진 UTF-8)이 들어올 때가 있어,
+    # 멈추지 않고 깨진 부분만 버립니다
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(errors="ignore")
     return input("나: ").strip()
 
 
