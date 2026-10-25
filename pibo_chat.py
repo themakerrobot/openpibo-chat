@@ -149,12 +149,22 @@ def window(history: list) -> list:
     return history[starts[-HISTORY]:] if len(starts) > HISTORY else history[:]
 
 
-def turn(url: str, history: list, text: str, tools: bool) -> str:
+#: 도구를 끈 동안 모델이 도구를 부르면 실행하지 않고 하는 말
+PAUSED = "지금은 대화만 하기로 했어요. 다시 움직이려면 이제 움직여도 된다고 말해 주세요."
+
+
+def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) -> str:
+    """allowed가 거짓(아이가 "대화만 하자")이어도 도구 목록은 보내고, 모델이 도구를 부르면
+    실행하지 않고 PAUSED로 대답합니다: 목록을 빼면 모델이 "앞으로 갈게요!"처럼 하지도 않은
+    일을 했다고 말합니다."""
     history.append({"role": "user", "content": text})
     recent = window(history)
     msgs = [{"role": "system", "content": SYSTEM}] + recent
     new_from = len(msgs)
     reply = ask(url, msgs, tools)
+    if not allowed and reply.get("tool_calls"):
+        history.append({"role": "assistant", "content": PAUSED})
+        return PAUSED
     for _ in range(3):                       # 도구 → 결과 → 다시 묻기, 세 번까지
         calls = reply.get("tool_calls") or []
         if not calls:
@@ -191,7 +201,7 @@ def warm_up(url: str, tools: bool) -> None:
 
 
 #: "대화만 하자" 같은 말로 도구를 끄고 켭니다. 모델은 이런 지시를 배운 적이 없어 스스로는
-#: 안 지키므로, 앱이 도구 목록을 보내지 않는 것으로 지킵니다 (끈 동안은 프롬프트도 짧아 빠름)
+#: 안 지키므로 앱이 지킵니다: 끈 동안 부른 도구는 실행하지 않습니다 (turn의 allowed)
 TOOLS_OFF = re.compile(r"대화만|말로만|얘기만|이야기만|움직이지\s*마|도구\s*(는\s*)?(쓰지|사용하지)\s*마")
 TOOLS_ON = re.compile(r"(이제|다시)\s*(움직여|도구)|움직여도\s*(돼|괜찮)|도구\s*(도\s*)?(써|사용)")
 
@@ -228,9 +238,12 @@ def main():
         if not args.no_tools:
             was, use_tools = use_tools, tool_switch(text, use_tools)
             if was != use_tools:
+                # 끈 동안의 "명령 → 말로만 대답"이 기억에 남으면 켠 뒤에도 그걸 따라 해서 도구를
+                # 안 부르므로, 바꿀 때 기억을 비웁니다
+                history.clear()
                 print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
         t = time.time()
-        speak(turn(args.url, history, text, use_tools))
+        speak(turn(args.url, history, text, not args.no_tools, use_tools))
         print(f"  ({time.time() - t:.1f}초)", flush=True)
 
 

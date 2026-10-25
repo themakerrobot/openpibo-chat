@@ -688,3 +688,15 @@ def test_child_can_switch_tools_off_and_on():
     assert tool_switch("이제 움직여도 돼", False) is True
     assert tool_switch("앞으로 가", False) is False      # 끈 동안은 명령도 대화로
     assert tool_switch("앞으로 가", True) is True
+
+
+def test_tools_called_while_paused_are_not_run(monkeypatch):
+    import pibo_chat
+
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: {"content": "", "tool_calls": [
+        {"id": "1", "function": {"name": "set_motion", "arguments": '{"name": "forward1"}'}}]})
+    ran = []
+    monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: ran.append(n) or "완료")
+    history = []
+    assert pibo_chat.turn("x", history, "앞으로 가", True, allowed=False) == pibo_chat.PAUSED
+    assert ran == [] and history[-1] == {"role": "assistant", "content": pibo_chat.PAUSED}
