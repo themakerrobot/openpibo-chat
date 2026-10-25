@@ -652,3 +652,27 @@ def test_check_log_from_other_data_is_not_reused():
     r = {"line": 0, "users": ["공룡 얘기"], "before": ["오래전에 살았어요."], "verdict": "ok"}
     assert matches(r, ["공룡 얘기"], ["오래전에 살았어요."])
     assert not matches(r, ["시험 망했어", "응"], ["힘들겠어요.", "응원할게요."])
+
+
+def test_tool_calls_stay_in_the_remembered_conversation(monkeypatch):
+    import pibo_chat
+
+    replies = iter([
+        {"content": "", "tool_calls": [{"id": "1", "function": {
+            "name": "set_motion", "arguments": '{"name": "forward1"}'}}]},
+        {"content": "앞으로 갔어요."},
+        {"content": "네."}, {"content": "네."}, {"content": "네."},
+    ])
+    sent = []
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs)) or next(replies))
+    monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: "완료")
+    history = []
+    pibo_chat.turn("x", history, "앞으로 가", True)
+    pibo_chat.turn("x", history, "뒤로 가", True)
+    roles = [m["role"] for m in sent[2]]
+    assert roles == ["system", "user", "assistant", "tool", "assistant", "user"]
+    assert sent[2][2]["tool_calls"][0]["function"]["name"] == "set_motion"
+    for text in ("셋", "넷"):
+        pibo_chat.turn("x", history, text, True)
+    assert [m["role"] for m in sent[-1]][:2] == ["system", "user"]     # 짝이 안 잘림
+    assert sum(m["role"] == "user" for m in sent[-1]) == pibo_chat.HISTORY

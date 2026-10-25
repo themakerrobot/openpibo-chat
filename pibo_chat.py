@@ -20,7 +20,7 @@ import urllib.request
 
 from tools import SYSTEM, TOOLS, check_call
 
-HISTORY = 6   # 기억하는 최근 메시지 수: 길수록 파이보에서 느려집니다
+HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함): 길수록 파이보에서 느려집니다
 FAKE = False  # --fake: 로봇 없이 도구를 부른 척만 합니다
 
 
@@ -141,12 +141,18 @@ def ask(url: str, messages: list, tools: bool, max_tokens: int = 150) -> dict:
         return json.loads(r.read())["choices"][0]["message"]
 
 
+def window(history: list) -> list:
+    """최근 HISTORY번의 주고받기. 아이 말에서 끊어 도구 호출과 그 결과가 짝으로 남게 하고,
+    젬마 템플릿처럼 아이 말로 시작해야 하는 경우도 맞춥니다."""
+    starts = [i for i, m in enumerate(history) if m["role"] == "user"]
+    return history[starts[-HISTORY]:] if len(starts) > HISTORY else history[:]
+
+
 def turn(url: str, history: list, text: str, tools: bool) -> str:
     history.append({"role": "user", "content": text})
-    recent = history[-HISTORY:]
-    while recent and recent[0]["role"] != "user":   # 젬마 템플릿은 아이 말로 시작해야 합니다
-        recent = recent[1:]
+    recent = window(history)
     msgs = [{"role": "system", "content": SYSTEM}] + recent
+    new_from = len(msgs)
     reply = ask(url, msgs, tools)
     for _ in range(3):                       # 도구 → 결과 → 다시 묻기, 세 번까지
         calls = reply.get("tool_calls") or []
@@ -167,7 +173,9 @@ def turn(url: str, history: list, text: str, tools: bool) -> str:
             msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
         reply = ask(url, msgs, tools)
     text = (reply.get("content") or "").strip()
-    history.append({"role": "assistant", "content": text})
+    # 도구를 부른 것과 그 결과도 기억합니다: 마지막 말만 남기면 모델이 앞 차례를 "도구 없이
+    # '앞으로 갔어요'라고 말했다"로 보고 따라 해서, 다음 명령에 도구를 안 부르고 말로만 합니다
+    history += msgs[new_from:] + [{"role": "assistant", "content": text}]
     return text
 
 
