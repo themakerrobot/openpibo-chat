@@ -132,6 +132,9 @@ def imatrix(f16: Path, model: Path, data: str) -> Path:
     """양자화할 때 중요한 가중치를 덜 깎도록 학습 데이터로 활성값 크기를 재 둡니다
     (llama-imatrix). 작은 모델의 Q4에서 특히 차이가 납니다."""
     bin_ = LLAMA / "build" / "bin" / "llama-imatrix"
+    if not bin_.exists():
+        raise SystemExit(f"{bin_}이 없어요. 먼저 빌드하세요: "
+                         f"cmake --build {LLAMA / 'build'} -j --target llama-imatrix")
     calib = calibration(model, data, f16.with_suffix(".calib.txt"))
     out = f16.with_suffix(".imatrix.gguf")
     special = "--parse-special" in subprocess.run([str(bin_), "--help"], capture_output=True,

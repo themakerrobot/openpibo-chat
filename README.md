@@ -31,7 +31,7 @@ git clone https://github.com/themakerrobot/openpibo-chat ~/openpibo-chat && cd ~
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 git clone --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp
 pip install ~/llama.cpp/gguf-py && cmake -S ~/llama.cpp -B ~/llama.cpp/build -DGGML_NATIVE=ON \
-  && cmake --build ~/llama.cpp/build -j --target llama-quantize llama-server
+  && cmake --build ~/llama.cpp/build -j --target llama-quantize llama-server llama-imatrix
 python run_all.py            # 끊겨도 다시 돌리면 이어서
 python run_all.py --status   # 진행 상황과 REPORT.md
 python show.py 30            # 만든 데이터 훑어보기
