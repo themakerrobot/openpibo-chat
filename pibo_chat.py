@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -189,6 +190,21 @@ def warm_up(url: str, tools: bool) -> None:
     print(f"  (준비 {time.time() - t:.1f}초)", flush=True)
 
 
+#: "대화만 하자" 같은 말로 도구를 끄고 켭니다. 모델은 이런 지시를 배운 적이 없어 스스로는
+#: 안 지키므로, 앱이 도구 목록을 보내지 않는 것으로 지킵니다 (끈 동안은 프롬프트도 짧아 빠름)
+TOOLS_OFF = re.compile(r"대화만|말로만|얘기만|이야기만|움직이지\s*마|도구\s*(는\s*)?(쓰지|사용하지)\s*마")
+TOOLS_ON = re.compile(r"(이제|다시)\s*(움직여|도구)|움직여도\s*(돼|괜찮)|도구\s*(도\s*)?(써|사용)")
+
+
+def tool_switch(text: str, on: bool) -> bool:
+    """아이 말에 따라 바뀐 도구 사용 여부."""
+    if TOOLS_ON.search(text):
+        return True
+    if TOOLS_OFF.search(text):
+        return False
+    return on
+
+
 def main():
     global FAKE
     p = argparse.ArgumentParser()
@@ -199,6 +215,7 @@ def main():
     FAKE = args.fake
     warm_up(args.url, not args.no_tools)
     history: list = []
+    use_tools = not args.no_tools
     while True:
         try:
             text = listen()
@@ -208,8 +225,12 @@ def main():
             continue
         if text in ("그만", "종료", "quit"):
             break
+        if not args.no_tools:
+            was, use_tools = use_tools, tool_switch(text, use_tools)
+            if was != use_tools:
+                print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
         t = time.time()
-        speak(turn(args.url, history, text, not args.no_tools))
+        speak(turn(args.url, history, text, use_tools))
         print(f"  ({time.time() - t:.1f}초)", flush=True)
 
 

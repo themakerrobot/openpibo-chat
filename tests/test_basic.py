@@ -676,3 +676,15 @@ def test_tool_calls_stay_in_the_remembered_conversation(monkeypatch):
         pibo_chat.turn("x", history, text, True)
     assert [m["role"] for m in sent[-1]][:2] == ["system", "user"]     # 짝이 안 잘림
     assert sum(m["role"] == "user" for m in sent[-1]) == pibo_chat.HISTORY
+
+
+def test_child_can_switch_tools_off_and_on():
+    from pibo_chat import tool_switch
+
+    assert tool_switch("대화만 하자", True) is False
+    assert tool_switch("이제 움직이지 마", True) is False
+    assert tool_switch("도구는 쓰지 마", True) is False
+    assert tool_switch("도구도 써서 하자 이제부터", False) is True
+    assert tool_switch("이제 움직여도 돼", False) is True
+    assert tool_switch("앞으로 가", False) is False      # 끈 동안은 명령도 대화로
+    assert tool_switch("앞으로 가", True) is True
