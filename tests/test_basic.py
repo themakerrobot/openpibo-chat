@@ -686,6 +686,7 @@ def test_child_can_switch_tools_off_and_on():
     assert tool_switch("도구는 쓰지 마", True) is False
     assert tool_switch("도구도 써서 하자 이제부터", False) is True
     assert tool_switch("이제 움직여도 돼", False) is True
+    assert tool_switch("도구 다시 쓰자", False) is True and tool_switch("도구 다시 사용해", False)
     assert tool_switch("앞으로 가", False) is False      # 끈 동안은 명령도 대화로
     assert tool_switch("앞으로 가", True) is True
 
@@ -700,3 +701,34 @@ def test_tools_called_while_paused_are_not_run(monkeypatch):
     history = []
     assert pibo_chat.turn("x", history, "앞으로 가", True, allowed=False) == pibo_chat.PAUSED
     assert ran == [] and history[-1] == {"role": "assistant", "content": pibo_chat.PAUSED}
+
+
+def test_tool_decision_reads_streamed_tool_calls_and_stops_early_on_words(monkeypatch):
+    import io
+    import pibo_chat
+
+    def sse(*deltas):
+        return io.BytesIO("".join(f"data: {json.dumps({'choices': [{'delta': d}]}, ensure_ascii=False)}\n\n"
+                                  for d in deltas).encode() + b"data: [DONE]\n\n")
+
+    calls = sse({"role": "assistant", "content": None},
+                {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "set_motion", "arguments": ""}}]},
+                {"tool_calls": [{"index": 0, "function": {"arguments": '{"name": '}}]},
+                {"tool_calls": [{"index": 0, "function": {"arguments": '"forward1"}'}}]})
+    monkeypatch.setattr(pibo_chat.urllib.request, "urlopen", lambda req, timeout: calls)
+    got = pibo_chat.first_move("http://x", "앞으로 가")
+    assert got == [{"id": "a", "function": {"name": "set_motion", "arguments": '{"name": "forward1"}'}}]
+    words = sse({"content": "공룡"}, {"content": "은"})
+    monkeypatch.setattr(pibo_chat.urllib.request, "urlopen", lambda req, timeout: words)
+    assert pibo_chat.first_move("http://x", "공룡 얘기") is None
+
+
+def test_stop_is_run_without_asking_the_model(monkeypatch):
+    import pibo_chat
+
+    ran = []
+    monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: ran.append((n, a)) or "완료")
+    monkeypatch.setattr(pibo_chat, "ask", lambda *a, **k: pytest.fail("모델에 묻지 않아야 함"))
+    monkeypatch.setattr(pibo_chat, "first_move", lambda *a, **k: pytest.fail("모델에 묻지 않아야 함"))
+    assert pibo_chat.turn("x", [], "멈춰!", True) == "네, 멈출게요."
+    assert ran == [("set_motion", {"name": "stop"})]

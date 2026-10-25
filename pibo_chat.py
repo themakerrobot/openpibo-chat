@@ -151,41 +151,86 @@ def window(history: list) -> list:
 
 #: 도구를 끈 동안 모델이 도구를 부르면 실행하지 않고 하는 말
 PAUSED = "지금은 대화만 하기로 했어요. 다시 움직이려면 이제 움직여도 된다고 말해 주세요."
+#: 멈추라는 말은 모델에 맡기지 않고 바로 멈춥니다 (안전: 작은 모델이 놓치면 안 되는 명령)
+STOP = re.compile(r"멈춰|멈추라|멈춰라|멈춰봐|정지|스톱|그만\s*움직|stop", re.IGNORECASE)
+
+
+def first_move(url: str, text: str) -> list | None:
+    """도구를 부를지는 지난 대화 없이 지금 말 하나로 정합니다: 학습한 도구 예시가 모두 한 번
+    묻고 끝나는 대화라, 지난 대화가 붙으면 "멈춰"에 "멈추고 있어요"처럼 말로만 하고 도구를
+    안 부릅니다. 스트리밍으로 받아 첫 글이 말이면 바로 끊으므로(토큰 한두 개) 시간이 거의 안
+    듭니다. 도구 호출이면 끝까지 받아 돌려주고, 아니면 None."""
+    body = {"messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}],
+            "tools": TOOLS, "temperature": 0, "max_tokens": 120, "stream": True}
+    req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    calls: dict = {}
+    with urllib.request.urlopen(req, timeout=120) as r:
+        for raw in r:
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            choices = json.loads(data).get("choices") or []
+            delta = (choices[0].get("delta") or {}) if choices else {}
+            for tc in delta.get("tool_calls") or []:
+                c = calls.setdefault(tc.get("index", 0),
+                                     {"id": "", "function": {"name": "", "arguments": ""}})
+                c["id"] = tc.get("id") or c["id"]
+                f = tc.get("function") or {}
+                c["function"]["name"] = f.get("name") or c["function"]["name"]   # 이름은 한 번에 옴
+                c["function"]["arguments"] += f.get("arguments") or ""
+            if not calls and (delta.get("content") or "").strip():
+                return None                  # 말로 시작: 연결을 닫으면 서버가 생성을 멈춥니다
+    return [calls[i] for i in sorted(calls)] or None
+
+
+def run_calls(calls: list, msgs: list) -> None:
+    msgs.append({"role": "assistant", "content": "", "tool_calls": calls})
+    for c in calls:
+        f = c["function"]
+        args = f.get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        result = run_tool(f["name"], args)
+        print(f"  [도구] {f['name']}({args}) -> {result}", flush=True)
+        msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
 
 
 def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) -> str:
-    """allowed가 거짓(아이가 "대화만 하자")이어도 도구 목록은 보내고, 모델이 도구를 부르면
-    실행하지 않고 PAUSED로 대답합니다: 목록을 빼면 모델이 "앞으로 갈게요!"처럼 하지도 않은
-    일을 했다고 말합니다."""
+    """allowed가 거짓(아이가 "대화만 하자")이면 모델이 부른 도구를 실행하지 않고 PAUSED로
+    대답합니다 (도구 목록을 빼면 모델이 "앞으로 갈게요!"처럼 하지도 않은 일을 했다고 말함)."""
     history.append({"role": "user", "content": text})
-    recent = window(history)
-    msgs = [{"role": "system", "content": SYSTEM}] + recent
+    if tools and STOP.search(text):
+        run_calls([{"id": "stop", "function": {"name": "set_motion",
+                                               "arguments": '{"name": "stop"}'}}], [])
+        history.append({"role": "assistant", "content": "네, 멈출게요."})
+        return "네, 멈출게요."
+    msgs = [{"role": "system", "content": SYSTEM}] + window(history)
     new_from = len(msgs)
-    reply = ask(url, msgs, tools)
+    calls = None
+    if tools:
+        try:
+            calls = first_move(url, text)
+        except (OSError, ValueError, KeyError):   # 스트리밍 도구 호출을 못 하는 옛 서버
+            calls = None
+    reply = {"content": "", "tool_calls": calls} if calls else ask(url, msgs, tools)
     if not allowed and reply.get("tool_calls"):
         history.append({"role": "assistant", "content": PAUSED})
         return PAUSED
     for _ in range(3):                       # 도구 → 결과 → 다시 묻기, 세 번까지
-        calls = reply.get("tool_calls") or []
-        if not calls:
+        if not reply.get("tool_calls"):
             break
-        msgs.append({"role": "assistant", "content": reply.get("content") or "",
-                     "tool_calls": calls})
-        for c in calls:
-            f = c["function"]
-            args = f.get("arguments") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
-                    args = {}
-            result = run_tool(f["name"], args)
-            print(f"  [도구] {f['name']}({args}) -> {result}", flush=True)
-            msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
+        run_calls(reply["tool_calls"], msgs)
         reply = ask(url, msgs, tools)
     text = (reply.get("content") or "").strip()
     # 도구를 부른 것과 그 결과도 기억합니다: 마지막 말만 남기면 모델이 앞 차례를 "도구 없이
-    # '앞으로 갔어요'라고 말했다"로 보고 따라 해서, 다음 명령에 도구를 안 부르고 말로만 합니다
+    # '앞으로 갔어요'라고 말했다"로 보고 따라 합니다
     history += msgs[new_from:] + [{"role": "assistant", "content": text}]
     return text
 
@@ -202,16 +247,17 @@ def warm_up(url: str, tools: bool) -> None:
 
 #: "대화만 하자" 같은 말로 도구를 끄고 켭니다. 모델은 이런 지시를 배운 적이 없어 스스로는
 #: 안 지키므로 앱이 지킵니다: 끈 동안 부른 도구는 실행하지 않습니다 (turn의 allowed)
-TOOLS_OFF = re.compile(r"대화만|말로만|얘기만|이야기만|움직이지\s*마|도구\s*(는\s*)?(쓰지|사용하지)\s*마")
-TOOLS_ON = re.compile(r"(이제|다시)\s*(움직여|도구)|움직여도\s*(돼|괜찮)|도구\s*(도\s*)?(써|사용)")
+SWITCH_REPLY = {True: "좋아요, 이제 다시 움직일 수 있어요!",
+                False: "좋아요, 지금부터는 대화만 할게요."}
 
 
 def tool_switch(text: str, on: bool) -> bool:
-    """아이 말에 따라 바뀐 도구 사용 여부."""
-    if TOOLS_ON.search(text):
-        return True
-    if TOOLS_OFF.search(text):
+    """아이 말에 따라 바뀐 도구 사용 여부 (띄어쓰기는 보지 않음)."""
+    t = re.sub(r"\s", "", text)
+    if re.search(r"(쓰지|사용하지|움직이지)(마|말)|대화만|말로만|얘기만|이야기만|가만히있", t):
         return False
+    if re.search(r"움직여도|(이제|다시)움직|도구.*(쓰|써|사용)", t):
+        return True
     return on
 
 
@@ -238,10 +284,12 @@ def main():
         if not args.no_tools:
             was, use_tools = use_tools, tool_switch(text, use_tools)
             if was != use_tools:
-                # 끈 동안의 "명령 → 말로만 대답"이 기억에 남으면 켠 뒤에도 그걸 따라 해서 도구를
-                # 안 부르므로, 바꿀 때 기억을 비웁니다
+                # 끄고 켜는 말은 모델에 보내지 않고(보내면 "움직여도 돼"에 춤을 춤) 정해진 말로
+                # 대답하고, 끈 동안의 대화를 따라 하지 않게 기억을 비웁니다
                 history.clear()
                 print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
+                speak(SWITCH_REPLY[use_tools])
+                continue
         t = time.time()
         speak(turn(args.url, history, text, not args.no_tools, use_tools))
         print(f"  ({time.time() - t:.1f}초)", flush=True)
