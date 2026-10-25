@@ -1,6 +1,7 @@
 """파이보에서: llama-server의 모델과 대화하고, 모델이 부른 도구를 openpibo로 실행합니다.
 
-    llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --port 8080 &
+    llama-server -m pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 \
+        -t 4 -ub 256 --port 8080 &
     python3 pibo_chat.py                 # 키보드로 말하기
     python3 pibo_chat.py --no-tools      # 대화만 (도구 목록을 보내지 않아 더 빠름)
     python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 도구는 흉내만

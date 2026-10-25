@@ -36,7 +36,9 @@ QWEN35 = "Qwen/Qwen3.5-0.8B"
 #: 안 쓰는 토큰만 빠져, Q4_K_M이 Qwen3-0.6B 379→약 280MiB, Qwen3.5 505→322MiB.
 #: 줄인 Q4_K_M은 학습 데이터로 imatrix를 재서 양자화합니다 (줄이기는 결과를 거의 안 바꾸므로
 #: 그냥 Q4_K_M과의 차이가 imatrix의 효과).
-SMALL = ["Q4_K_M", "Q6_K"]
+#: 초·중·고 결과(2026-10-25): Qwen3.5 줄인 Q4_K_M이 bf16과 같은 점수(4.83, 도구 96%)라 이것만 만듭니다.
+#: 원래 어휘의 Q4/Q6/Q8과 줄인 Q6는 그때 비교용이었습니다 (results-school/에 점수가 남아 있음).
+SMALL = ["Q4_K_M"]
 IMATRIX = {"Q4_K_M"}
 STUDENTS = [
     # 초·중·고 친구 대화(학년 고르게, 초등 70자·중고 120자, 호기심 질문 15%)를 선생이
@@ -45,14 +47,14 @@ STUDENTS = [
     # kv8: 줄인 Q4_K_M을 KV 캐시 q8_0으로도 채점 (-c 2048에서 KV 캐시 224→119MiB)
     {"name": "qwen3-0.6b-school", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
      "data": ("data/train-school.jsonl", "data-school-clean"),
-     "quants": ["Q4_K_M", "Q6_K", "Q8_0"], "no_kd": True, "set": "school", "small": SMALL,
+     "quants": [], "no_kd": True, "set": "school", "small": SMALL,
      "kv8": True},
     # Qwen3.5-0.8B (2026-03, Apache-2.0): 한국어가 낫고(글자당 2.73비트, Qwen3-0.6B 3.27)
     # 한국어 토큰이 23% 적고 KV 캐시가 작음. 어휘가 커서(24만) 배치는 2×16. 선생(Qwen3)과
     # 토크나이저가 달라 증류는 못 합니다. Q4_K_M은 505MiB로 KV 캐시까지 치면 가장 작음.
     {"name": "qwen3.5-0.8b-school", "base": QWEN35, "lr": 2e-5, "batch": 2, "accum": 16,
      "data": ("data/train-school.jsonl", "data-school-clean"),
-     "quants": ["Q4_K_M", "Q6_K", "Q8_0"], "no_kd": True, "set": "school", "small": SMALL},
+     "quants": [], "no_kd": True, "set": "school", "small": SMALL},
     # 처음 만든 어린이 데이터 (원래 데이터, 도구 예시를 거른 데이터)
     {"name": "qwen3-0.6b", "base": BASE, "lr": 2e-5, "batch": 4, "accum": 8,
      "data": ("data/train.jsonl", "data-train"), "quants": QUANTS},

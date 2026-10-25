@@ -373,11 +373,11 @@ def test_school_students_come_first_on_fact_checked_school_data(tmp_path, monkey
         cmd, needs = steps[f"train-{st}"]
         assert needs == ["data-school-clean"] and "data/train-school.jsonl" in cmd
         assert "--kd" not in cmd and f"train-{st}-kd" not in steps
-        cmd, needs = steps[f"eval-{st}-Q4_K_M"]
+        cmd, needs = steps[f"eval-{st}-small-Q4_K_M"]
         assert cmd[-2:] == ["--set", "school"] and "data-school-heldout" in needs
         # 학교 학생이 어린이 데이터의 남은 단계보다 먼저
         assert names.index(f"train-{st}") < names.index("train-qwen3-0.6b")
-        assert names.index(f"eval-{st}-Q8_0") < names.index("eval-qwen3-0.6b-Q4_K_M")
+        assert names.index(f"eval-{st}-small-Q4_K_M") < names.index("eval-qwen3-0.6b-Q4_K_M")
     assert "Qwen/Qwen3.5-0.8B" in steps["train-qwen3.5-0.8b-school"][0]
     # 원본 모델은 두 묶음 모두에서 (어린이 쪽 단계 이름은 처음 그대로)
     assert "eval-gemma3-1b" in steps and "eval-qwen3.5-0.8b-원본" in steps
@@ -543,8 +543,8 @@ def test_school_students_are_also_built_with_a_smaller_vocab(tmp_path, monkeypat
     assert "gguf-qwen3-0.6b-small-Q4_K_M" not in steps          # 어린이 데이터 모델은 그대로
     cmd = steps["gguf-qwen3-0.6b-school-small-Q4_K_M"][0]
     assert cmd[cmd.index("--imatrix") + 1] == "data/train-school.jsonl"
-    assert "--imatrix" not in steps["gguf-qwen3-0.6b-school-small-Q6_K"][0]
-    assert "--imatrix" not in steps["gguf-qwen3-0.6b-school-Q4_K_M"][0]
+    assert "gguf-qwen3-0.6b-school-small-Q6_K" not in steps   # 줄인 Q4_K_M만 만듭니다
+    assert "gguf-qwen3-0.6b-school-Q4_K_M" not in steps
     cmd, needs = steps["eval-qwen3-0.6b-school-small-Q4_K_M-kv8"]
     assert cmd[cmd.index("--kv") + 1] == "q8_0" and needs[0] == "gguf-qwen3-0.6b-school-small-Q4_K_M"
     assert "eval-qwen3.5-0.8b-school-small-Q4_K_M-kv8" not in steps   # KV 캐시가 원래 작음

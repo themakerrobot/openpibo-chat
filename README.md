@@ -45,16 +45,16 @@ python show.py 30            # 만든 데이터 훑어보기
 openpibo가 없으니 `--fake`로 도구는 부른 척만 합니다.
 
 ```bash
-~/llama.cpp/build/bin/llama-server -m out/pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --port 8080 > /tmp/pibo-llama.log 2>&1 &
+~/llama.cpp/build/bin/llama-server -m out/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf --jinja -c 2048 -np 1 --port 8080 > /tmp/pibo-llama.log 2>&1 &
 .venv/bin/python pibo_chat.py --fake         # 그만 하려면 "그만", 서버는 kill %1
 ```
 
 ## 파이보에서
 
 ```bash
-llama-server -m pibo-qwen3-0.6b-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 --port 8080 &
+llama-server -m pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 -t 4 -ub 256 --port 8080 &
 python3 pibo_chat.py                         # tools.py 와 같은 폴더에서
-bash pi_bench.sh 지금쓰는-gemma.gguf pibo-qwen3-0.6b-Q4_K_M.gguf
+bash pi_bench.sh 지금쓰는-gemma.gguf pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf
 ```
 
 - `--jinja`가 있어야 도구 호출을 알아듣습니다. 도구 목록(약 800토큰)은 처음 한 번만
