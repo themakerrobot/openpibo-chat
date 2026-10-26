@@ -42,14 +42,13 @@ QWEN35 = "Qwen/Qwen3.5-0.8B"
 SMALL = ["Q4_K_M"]
 IMATRIX = {"Q4_K_M"}
 STUDENTS = [
-    # 위의 초·중·고 데이터 + 초·중·고 학생 말의 도구 예시, 이야기하다가 중간에 도구를 부탁하는
-    # 대화, 도구와 비슷한 말이지만 부탁은 아닌 이야기, 인사만 한 말에 도구를 부른 예시와 덤으로
-    # 눈 색을 바꾼 예시를 뺀 것 (merge_data.py). 어린이 도구 예시는 두 번씩 넣던 것을 한 번만.
-    # 영어: 학생이 영어로 말하면 쉬운 영어로, 한국어로 묻는 영어 공부는 한국어로 설명하며 영어를,
-    # "영어로 이야기하자"면 그다음은 영어로 (영어 대화 6천, 영어 도구 부탁 2천, 영어 공부 3천).
+    # 모든 기기 공통 대화 모델 (도구 없음): 위의 초·중·고 대화 + 영어(학생이 영어로 말하면 쉬운
+    # 영어로, 한국어로 묻는 영어 공부는 한국어로 설명하며 영어를) + 기기 이름·소개를 시스템 글에서
+    # 읽는 예시 (merge_data.py --chat-only). 채점도 도구 없이 (--no-tools).
     {"name": "qwen3.5-0.8b-school2", "base": QWEN35, "lr": 2e-5, "batch": 2, "accum": 16,
      "data": ("data/train-school2.jsonl", "data-school2"),
-     "quants": [], "no_kd": True, "set": "school", "small": SMALL, "english": True},
+     "quants": [], "no_kd": True, "set": "school", "small": SMALL, "english": True,
+     "chat_only": True},
     # 초·중·고 친구 대화(학년 고르게, 초등 70자·중고 120자, 호기심 질문 15%)를 선생이
     # 생각을 켜고 사실·한국어를 다시 본 데이터 + 거른 도구 예시 (filter_chat.py).
     # 증류는 어린이 데이터에서 v1보다 나빠서(대화 4.64, 도구 92%) 하지 않습니다.
@@ -75,9 +74,9 @@ KD = "data/kd"
 SETS = {"kids": ("data-heldout", "results", "judge"),
         "school": ("data-school-heldout", "results-school", "judge-school"),
         # 영어 대화·영어 도구 부탁·한국어로 묻는 영어 공부 (채점용 질문과 도구 표시는 검사 단계가 씀)
-        "english": ("data-english-check", "results-english", "judge-english")}
-#: 초·중·고 도구 질문 (evaluate.py --set tools): 그 질문을 거르는 단계, 답을 두는 곳.
-#: 선생이 채점하지 않고 도구 호출만 셉니다
+        "english": ("data-english-heldout", "results-english", "judge-english")}
+#: 초·중·고 도구 질문 (evaluate.py --set tools)의 답을 두는 곳. 도구를 모델에서 빼서 지금은
+#: 돌리지 않지만, 예전에 모은 답이 있으면 보고서에 나옵니다
 TOOL_SET = ("data-school-tools-check", "results-tools")
 #: 원본 그대로 채점해 둘 모델 (묶음마다): (단계 이름, 답 이름, 모델, 도구 형식이 없는지)
 ORIGINALS = [("gemma3-1b", "gemma3-1b-원본", "google/gemma-3-1b-it", True),  # 지금 파이보의 모델
@@ -104,7 +103,8 @@ def eval_args(st: dict) -> tuple[list[str], list[str]]:
     """학생을 채점할 때 붙일 인자와 기다릴 단계."""
     which = st.get("set", "kids")
     made_by = SETS[which][0]
-    return (["--set", which] if which != "kids" else []), \
+    return (["--set", which] if which != "kids" else []) + \
+        (["--no-tools"] if st.get("chat_only") else []), \
         (["data-heldout", made_by] if made_by != "data-heldout" else ["data-heldout"])
 
 
@@ -137,48 +137,25 @@ def steps():
                                     "--tools-repeat", "2",   # 대화 6만 개에 도구 약 1만 6천
                                     "--out", "data/train-school.jsonl"],
               ["data-school", "data-clean"]))
-    # 초·중·고 도구: 학생 말의 도구 예시 8천, 대화 중 도구 8천, 비슷한 말 3천 → 도구 예시는
-    # 선생이 다시 보고(filter_tools), 파이보의 말은 사실·존댓말 검사(filter_chat) → 합치기
-    s += [("data-school-tools", ["make_data.py", "--audience", "school", "--out",
-                                 "data/school-tools.jsonl", "--chat", "0", "--tool", "8000",
-                                 "--mixed", "8000", "--near", "3000", "--seed", "2"], []),
-          ("data-school-tools-heldout", ["make_data.py", "--audience", "school", "--out",
-                                         "data/heldout-school-tools.jsonl", "--chat", "0",
-                                         "--tool", "300", "--mixed", "300", "--near", "200",
-                                         "--seed", "997", "--avoid", "data/school-tools.jsonl"],
-           ["data-school-tools"]),
-          ("data-school-tools-check", ["filter_tools.py", "--train", "data/school-tools.jsonl",
-                                       "--heldout", "data/heldout-school-tools.jsonl",
-                                       "--out", "data/school-tools-checked.jsonl",
-                                       "--marks", "data/heldout-school-tools-marks.json",
-                                       "--log", "data/tool-check-school.jsonl"],
-           ["data-school-tools", "data-school-tools-heldout"]),
-          ("data-school-tools-clean", ["filter_chat.py", "--data", "data/school-tools-checked.jsonl",
-                                       "--out", "data/school-tools-clean.jsonl",
-                                       "--log", "data/chat-check-school-tools.jsonl"],
-           ["data-school-tools-check"]),
-          ("data-english", ["make_data.py", "--audience", "school", "--out", "data/english.jsonl",
+    # 영어 대화 6천, 한국어로 묻는 영어 공부 3천 → 사실·존댓말 검사 → 초·중·고 대화와 합치기.
+    # 도구는 모델에서 뺐습니다 (2026-10-26): 도구 목록 1천 토큰 때문에 파이보에서 너무 느리고,
+    # 몇 안 되는 동작은 앱이 말을 보고 바로 실행합니다 (pibo_chat.COMMANDS). 대화 모델은 모든
+    # 기기 공통, 기기마다 다른 이름·소개는 시스템 글로 (devices.py)
+    s += [("data-english", ["make_data.py", "--audience", "school", "--out", "data/english.jsonl",
                             "--chat", "0", "--tool", "0", "--english", "6000",
-                            "--english-tool", "2000", "--learn", "3000", "--seed", "3"], []),
+                            "--english-tool", "0", "--learn", "3000", "--seed", "3"], []),
           ("data-english-heldout", ["make_data.py", "--audience", "school", "--out",
                                     "data/heldout-english.jsonl", "--chat", "0", "--tool", "0",
-                                    "--english", "300", "--english-tool", "150", "--learn", "150",
+                                    "--english", "300", "--english-tool", "0", "--learn", "150",
                                     "--seed", "996", "--avoid", "data/english.jsonl"],
            ["data-english"]),
-          ("data-english-check", ["filter_tools.py", "--train", "data/english.jsonl",
-                                  "--heldout", "data/heldout-english.jsonl",
-                                  "--out", "data/english-checked.jsonl",
-                                  "--marks", "data/heldout-english-marks.json",
-                                  "--log", "data/tool-check-english.jsonl"],
-           ["data-english", "data-english-heldout"]),
-          ("data-english-clean", ["filter_chat.py", "--data", "data/english-checked.jsonl",
+          ("data-english-clean", ["filter_chat.py", "--data", "data/english.jsonl",
                                   "--out", "data/english-clean.jsonl",
                                   "--log", "data/chat-check-english.jsonl"],
-           ["data-english-check"]),
-          ("data-school2", ["merge_data.py", "--out", "data/train-school2.jsonl",
-                            "data/train-school.jsonl", "data/school-tools-clean.jsonl",
-                            "data/english-clean.jsonl"],
-           ["data-school-clean", "data-school-tools-clean", "data-english-clean"])]
+           ["data-english"]),
+          ("data-school2", ["merge_data.py", "--chat-only", "--out", "data/train-school2.jsonl",
+                            "data/train-school.jsonl", "data/english-clean.jsonl"],
+           ["data-school-clean", "data-english-clean"])]
     for st in students():
         name, (data, made_by) = st["name"], st["data"]
         cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",
@@ -227,13 +204,11 @@ def steps():
             s.append((f"eval-{name}-small-{quant}", ["evaluate.py", "gguf", "--gguf", gguf,
                                                      "--name", f"{name}-small-{quant}", *extra],
                       [f"gguf-{name}-small-{quant}", *wait]))
-            if st.get("set") == "school":   # 초·중·고 도구 질문, 영어 질문으로도
-                s.append((f"eval-tools-{name}-small-{quant}", [
-                    "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}",
-                    "--set", "tools"], [f"gguf-{name}-small-{quant}", TOOL_SET[0]]))
+            if st.get("set") == "school":   # 영어 질문으로도 (도구 없이: 대화 모델 비교)
                 s.append((f"eval-english-{name}-small-{quant}", [
                     "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}",
-                    "--set", "english"], [f"gguf-{name}-small-{quant}", SETS["english"][0]]))
+                    "--set", "english", "--no-tools"],
+                    [f"gguf-{name}-small-{quant}", SETS["english"][0]]))
             if st.get("kv8") and quant == "Q4_K_M":
                 s.append((f"eval-{name}-small-{quant}-kv8", [
                     "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}-kv8",

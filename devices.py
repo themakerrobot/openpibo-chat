@@ -154,7 +154,7 @@ def unavailable(ex: dict, rng: random.Random) -> dict | None:
     return out
 
 
-def identity(rng: random.Random) -> dict:
+def identity(rng: random.Random, tools: bool = True) -> dict:
     """시스템 글의 이름과 소개를 보고 하는 자기소개 (소개에 없는 건 모른다고)."""
     pibo = rng.random() < 0.15
     ko, en = ("파이보", "Pibo") if pibo else rng.choice(NAMES)
@@ -187,13 +187,14 @@ def identity(rng: random.Random) -> dict:
     msgs = [{"role": "system", "content": system_for(ko, about_text)}]
     for q, ans in picked:
         msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": ans}]
-    ex = {"kind": "chat", "tools": rng.random() < 0.5, "identity": True, "messages": msgs}
+    ex = {"kind": "chat", "tools": tools and rng.random() < 0.5, "identity": True, "messages": msgs}
     if ko != "파이보":
         ex["device"] = ko
     return ex
 
 
-def vary(lines: list[str], n_identity: int = 3000, seed: int = 7) -> tuple[list[str], dict]:
+def vary(lines: list[str], n_identity: int = 3000, seed: int = 7,
+         tools: bool = True) -> tuple[list[str], dict]:
     """합친 데이터 → 이름·소개·도구 목록을 바꾼 데이터 (+ 거절, 자기소개 예시), 센 것."""
     out, count = [], {"이름 바꿈": 0, "도구 일부만": 0, "없는 도구 거절": 0, "자기소개": 0}
     for line in lines:
@@ -219,6 +220,6 @@ def vary(lines: list[str], n_identity: int = 3000, seed: int = 7) -> tuple[list[
                 count["없는 도구 거절"] += 1
     rng = random.Random(seed)
     for _ in range(n_identity):
-        out.append(json.dumps(identity(rng), ensure_ascii=False))
+        out.append(json.dumps(identity(rng, tools), ensure_ascii=False))
         count["자기소개"] += 1
     return out, count

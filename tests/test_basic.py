@@ -135,6 +135,7 @@ def test_the_robot_runs_the_tool_then_answers(monkeypatch):
         {"content": "춤췄어요!"},
     ])
     seen = []
+    monkeypatch.setattr(pibo_chat, "MODEL_TOOLS", True)  # --model-tools: 예전 도구 모델
     monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: next(replies))
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: seen.append((n, a)) or "완료")
     history = []
@@ -666,6 +667,7 @@ def test_tool_calls_stay_in_the_remembered_conversation(monkeypatch):
     sent = []
     monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs)) or next(replies))
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: "완료")
+    monkeypatch.setattr(pibo_chat, "MODEL_TOOLS", True)  # --model-tools
     monkeypatch.setattr(pibo_chat, "HISTORY", 3)       # --history 3
     history = []
     pibo_chat.turn("x", history, "앞으로 가", True)
@@ -939,34 +941,27 @@ def test_school_tool_questions_are_counted_by_kind(tmp_path, monkeypatch):
     assert (tmp_path / "rt" / "eval.md").exists()
 
 
-def test_school2_student_learns_merged_data_and_school_students_get_tool_questions(tmp_path,
-                                                                                   monkeypatch):
+def test_school2_is_one_chat_model_for_every_device(tmp_path, monkeypatch):
     import run_all
 
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     names = [n for n, _, _ in run_all.steps()]
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
     assert len(names) == len(steps)
-    cmd, needs = steps["data-school-tools"]
-    assert cmd[cmd.index("--mixed") + 1] == "8000" and cmd[cmd.index("--chat") + 1] == "0"
-    assert "--avoid" in steps["data-school-tools-heldout"][0]
-    assert steps["data-school-tools-clean"][1] == ["data-school-tools-check"]
-    assert "--log" in steps["data-school-tools-clean"][0]    # 학교 대화 검사 기록을 덮지 않게
-    assert "--log" in steps["data-school-tools-check"][0]
+    assert not any("school-tools" in n or n.startswith("eval-tools") for n in names)  # 도구 뺌
     cmd, needs = steps["data-school2"]
-    assert cmd[0] == "merge_data.py" and set(needs) == {"data-school-clean", "data-school-tools-clean",
-                                                    "data-english-clean"}
-    assert "data/english-clean.jsonl" in cmd
+    assert cmd[:2] == ["merge_data.py", "--chat-only"] and "data/english-clean.jsonl" in cmd
+    assert set(needs) == {"data-school-clean", "data-english-clean"}
     cmd, needs = steps["train-qwen3.5-0.8b-school2"]
     assert needs == ["data-school2"] and "data/train-school2.jsonl" in cmd and "Qwen/Qwen3.5-0.8B" in cmd
     assert names.index("data-school2") < names.index("train-qwen3.5-0.8b-school2") \
         < names.index("train-qwen3-0.6b-school")
-    for st in ("qwen3.5-0.8b-school2", "qwen3.5-0.8b-school", "qwen3-0.6b-school"):
-        cmd, needs = steps[f"eval-tools-{st}-small-Q4_K_M"]
-        assert cmd[-2:] == ["--set", "tools"] and "data-school-tools-check" in needs
-        assert f"out/pibo-{st}-small-Q4_K_M.gguf" in cmd
-    assert "eval-tools-qwen3-0.6b-small-Q4_K_M" not in steps   # 어린이 학생은 아님
-    assert not any(n.startswith("judge") and "tools" in n for n in names)
+    # 대화 모델은 도구 없이 채점, 예전 도구 모델은 그대로
+    for step in ("eval-qwen3.5-0.8b-school2-파이보", "eval-qwen3.5-0.8b-school2-small-Q4_K_M",
+                 "eval-english-qwen3.5-0.8b-school2-small-Q4_K_M"):
+        assert "--no-tools" in steps[step][0]
+    assert "--no-tools" not in steps["eval-qwen3.5-0.8b-school-small-Q4_K_M"][0]
+    assert "--no-tools" in steps["eval-english-qwen3.5-0.8b-school-small-Q4_K_M"][0]
 
 
 def test_resume_skips_a_checkpoint_cut_off_while_saving(tmp_path):
@@ -1096,15 +1091,14 @@ def test_english_data_is_made_checked_and_merged_and_every_school_model_is_asked
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
     cmd, _ = steps["data-english"]
-    assert cmd[cmd.index("--english") + 1] == "6000" and "--learn" in cmd
-    assert steps["data-english-clean"][1] == ["data-english-check"]
-    assert "--log" in steps["data-english-check"][0] and "--log" in steps["data-english-clean"][0]
+    assert cmd[cmd.index("--english") + 1] == "6000" and cmd[cmd.index("--english-tool") + 1] == "0"
+    assert steps["data-english-clean"][1] == ["data-english"] and "--log" in steps["data-english-clean"][0]
     for st in ("qwen3.5-0.8b-school2", "qwen3.5-0.8b-school", "qwen3-0.6b-school"):
         cmd, needs = steps[f"eval-english-{st}-small-Q4_K_M"]
-        assert cmd[-2:] == ["--set", "english"] and "data-english-check" in needs
+        assert cmd[-3:] == ["--set", "english", "--no-tools"] and "data-english-heldout" in needs
     cmd, needs = steps["small-qwen3.5-0.8b-school2"]
     assert cmd[cmd.index("--check") + 1:] == ["data/heldout-school.jsonl", "data/heldout-english.jsonl"]
-    cmd, _ = steps["small-qwen3.5-0.8b-school"]   # 영어 채점용 질문은 학습 데이터보다 먼저 생김
+    cmd, _ = steps["small-qwen3.5-0.8b-school"]
     assert cmd[cmd.index("--check") + 1:] == ["data/heldout-school.jsonl"]
     assert "eval-english-gemma3-1b" in steps and "--no-tools" in steps["eval-english-gemma3-1b"][0]
     assert steps["judge-english"][0] == ["evaluate.py", "judge", "--set", "english"]
@@ -1263,3 +1257,65 @@ def test_other_devices_send_their_own_name_and_tools(monkeypatch):
         assert pibo_chat.run_tool("eye_off", {}) == "완료"
     finally:
         pibo_chat.SYSTEM, pibo_chat.TOOLS = SYSTEM, TOOLS
+
+
+
+# ------------------------------------------------------------- 도구 없는 대화 모델
+
+def test_the_app_runs_the_few_motions_itself_and_the_model_only_talks(monkeypatch):
+    import pibo_chat
+
+    sent = []
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append((msgs, tools))
+                        or {"content": "그랬구나, 재미있었겠어요."})
+    monkeypatch.setattr(pibo_chat, "FAKE", True)
+    history = []
+    assert pibo_chat.turn("x", history, "파이보야 춤 좀 춰 봐!", True) == "신나게 춤춰 볼게요!"
+    assert pibo_chat.turn("x", history, "눈 파랗게 해 줘", True) == "눈 색을 바꿨어요!"
+    assert pibo_chat.turn("x", history, "배터리 얼마나 남았어?", True) == "배터리가 80% 남았어요."
+    assert pibo_chat.turn("x", history, "앞에 뭐 있어?", True) == "앞에 컵, 사과가 보여요."
+    assert sent == []                                    # 여기까지 모델을 부르지 않음
+    assert pibo_chat.turn("x", history, "어제 춤 학원 갔어", True) == "그랬구나, 재미있었겠어요."
+    msgs, tools = sent[-1]
+    assert tools is False and msgs[0]["content"] == pibo_chat.SYSTEM   # 도구 목록 없이
+    assert [m["role"] for m in msgs].count("user") == pibo_chat.HISTORY
+    assert pibo_chat.turn("x", history, "춤춰 줘", True, allowed=False) == pibo_chat.PAUSED
+    assert pibo_chat.turn("x", history, "춤춰 줘", False) == "그랬구나, 재미있었겠어요."  # 대화만
+    weather = pibo_chat.turn("x", history, "오늘 부산 날씨 어때?", True)
+    assert weather == "그랬구나, 재미있었겠어요." and "부산 맑음 18도" in sent[-1][0][-1]["content"]
+    for text in ("앞으로 가고 싶은 대학이 있어", "휴대폰 배터리가 얼마 없어", "눈이 빨개졌어 어떻게 해",
+                 "날씨가 좋아", "I like to dance"):
+        assert pibo_chat.command_for(text) is None, text
+
+
+def test_commands_only_use_what_the_device_has(monkeypatch):
+    import pibo_chat
+    from tools import tool_list
+
+    monkeypatch.setattr(pibo_chat, "TOOLS", tool_list(["eye_on", "eye_off"]))
+    assert pibo_chat.command_for("앞으로 가") is None and pibo_chat.command_for("춤춰 줘") is None
+    assert pibo_chat.command_for("눈 꺼 줘")[0] == "eye_off"
+    monkeypatch.setattr(pibo_chat, "TOOLS", tool_list(["set_motion"], ["dance3", "stop"]))
+    assert pibo_chat.command_for("춤춰 줘")[1] == {"name": "dance3"}
+    assert pibo_chat.command_for("앞으로 가") is None
+
+
+def test_chat_only_merge_drops_tool_examples_and_keeps_names(tmp_path):
+    from merge_data import merge
+    from devices import vary
+    from prompts import to_example
+
+    rng = random.Random(0)
+    tool = json.dumps(to_example({"kind": "tool", "fn": "eye_off"}, json.dumps(
+        {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
+         "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
+    chats = [json.dumps(dict(to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": f"파이보야 {k}", "pibo": "저는 파이보예요."}]}, ensure_ascii=False), rng), tools=True),
+        ensure_ascii=False) for k in range(200)]
+    (tmp_path / "a.jsonl").write_text("\n".join([tool, *chats]) + "\n")
+    lines, kept, why = merge([str(tmp_path / "a.jsonl")], only_chat=True)
+    assert why["도구를 부르는 예시 (--chat-only)"] == 1 and len(lines) == 200
+    out, count = vary(lines, n_identity=100, tools=False)
+    exs = [json.loads(x) for x in out]
+    assert not any(e.get("tools") or e.get("tool_names") for e in exs)
+    assert count["이름 바꿈"] > 20 and count["없는 도구 거절"] == 0 and count["자기소개"] == 100

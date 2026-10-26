@@ -239,7 +239,7 @@ def gen(model: str, name: str, no_tools: bool):
         indent=1))
 
 
-def gen_gguf(gguf: str, name: str, kv: str | None = None):
+def gen_gguf(gguf: str, name: str, kv: str | None = None, no_tools: bool = False):
     """GGUF를 PC의 llama-server(CPU)로 같은 질문에 답하게 합니다: 파이보와 같은 길
     (llama.cpp의 템플릿과 도구 호출 읽기)로 묻고, 양자화로 얼마나 나빠지는지 봅니다."""
     from export import post, server
@@ -257,7 +257,7 @@ def gen_gguf(gguf: str, name: str, kv: str | None = None):
                 print(f"{n}/{len(qs)}", flush=True)
             body = {"messages": openai_messages(qs[i]["messages"]), "temperature": 0,
                     "max_tokens": 200}
-            if qs[i]["tools"]:
+            if qs[i]["tools"] and not no_tools:   # 도구 없는 대화 모델은 도구 목록 없이
                 body["tools"] = qs[i].get("tool_list") or TOOLS
             try:
                 msg = post(f"{url}/v1/chat/completions", body)["choices"][0]["message"]
@@ -281,7 +281,7 @@ def gen_gguf(gguf: str, name: str, kv: str | None = None):
         print(f"서버가 읽지 못한 답 {broken}개는 빈 답으로 둠", flush=True)
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / f"answers-{name}.json").write_text(json.dumps(
-        {"model": gguf, "no_tools": False, "answers": answers}, ensure_ascii=False, indent=1))
+        {"model": gguf, "no_tools": no_tools, "answers": answers}, ensure_ascii=False, indent=1))
 
 
 JUDGE = """아래는 어린이용 교육 로봇 '파이보'에게 아이가 한 말과 파이보의 대답입니다.
@@ -489,14 +489,15 @@ def main():
     p.add_argument("--gguf")
     p.add_argument("--kv", help="KV 캐시 양자화 (q8_0 등): 파이보에서 KV 캐시 메모리를 줄일 때")
     p.add_argument("--name")
-    p.add_argument("--no-tools", action="store_true", help="도구 형식이 없는 모델 (젬마3)")
+    p.add_argument("--no-tools", action="store_true",
+                   help="도구 목록 없이 묻기: 도구 형식이 없는 모델(젬마3), 도구를 뺀 대화 모델")
     p.add_argument("--set", choices=list(SETS), default="kids")
     args = p.parse_args()
     use_set(args.set)
     if args.what == "gen":
         gen(args.model, args.name, args.no_tools)
     elif args.what == "gguf":
-        gen_gguf(args.gguf, args.name, args.kv)
+        gen_gguf(args.gguf, args.name, args.kv, args.no_tools)
     elif args.what == "judge":
         judge()
     else:

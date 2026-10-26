@@ -12,6 +12,8 @@
 - 여러 기기에서 쓰게 (devices.py): 일부 예시의 이름을 다른 기기 이름으로, 기기 소개를 시스템 글에,
   도구 목록 일부만 보여 주기, 없는 도구는 말로 거절, 시스템 글을 보고 하는 자기소개 3천 개.
   --no-devices면 하지 않습니다.
+- --chat-only: 도구 없는 대화 모델용. 도구를 부르는 예시(tool, mixed)를 빼고, 남은 예시도 도구
+  목록 없이 학습하게 합니다.
 """
 
 from __future__ import annotations
@@ -61,7 +63,17 @@ def problem(ex: dict) -> str | None:
     return None
 
 
-def merge(paths: list[str]) -> tuple[list[str], Counter, Counter]:
+def chat_only(ex: dict) -> dict | None:
+    """도구 없는 대화 모델용: 도구를 부르는 예시는 None, 나머지는 도구 목록 없이."""
+    if ex["kind"] in ("tool", "mixed") or any(m.get("tool_calls") for m in ex["messages"]):
+        return None
+    ex["tools"] = False
+    for key in ("tool_names", "motions"):
+        ex.pop(key, None)
+    return ex
+
+
+def merge(paths: list[str], only_chat: bool = False) -> tuple[list[str], Counter, Counter]:
     """(합친 줄들, 칸마다 남은 수, 뺀 까닭마다 수)."""
     out, seen, kept, why = [], set(), Counter(), Counter()
     for path in paths:
@@ -76,6 +88,11 @@ def merge(paths: list[str]) -> tuple[list[str], Counter, Counter]:
             if reason := problem(ex):
                 why[reason] += 1
                 continue
+            if only_chat:
+                if chat_only(ex) is None:
+                    why["도구를 부르는 예시 (--chat-only)"] += 1
+                    continue
+                line = json.dumps(ex, ensure_ascii=False)
             kept[slot(ex)] += 1
             out.append(line)
     return out, kept, why
@@ -87,10 +104,12 @@ def main():
     p.add_argument("data", nargs="+")
     p.add_argument("--no-devices", action="store_true",
                    help="이름 바꾸기·기기 소개·도구 일부만 보여 주기를 하지 않음")
+    p.add_argument("--chat-only", action="store_true",
+                   help="도구 없는 대화 모델용: 도구 예시를 빼고 도구 목록 없이")
     args = p.parse_args()
-    lines, kept, why = merge(args.data)
+    lines, kept, why = merge(args.data, args.chat_only)
     if not args.no_devices:
-        lines, count = vary(lines)
+        lines, count = vary(lines, tools=not args.chat_only)
         print("여러 기기용: " + ", ".join(f"{k} {v}" for k, v in count.items()), flush=True)
     Path(args.out).write_text("\n".join(lines) + "\n")
     print(f"{args.out}: {len(lines)}줄 ({', '.join(f'{k} {v}' for k, v in sorted(kept.items()))})",
