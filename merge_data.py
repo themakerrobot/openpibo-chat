@@ -86,6 +86,11 @@ def main():
     firsts = Counter(first_sentence(m["content"]) for line in lines
                      for m in json.loads(line)["messages"]
                      if m["role"] == "assistant" and m.get("content"))
+    topics = Counter(json.loads(line).get("topic") for line in lines)
+    unknown = topics.pop(None, 0)
+    print(f"주제 {len(topics)}가지 (주제를 적지 않은 예전 대화 {unknown}개): " + ", ".join(
+        f"{t} {n}" for t, n in topics.most_common(15)) + (" …" if len(topics) > 15 else ""),
+        flush=True)
     print("가장 흔한 첫 문장: " + " / ".join(f"{t} ({n})" for t, n in firsts.most_common(10)),
           flush=True)
     if not args.no_devices:

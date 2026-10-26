@@ -3,7 +3,8 @@
     python run_all.py            # 다시 돌리면 끝난 단계는 건너뛰고 이어서
     python run_all.py --status
 
-결과: out/themaker-0.8b-Q4_K_M.gguf (모든 기기 공통 대화 모델, 도구 없음).
+결과: out/themaker-0.8b-Q4_K_M.gguf (모든 기기 공통 대화 모델, 도구 없음)과 채점표
+results/score.md (예전 모델과 나란히).
 단계마다 로그는 logs/<단계>.log, 끝나면 state/<단계>.done. 로그가 --stall 초 동안 멈추면
 그 단계를 멈추고 다시 합니다 (네 번까지). 실패한 단계가 있어도 다음 단계로 가고(필요한
 단계가 끝나지 않았으면 건너뜀), REPORT.md는 단계마다 새로 씁니다.
@@ -29,6 +30,8 @@ BASE = "Qwen/Qwen3.5-0.8B"   # 2026-03, Apache-2.0
 NAME = "themaker-0.8b"
 DATA = "data/train-themaker.jsonl"
 GGUF = f"out/{NAME}-Q4_K_M.gguf"
+#: 견줄 예전 모델 (지금 파이보에 올린 것)
+BEFORE = "baseline/before-Q4_K_M.gguf"
 
 
 def steps():
@@ -64,6 +67,15 @@ def steps():
         # 학습 데이터로 imatrix를 재서 Q4_K_M
         ("gguf", ["export.py", "--model", f"{run}/small", "--name", NAME, "--quant", "Q4_K_M",
                   "--imatrix", DATA], ["small"]),
+        # 채점: 학습에 안 쓴 질문(첫마디 400, 이어지는 대화 200)으로 최종 모델과 예전 모델
+        # (baseline/before-Q4_K_M.gguf, 없으면 건너뜀)을 같은 설정으로 묻고 선생이 매김
+        ("data-lead-heldout", ["make_data.py", "--out", "data/heldout-lead.jsonl", "--lead", "200",
+                               "--seed", "997", "--avoid", "data/lead.jsonl"], ["data-lead"]),
+        ("score-before", ["score.py", "answer", "--gguf", BEFORE, "--name", "before"],
+         ["data-lead-heldout"]),
+        ("score-themaker", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker"],
+         ["gguf", "data-lead-heldout"]),
+        ("score-judge", ["score.py", "judge"], ["score-before", "score-themaker"]),
     ]
 
 
@@ -206,6 +218,9 @@ def report():
         lines.append(f"- {name}: {mark}")
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
+    score = HERE / "results" / "score.md"
+    if score.exists():
+        lines += ["", "## 채점 (results/score.md)", "", score.read_text()]
     check = HERE / GGUF.replace(".gguf", "-check.json")
     if check.exists():
         d = json.loads(check.read_text())

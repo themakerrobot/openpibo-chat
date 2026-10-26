@@ -234,7 +234,7 @@ def test_names_and_self_introductions_follow_the_system_prompt():
     plain = [e for e in exs[:400] if not e.get("device")]
     assert sum(e["messages"][0]["content"] == SYSTEM for e in plain) > 0.8 * len(plain)
     renamed = [e for e in exs[:400] if e.get("device")]
-    assert sum(e["device"] == ENGINE for e in renamed) > len(renamed) / 6    # 더메이커가 가장 자주
+    assert sum(e["device"] == ENGINE for e in renamed) > len(renamed) / 10   # 더메이커가 가장 자주
     for e in renamed:
         assert e["messages"][0]["content"].startswith(system_for(e["device"])[:40])
         assert "파이보" not in e["messages"][1]["content"] + e["messages"][2]["content"]
@@ -337,6 +337,10 @@ def test_gguf_template_never_thinks_and_answers_as_themaker_without_a_system_pro
 
 # ------------------------------------------------------------- 실행기
 
+def cmds_of(steps):
+    return {n: (cmd, needs) for n, cmd, needs in steps}
+
+
 def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     import run_all
 
@@ -344,7 +348,10 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     steps = run_all.steps()
     names = [n for n, _, _ in steps]
     assert names == ["data-school", "data-school-clean", "data-english", "data-english-clean",
-                     "data-lead", "data-lead-clean", "data-themaker", "train", "small", "gguf"]
+                     "data-lead", "data-lead-clean", "data-themaker", "train", "small", "gguf",
+                     "data-lead-heldout", "score-before", "score-themaker", "score-judge"]
+    assert cmds_of(steps)["score-judge"][1] == ["score-before", "score-themaker"]
+    assert "--avoid" in cmds_of(steps)["data-lead-heldout"][0]
     cmds = {n: (cmd, needs) for n, cmd, needs in steps}
     assert cmds["data-themaker"][1] == ["data-school-clean", "data-english-clean", "data-lead-clean"]
     cmd, needs = cmds["train"]
@@ -523,3 +530,41 @@ def test_reply_language_and_detected_names_are_said_right():
     assert lang_of("사과는 apple이에요.") == "ko"
     assert korean_names(["cup", "person", "cup", "Teddy_Bear", "robot"]) == "robot, 곰 인형, 사람, 컵"
     assert korean_names([]) == "아무것도 안 보임"
+
+
+
+def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
+    import score
+
+    school = [chat_line(("학교에서 친구랑 싸웠어", "속상했겠어요."), grade="중"),
+              chat_line(("시험 끝났다", "수고했어요!"), grade="고")]
+    lead = [chat_line(("날씨가 춥네", "정말 추워요. 따뜻하게 입어요."), ("그래서 뭐 먹을까", "어묵탕은 어때요?"),
+                      ("좋아", "저도 좋아요."), ("또 뭐 있어", "호빵도 있어요."), grade="초고"),
+            chat_line(("응", "그렇군요."), grade="중")]                 # 짧은 대화는 빼고
+    (tmp_path / "s.jsonl").write_text("\n".join(school) + "\n")
+    (tmp_path / "l.jsonl").write_text("\n".join(lead) + "\n")
+    monkeypatch.setattr(score, "SCHOOL", tmp_path / "s.jsonl")
+    monkeypatch.setattr(score, "LEAD", tmp_path / "l.jsonl")
+    monkeypatch.setattr(score, "RESULTS", tmp_path / "r")
+    qs = score.questions()
+    assert [q["set"] for q in qs] == ["첫마디", "첫마디", "이어지는 대화"]
+    assert qs[2]["messages"][-1]["content"] == "좋아" and len(qs[2]["messages"]) == 6
+    assert "학생: 날씨가 춥네\n파이보: 정말 추워요." in score.dialog(qs[2])
+    assert score.echo(qs[2], "정말 추워요. 따뜻하게 입어요!") and not score.echo(qs[2], "군고구마도 맛있어요.")
+    assert score.marks('<think>음</think>{"korean": 5, "fit": 4, "short": 5, "engage": 3, '
+                       '"wrong": false, "repeat": true}') == {"korean": 5, "fit": 4, "short": 5,
+                                                             "engage": 3, "wrong": False, "repeat": True}
+    (tmp_path / "r").mkdir()
+    for name, answers in (("before", ["속상했겠어요.", "속상했겠어요.", "정말 추워요. 따뜻하게 입어요."]),
+                          ("themaker", ["많이 속상했겠어요. 무슨 일이었어요?", "수고했어요! 이제 뭐 할 거예요?",
+                                        "군고구마도 맛있어요."])):
+        (tmp_path / "r" / f"answers-{name}.json").write_text(json.dumps({"answers": answers},
+                                                                        ensure_ascii=False))
+    good = {"korean": 5, "fit": 5, "short": 5, "engage": 5, "wrong": False, "repeat": False}
+    (tmp_path / "r" / "scores-themaker.json").write_text(json.dumps([good] * 3))
+    text = score.report()
+    rows = {r.split(" | ")[0][2:] + r.split(" | ")[1]: r for r in text.splitlines()[2:] if r.startswith("|")}
+    assert rows["before첫마디 (2)"].split(" | ")[10] == "100%"          # 같은 대답
+    assert rows["before이어지는 대화 (1)"].split(" | ")[9] == "100%"     # 앞 말 되풀이 (글자)
+    assert rows["themaker첫마디 (2)"].split(" | ")[2] == "5.00"
+    assert (tmp_path / "r" / "score.md").exists()

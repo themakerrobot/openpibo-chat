@@ -6,7 +6,9 @@
   이름으로 (tools.system_for). 조사(가/이, 는/은, 예요/이에요 …)도 받침에 맞게 바꿉니다.
 - 기기 소개: 시스템 글 끝에 "{이름}에 대해: …"를 붙인 대화와, 그걸 보고 대답하는 자기소개
   ("너 누구야?" → "저는 코딩 로봇 파이브레인이에요"). 소개에 없는 것은 모른다고 합니다.
-- 공통: 만든 곳은 서큘러스, "무슨 AI야?"에는 어느 기기에서든 더메이커 인공지능이라고.
+- 공통: 만든 곳은 서큘러스, "무슨 AI야?"에는 어느 기기에서든 더메이커 인공지능이라고,
+  나이는 "마음은 열네 살 친구" (tools.SYSTEM의 성격과 같게).
+- 시스템 글은 모든 대화에서 지금 것(tools.system_for)으로 맞춥니다.
 
 파이보 그대로인 대화가 대부분이라, 시스템 글을 바꾸지 않는 파이보에서는 전과 같습니다.
 """
@@ -99,6 +101,7 @@ def identity(rng: random.Random) -> dict:
     """시스템 글의 이름과 소개를 보고 하는 자기소개 (소개에 없는 건 모른다고)."""
     pick = rng.random()
     ko, en = ("파이보", "Pibo") if pick < 0.15 else rng.choice(NAMES)
+    age = ("너 몇 살이야?", "로봇이라 진짜 나이는 없지만, 마음은 열네 살 친구 같아요.")
     has_about = rng.random() < 0.8 and ko != ENGINE
     if ko == "파이보":
         about_text, a = (PIBO_ABOUT if has_about else None), None
@@ -115,6 +118,7 @@ def identity(rng: random.Random) -> dict:
            engine if ko == ENGINE else f"저는 {ko}{ieyo(ko)}. {engine}")]
     other = rng.choice([n for n, _ in NAMES if n != ko] + ["파이보"] * (ko != "파이보"))
     qa.append((f"너 {other}{'이야' if has_batchim(other) else '야'}?", f"아니요, 저는 {ko}{ieyo(ko)}."))
+    qa.append(age)
     if a:
         qa += [(rng.choice(["너 뭐 할 수 있어?", "무슨 기능 있어?"]),
                 f"저는 {', '.join(a['cans'])} 같은 걸 할 수 있어요."),
@@ -146,11 +150,13 @@ def vary(lines: list[str], n_identity: int = 3000, seed: int = 7) -> tuple[list[
             about = fake_about(rng)[0] if rng.random() < ABOUT_SHARE and ko != ENGINE else None
             ex = rename(ex, ko, en, about)
             count["이름 바꿈"] += 1
-        elif rng.random() < PIBO_ABOUT_SHARE:
+        else:
+            # 시스템 글은 모두 지금 것으로 (데이터를 만든 뒤 시스템 글을 바꿨어도 앱과 같게)
+            about = PIBO_ABOUT if rng.random() < PIBO_ABOUT_SHARE else None
             for m in ex["messages"]:
                 if m["role"] == "system":
-                    m["content"] = system_for("파이보", PIBO_ABOUT)
-            count["파이보 소개"] += 1
+                    m["content"] = system_for("파이보", about)
+            count["파이보 소개"] += bool(about)
         out.append(json.dumps(ex, ensure_ascii=False))
     rng = random.Random(seed)
     for _ in range(n_identity):

@@ -2,6 +2,7 @@
 
     python show.py                                 # 최종 학습 데이터에서 무작위 20개
     python show.py 20 lead data/lead-clean.jsonl   # 대화 이어 가기만 (다른 파일에서)
+    python show.py 300 all data/train-school.jsonl > ~/sample.txt   # 파일로
 
 종류: chat(친구 대화), lead(대화 이어 가기), en(영어 대화), learn(영어 공부), all
 """
@@ -21,7 +22,8 @@ rows = [r for r in rows if kind is None or slot(r) == kind]
 for r in random.sample(rows, min(n, len(rows))):
     grade = f" {r['grade']}" if r.get("grade") else ""
     device = f" ({r['device']})" if r.get("device") else ""
-    print(f"--- {slot(r)}{grade}{device}")
+    topic = f" [{r['topic']}]" if r.get("topic") else ""
+    print(f"--- {slot(r)}{grade}{device}{topic}")
     for m in r["messages"]:
         if m["role"] == "user":
             print(f"학생:   {m['content']}")
