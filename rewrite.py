@@ -9,8 +9,8 @@
 2. 검사 (prompts.CHECK, 생각 켬): 자연스러움·알맞음·친구 말투가 4점 미만이거나, 어른 이야기·
    저급한 말, 지어낸 사람 경험, 틀린 사실, 안전 문제가 있으면 뺍니다. 고치지 않고 뺍니다.
 
-판단은 --log(기본 data/rewrite-log.jsonl)에 대화 id마다 남기고, 다시 돌리면 이미 한 것은
-건너뜁니다. --limit으로 해 본 것도 같은 기록을 쓰므로 나중에 전체를 돌릴 때 다시 하지 않습니다.
+판단과 선생의 답 원문은 --log(기본 data/rewrite-log.jsonl)에 대화 id마다 남기고, 다시 돌리면 이미
+한 것은 건너뜁니다. 글자 검사 규칙을 고치면 남은 원문으로 다시 판단합니다 (선생에게 다시 묻지 않음). --limit으로 해 본 것도 같은 기록을 쓰므로 나중에 전체를 돌릴 때 다시 하지 않습니다.
 원본: data/source.jsonl, 한 줄에 {"id", "source", "topic", "turns": [{"user", "other"}]}.
 원본, 기록, 결과는 PC 밖으로 내보내지 않습니다.
 """
@@ -35,9 +35,15 @@ def key_of(src: dict) -> str:
     return hashlib.md5(json.dumps(src["turns"], ensure_ascii=False).encode()).hexdigest()[:12]
 
 
+def turns_key(turns) -> str:
+    return hashlib.md5(json.dumps(turns, ensure_ascii=False).encode()).hexdigest()[:12]
+
+
 def load_log(path: Path, sources: list[dict]) -> dict[tuple[str, str], dict]:
-    """{(id, "rewrite"|"check"): 기록}. 원본이 바뀐 기록은 버립니다."""
-    keys = {s["id"]: key_of(s) for s in sources}
+    """{(id, "rewrite"|"check"): 기록}. 원본이 바뀐 기록은 버립니다. 선생의 답 원문(raw)이 남아
+    있으면 지금 규칙으로 다시 판단합니다: 규칙을 고쳐도 선생에게 다시 묻지 않습니다. 바꿔 쓴
+    대화가 달라졌으면 그 검사는 다시 합니다."""
+    by_id = {s["id"]: s for s in sources}
     done = {}
     if path.exists():
         for row in path.read_text().splitlines():
@@ -45,8 +51,20 @@ def load_log(path: Path, sources: list[dict]) -> dict[tuple[str, str], dict]:
                 r = json.loads(row)
             except json.JSONDecodeError:      # 쓰다가 끊긴 마지막 줄: 그 대화는 다시 합니다
                 continue
-            if keys.get(r.get("id")) == r.get("key"):
+            src = by_id.get(r.get("id"))
+            if src is not None and key_of(src) == r.get("key"):
                 done[r["id"], r["stage"]] = r
+    for (i, stage), r in list(done.items()):
+        if stage == "rewrite" and "raw" in r:
+            r["turns"], r["why"] = decide_rewrite(r["raw"], by_id[i])
+    for (i, stage), r in list(done.items()):
+        if stage != "check":
+            continue
+        rw = done.get((i, "rewrite"))
+        if rw is None or not rw.get("turns") or ("for" in r and r["for"] != turns_key(rw["turns"])):
+            del done[i, stage]
+        elif "raw" in r:
+            r["marks"], r["why"] = decide_check(r["raw"])
     return done
 
 
@@ -72,7 +90,10 @@ def run(llm_ask, sources: list[dict], log_path: Path,
                 timing[stage] = [n + len(part), sec + time.time() - t]
             with log_path.open("a") as log:
                 for s, text in zip(part, answers, strict=True):
-                    r = {"id": s["id"], "key": key_of(s), "stage": stage, **decide(s, text)}
+                    r = {"id": s["id"], "key": key_of(s), "stage": stage, "raw": text,
+                         **decide(s, text)}
+                    if stage == "check":
+                        r["for"] = turns_key(done[s["id"], "rewrite"]["turns"])
                     done[s["id"], stage] = r
                     log.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"{stage} {start + len(part)}/{len(todo)}", flush=True)

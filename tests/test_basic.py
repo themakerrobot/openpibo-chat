@@ -64,10 +64,14 @@ def test_rewritten_pibo_words_are_checked_letter_by_letter():
     turns, why = decide_rewrite("<think>음</think>" + good, SRC)
     assert why is None and len(turns) == 2
     assert decide_rewrite(rewritten((u1, "다쳤어요?")), SRC)[0] is not None          # 앞만 남겨도 됨
+    longer = decide_rewrite(rewritten((u1, "괜찮아요?"), (u2, "다행이에요."), ("또", "네.")), SRC)[0]
+    assert [t["user"] for t in longer] == [u1, u2]                               # 넘친 뒤쪽은 버림
+    typo = decide_rewrite(rewritten(("우리 강아지가 오늘 산책하다 넘어졌어", "괜찮아요?")), SRC)[0]
+    assert typo is not None                                                    # 조금 다듬은 건 괜찮음
     cases = {
-        '{"ok": false, "why": "어른 이야기"}': "학생 대화가 아님: 어른 이야기",
+        '{"ok": false, "why": "어른 이야기"}': "학생 대화가 아님",
         "글": "선생의 답을 못 읽음",
-        rewritten((u1, "괜찮아요?"), (u2, "다행이에요."), ("또", "네.")): "주고받기 수가 맞지 않음",
+        '{"ok": true, "turns": []}': "주고받기 수가 맞지 않음",
         rewritten(("오늘 학교에서 시험을 봤어요", "어땠어요?")): "학생 말을 바꿔 씀",
         rewritten((u1, "괜찮아요? 뻄ๆ 놀랐겠어요.")): "파이보 말에 다른 글자 'ๆ'",
         rewritten((u1, "너의 강아지가 걱정돼요.")): "파이보 말에 반말",
@@ -77,7 +81,8 @@ def test_rewritten_pibo_words_are_checked_letter_by_letter():
         rewritten((u1, "괜찮아요?"), (u2, "괜찮아요?")): "같은 대화에서 같은 말",
     }
     for answer, reason in cases.items():
-        assert decide_rewrite(answer, SRC) == (None, reason), answer
+        turns, why = decide_rewrite(answer, SRC)
+        assert turns is None and why.split(":")[0] == reason, (answer, why)    # 뒤에는 무엇이었는지
 
 
 def test_check_keeps_only_natural_friendly_safe_talk():
@@ -129,6 +134,16 @@ def test_rewrite_runs_both_stages_keeps_the_good_ones_and_resumes(tmp_path):
         raise AssertionError("이미 한 것은 다시 묻지 않음")
 
     assert rewrite.results(sources, rewrite.run(boom, sources, log))[0] == kept
+    import prompts
+    rows = [json.loads(x) for x in log.read_text().splitlines()]
+    assert all("raw" in r for r in rows) and any("for" in r for r in rows)
+    saved = prompts.USER_ALIKE
+    try:                                                     # 규칙을 고치면 원문으로 다시 판단
+        prompts.USER_ALIKE = 1.01
+        again = rewrite.results(sources, rewrite.run(boom, sources, log))
+        assert again[0] == [] and again[2]["학생 말을 바꿔 씀"] == 1
+    finally:
+        prompts.USER_ALIKE = saved
     changed = dict(SRC, turns=[SRC["turns"][0], dict(SRC["turns"][1], other="다행이다")])  # 원본이 바뀌면 다시
     asked.clear()
     rewrite.run(fake, [changed, bad], log)

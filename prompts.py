@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 from teacher import first_json
 from tools import SYSTEM
@@ -151,6 +152,15 @@ def overlap(a: str, b: str) -> float:
     return len(ga & grams(b)) / len(ga) if ga else 0.0
 
 
+#: 학생 말이 원본과 이만큼은 같아야 함 (오타·가림 표시를 고친 것은 남게, 문장을 바꾼 것은 빠지게)
+USER_ALIKE = 0.6
+
+
+def alike(a: str, b: str) -> float:
+    """두 말이 글자로 얼마나 같은지 (0~1, 띄어쓰기·문장부호 무시)."""
+    return SequenceMatcher(None, same(a), same(b)).ratio()
+
+
 def decide_rewrite(text: str, src: dict) -> tuple[list[dict] | None, str | None]:
     """선생이 바꿔 쓴 답 → (주고받기들, None) 또는 (None, 뺀 까닭)."""
     d = first_json(text)
@@ -159,17 +169,18 @@ def decide_rewrite(text: str, src: dict) -> tuple[list[dict] | None, str | None]
     if not d["ok"]:
         return None, "학생 대화가 아님: " + str(d.get("why") or "")[:40]
     turns = d.get("turns")
-    if not isinstance(turns, list) or not turns or len(turns) > len(src["turns"]):
+    if not isinstance(turns, list) or not turns:
         return None, "주고받기 수가 맞지 않음"
     out = []
+    # 원본보다 많이 쓴 뒤쪽은 버림 (앞쪽은 학생 말이 원본과 차례대로 맞는지 아래에서 봄)
     for t, s in zip(turns, src["turns"], strict=False):
         if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
             return None, "학생 말 없음"
         user, pibo = t["user"].strip(), t.get("pibo")
-        if overlap(s["user"], user) < 0.4 and same(s["user"]) != same(user):
-            return None, "학생 말을 바꿔 씀"
+        if alike(s["user"], user) < USER_ALIKE:
+            return None, f"학생 말을 바꿔 씀: {s['user'][:30]} → {user[:30]}"
         if why := pibo_problem(pibo):
-            return None, why
+            return None, f"{why}: {str(pibo)[:40]}"
         pibo = pibo.strip()
         if len(same(user)) >= 8 and overlap(pibo, user) > 0.6:
             return None, "학생 말을 되받아 읊음"
