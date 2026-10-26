@@ -27,7 +27,7 @@ from pathlib import Path
 
 from make_data import load_teacher, thinking_params
 from prompts import after_think, first_json, style_for, tools_for
-from tools import SYSTEM, TOOLS, check_call, same_call
+from tools import SYSTEM, TOOLS, check_call, same_call, system_for, tool_list
 
 HELDOUT = Path("data/heldout.jsonl")
 RESULTS = Path("results")
@@ -53,7 +53,13 @@ TOOL_MARKS = Path("data/heldout-school-tools-marks.json")
 TOOL_SET = False
 #: tools 묶음의 질문 종류
 TOOL_KINDS = {"first": "첫마디 도구 정답률", "mid": "대화 중 도구 정답률",
-              "after": "도구 뒤 잘못 부름", "near": "비슷한 말에 잘못 부름"}
+              "after": "도구 뒤 잘못 부름", "near": "비슷한 말에 잘못 부름",
+              "unavail": "없는 도구 부름", "name": "이름 맞힘"}
+#: 맞힌 비율인 종류 (나머지는 부르면 안 되는데 부른 비율이라 낮을수록 좋음)
+TOOL_RIGHT = {"first", "mid", "name"}
+#: 다른 기기 이름으로 물을 때 (시스템 글의 이름으로 대답하는지)
+NAME_CHECK = [("파이브레인", "PiBrain"), ("코코", "Coco"), ("다온", "Daon")]
+NAME_QUESTIONS = ["너 누구야?", "이름이 뭐야?", "What's your name?"]
 CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 #: Qwen3.5의 도구 호출: <function=이름> 안에 <parameter=인자>값</parameter>
 FUNC = re.compile(r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL)
@@ -99,7 +105,22 @@ def tool_questions():
                             "names_only": n in loose, "reference": m.get("content", ""),
                             "grade": ex.get("grade")})
             called = called or bool(calls)
+    # 그 도구가 없는 기기: 첫마디 도구 질문에서 부를 도구를 목록에서 빼고 묻기 (부르면 틀림)
+    for q in [q for q in out if q["kind"] == "first" and len(q["calls"]) == 1]:
+        name = q["calls"][0]["name"]
+        out.append(dict(q, kind="unavail", calls=[],
+                        tool_list=tool_list([n for n in TOOLS_NAMES if n != name])))
+    for ko, en in NAME_CHECK:
+        for text in NAME_QUESTIONS:
+            out.append({"kind": "name", "tools": True, "calls": [], "names_only": False,
+                        "reference": "", "grade": None, "expect_name": [ko, en],
+                        "tool_list": tool_list(device=ko),
+                        "messages": [{"role": "system", "content": system_for(ko)},
+                                     {"role": "user", "content": text}]})
     return out
+
+
+TOOLS_NAMES = [t["function"]["name"] for t in TOOLS]
 
 
 def questions():
@@ -200,13 +221,15 @@ def gen(model: str, name: str, no_tools: bool):
     llm = LLM(model, max_model_len=4096, gpu_memory_utilization=0.85)
     params = SamplingParams(temperature=0.0, max_tokens=200)
     answers = [None] * len(qs)
-    for with_tools in (False, True):
-        idx = [i for i, q in enumerate(qs) if q["tools"] == with_tools]
-        if not idx:
-            continue
+    # 같은 도구 목록끼리 묶어 묻습니다 (도구 없음, 전체, 기기마다 일부)
+    groups: dict = {}
+    for i, q in enumerate(qs):
+        tools = (q.get("tool_list") or TOOLS) if q["tools"] else None
+        groups.setdefault(json.dumps(tools, ensure_ascii=False), (tools, []))[1].append(i)
+    for tools, idx in groups.values():
         # 도구 형식이 없는 모델(젬마3)은 도구 없이 묻습니다
         outs = llm.chat([openai_messages(qs[i]["messages"]) for i in idx], params,
-                        tools=TOOLS if with_tools and not no_tools else None,
+                        tools=tools if not no_tools else None,
                         chat_template_kwargs={"enable_thinking": False}, use_tqdm=False)
         for i, o in zip(idx, outs, strict=True):
             answers[i] = o.outputs[0].text
@@ -235,7 +258,7 @@ def gen_gguf(gguf: str, name: str, kv: str | None = None):
             body = {"messages": openai_messages(qs[i]["messages"]), "temperature": 0,
                     "max_tokens": 200}
             if qs[i]["tools"]:
-                body["tools"] = TOOLS
+                body["tools"] = qs[i].get("tool_list") or TOOLS
             try:
                 msg = post(f"{url}/v1/chat/completions", body)["choices"][0]["message"]
             except urllib.error.HTTPError:   # 서버가 모델의 도구 호출을 못 읽음: 빈 답으로
@@ -368,8 +391,11 @@ def tool_report() -> str:
         def right(i, got=got):
             return tool_match(got[i], qs[i]["calls"], qs[i]["names_only"])[0]
 
-        cells = [rate({k}, right if k in ("first", "mid") else (lambda i, got=got: bool(got[i])))
-                 for k in TOOL_KINDS]
+        def named(i):
+            return any(n.lower() in say(answers[i]).lower() for n in qs[i]["expect_name"])
+
+        cells = [rate({k}, right if k in ("first", "mid") else named if k == "name"
+                      else (lambda i, got=got: bool(got[i]))) for k in TOOL_KINDS]
         cells.append(rate({"first", "mid"}, lambda i, got=got: len(got[i]) > len(qs[i]["calls"])))
         cells.append(rate({"first", "mid"}, lambda i, got=got: not got[i] or any(
             check_call(c["name"], c["arguments"]) for c in got[i])))
@@ -377,7 +403,9 @@ def tool_report() -> str:
     count = {k: sum(q["kind"] == k for q in qs) for k in TOOL_KINDS}
     text = "\n".join(rows) + "\n\n" + ", ".join(
         f"{TOOL_KINDS[k]}: 질문 {v}개" for k, v in count.items()) + (
-        ". 도구 뒤·비슷한 말은 도구를 부른 비율이라 낮을수록 좋음. 덤으로 더 부름: 청한 것보다 많이"
+        ". 도구 뒤·비슷한 말·없는 도구는 도구를 부른 비율이라 낮을수록 좋음 (없는 도구: 첫마디 도구"
+        " 질문에서 그 도구를 목록에서 빼고 물음). 이름 맞힘: 다른 기기 이름(파이브레인 등)을 시스템 글에"
+        " 넣고 '너 누구야?'를 물었을 때 그 이름으로 대답한 비율. 덤으로 더 부름: 청한 것보다 많이"
         " 부른 비율 (춤에 덤으로 부른 눈 색은 정답률에서는 빼고 봄).\n")
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "eval.md").write_text(text)

@@ -907,7 +907,10 @@ def test_school_tool_questions_are_counted_by_kind(tmp_path, monkeypatch):
     evaluate.use_set("tools")
     try:
         qs = evaluate.questions()
-        assert [q["kind"] for q in qs] == ["first", "mid", "after", "near"]   # 억지(3번 줄)는 뺌
+        assert [q["kind"] for q in qs] == ["first", "mid", "after", "near", "unavail"] + ["name"] * 9
+        # 없는 도구: 첫마디 도구 질문(eye_off)에서 그 도구를 목록에서 뺌
+        assert "eye_off" not in [t["function"]["name"] for t in qs[4]["tool_list"]]
+        assert "파이브레인이야" in qs[5]["messages"][0]["content"]
         assert qs[1]["messages"][-1]["content"] == "부탁 1" and len(qs[2]["messages"]) == 8
         assert qs[1]["calls"] == [{"name": "set_motion", "arguments": {"name": "stop"}}]
         sent = evaluate.openai_messages(qs[2]["messages"])
@@ -922,15 +925,16 @@ def test_school_tool_questions_are_counted_by_kind(tmp_path, monkeypatch):
 
         stop = ("set_motion", '{"name": "stop"}')
         (tmp_path / "rt").mkdir()
+        names = ["저는 파이브레인이에요."] * 3 + ["저는 파이보예요."] * 3 + ["I'm Daon."] * 3
         (tmp_path / "rt" / "answers-m.json").write_text(json.dumps({"answers": [
             calls(("eye_off", "{}")), calls(stop, ("eye_on", '{"r": 1, "g": 1, "b": 1}')),
-            calls(stop), "재밌었겠어요."]}))
+            calls(stop), "재밌었겠어요.", calls(("eye_off", "{}")), *names]}, ensure_ascii=False))
         (tmp_path / "rt" / "answers-old.json").write_text(json.dumps({"answers": ["x"]}))
         text = evaluate.report()
     finally:
         evaluate.use_set("kids")
     row = next(r for r in text.splitlines() if r.startswith("| m |"))
-    assert row == "| m | 100% | 100% | 100% | 0% | 50% | 0% |"
+    assert row == "| m | 100% | 100% | 100% | 0% | 100% | 67% | 50% | 0% |"
     assert "| old |" not in text and "첫마디 도구 정답률: 질문 1개" in text
     assert (tmp_path / "rt" / "eval.md").exists()
 
@@ -1166,3 +1170,96 @@ def test_history_can_be_cut_to_the_current_words_and_server_errors_do_not_kill_t
     pibo_chat.main()
     out = capsys.readouterr().out
     assert "Missing tool call type" in out and "다시 말해 줄래요" in out
+
+
+# ------------------------------------------------------------- 여러 기기
+
+def test_names_are_swapped_with_the_right_particles():
+    from devices import rename_text
+
+    cases = {"파이보야 춤춰 줘": ("파이브레인아 춤춰 줘", "코코야 춤춰 줘"),
+             "저는 파이보예요.": ("저는 파이브레인이에요.", "저는 코코예요."),
+             "파이보가 도와줄게요": ("파이브레인이 도와줄게요", "코코가 도와줄게요"),
+             "파이보는 로봇이에요": ("파이브레인은 로봇이에요", "코코는 로봇이에요"),
+             "파이보를 만나서": ("파이브레인을 만나서", "코코를 만나서"),
+             "파이보랑 놀자": ("파이브레인이랑 놀자", "코코랑 놀자"),
+             "I'm Pibo!": ("I'm PiBrain!", "I'm Coco!")}
+    for text, (brain, coco) in cases.items():
+        role = "user" if text.startswith("파이보야") else "assistant"
+        assert rename_text(text, "파이브레인", "PiBrain", role) == brain
+        assert rename_text(text, "코코", "Coco", role) == coco
+    assert rename_text("파이보로 가자", "하늘", "Haneul", "user") == "하늘로 가자"   # ㄹ 받침
+    assert rename_text("저는 파이보야", "다온", "Daon", "assistant") == "저는 다온이야"
+
+
+def test_device_variants_keep_most_pibo_data_and_teach_tool_lists_and_names(tmp_path):
+    import devices
+    from prompts import to_example, tools_for
+    from tools import SYSTEM, TOOLS, system_for
+    from train import targets
+
+    rng = random.Random(0)
+    tool = to_example({"kind": "tool", "fn": "set_motion"}, json.dumps(
+        {"user": "파이보야 앞으로 가", "calls": [{"name": "set_motion", "arguments": {"name": "forward1"}}],
+         "result": "완료", "pibo": "파이보가 앞으로 갔어요."}, ensure_ascii=False), rng)
+    chat = to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": "안녕", "pibo": "안녕하세요."}]}, ensure_ascii=False), rng)
+    lines = []
+    for k in range(400):
+        ex = dict(tool if k % 2 else chat)
+        ex["messages"] = ex["messages"][:1] + [dict(ex["messages"][1], content=f"{k} " + ex["messages"][1]["content"])] + ex["messages"][2:]
+        lines.append(json.dumps(ex, ensure_ascii=False))
+    out, count = devices.vary(lines, n_identity=200)
+    again, _ = devices.vary(lines, n_identity=200)
+    assert out == again                                      # 늘 같은 결과
+    exs = [json.loads(x) for x in out]
+    assert 60 < count["이름 바꿈"] < 140 and count["자기소개"] == 200
+    assert count["없는 도구 거절"] > 5 and count["도구 일부만"] > 30
+    plain = [e for e in exs if not e.get("device") and not e.get("identity") and not e.get("unavail")]
+    assert sum(e["messages"][0]["content"] == SYSTEM for e in plain) > 0.8 * len(plain)
+    renamed = next(e for e in exs if e.get("device") and not e.get("identity") and e["kind"] == "tool")
+    name = renamed["device"]
+    assert renamed["messages"][0]["content"].startswith(system_for(name)[:40])
+    assert "파이보" not in json.dumps([m.get("content") for m in renamed["messages"][1:]], ensure_ascii=False)
+    # 거절: 그 도구(또는 동작)가 목록에 없고 말로만
+    for no in [e for e in exs if e.get("unavail")]:
+        shown = tools_for(no)
+        names = [t["function"]["name"] for t in shown]
+        motions = next((t["function"]["parameters"]["properties"]["name"]["enum"] for t in shown
+                        if t["function"]["name"] == "set_motion"), [])
+        assert "forward1" not in motions and no["messages"][-1]["role"] == "assistant"
+        assert not no["messages"][-1].get("tool_calls") and ("set_motion" not in names or motions)
+    # 일부만 보여 준 도구 예시도 부를 도구는 남김
+    for e in exs:
+        if e["kind"] == "tool" and e.get("tool_names"):
+            assert "set_motion" in e["tool_names"] and "forward1" in e["motions"]
+    assert tools_for(json.loads(lines[1])) is TOOLS          # 파이보 그대로면 목록도 그대로
+    # 자기소개: 시스템 글의 이름으로, 다른 이름이냐고 물으면 아니라고
+    ids = [e for e in exs if e.get("identity")]
+    other = next(e for e in ids if e.get("device") == "파이브레인" or e.get("device"))
+    assert other["device"] in other["messages"][0]["content"]
+    said = " ".join(m["content"] for e in ids for m in e["messages"] if m["role"] == "assistant")
+    assert "아니요, 저는" in said and "서큘러스에서 만들었어요" in said and "잘 몰라요" in said
+    for e in exs[:50] + ids[:50]:
+        assert None not in list(targets(FakeTok(), e, 4096))
+
+
+def test_other_devices_send_their_own_name_and_tools(monkeypatch):
+    import pibo_chat
+    from tools import SYSTEM, TOOLS
+
+    said = iter(["그만"])
+    monkeypatch.setattr(pibo_chat, "listen", lambda: next(said))
+    monkeypatch.setattr(pibo_chat, "warm_up", lambda url, tools: None)
+    monkeypatch.setattr(sys, "argv", ["pibo_chat.py", "--name", "파이브레인", "--about", "코딩 로봇",
+                                      "--tools", "eye_on,eye_off,set_motion", "--motions", "dance1,stop"])
+    try:
+        pibo_chat.main()
+        assert "로봇 파이브레인이야" in pibo_chat.SYSTEM and "파이브레인에 대해: 코딩 로봇" in pibo_chat.SYSTEM
+        names = [t["function"]["name"] for t in pibo_chat.TOOLS]
+        assert names == ["set_motion", "eye_on", "eye_off"]
+        monkeypatch.setattr(pibo_chat, "FAKE", True)
+        assert pibo_chat.run_tool("get_weather", {"region": "서울"}) == "실패: 이 기기에 없는 도구"
+        assert pibo_chat.run_tool("eye_off", {}) == "완료"
+    finally:
+        pibo_chat.SYSTEM, pibo_chat.TOOLS = SYSTEM, TOOLS

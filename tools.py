@@ -89,6 +89,42 @@ TOOLS = [
 
 BY_NAME = {t["function"]["name"]: t["function"] for t in TOOLS}
 
+
+def tool_list(names=None, motions=None, device: str = "파이보") -> list:
+    """기기에 있는 도구만 고른 목록. names: 도구 이름들 (None이면 모두), motions: set_motion에서
+    쓸 수 있는 동작들 (None이면 모두), device: 설명에 쓰는 기기 이름. 셋 다 기본값이면 TOOLS 그대로.
+    학습 때 일부만 보여 줘서, 모델이 외운 목록이 아니라 앱이 보낸 목록을 따르게 합니다."""
+    if names is None and motions is None and device == "파이보":
+        return TOOLS
+    out = []
+    for t in TOOLS:
+        f = t["function"]
+        if names is not None and f["name"] not in names:
+            continue
+        f = json.loads(json.dumps(f, ensure_ascii=False).replace("파이보", device))
+        if f["name"] == "set_motion" and motions is not None:
+            keep = [m for m in MOTIONS if m in motions]
+            spec = f["parameters"]["properties"]["name"]
+            spec["enum"] = keep
+            spec["description"] = "동작 이름: " + ", ".join(f"{k}({MOTIONS[k]})" for k in keep)
+        out.append({"type": "function", "function": f})
+    return out
+
+
+def has_batchim(word: str) -> bool:
+    """마지막 글자에 받침이 있는지 (한글이 아니면 없음으로)."""
+    c = word.strip()[-1:] or "가"
+    return "가" <= c <= "힣" and (ord(c) - 0xAC00) % 28 != 0
+
+
+def system_for(name: str = "파이보", about: str | None = None) -> str:
+    """기기 이름과 소개를 넣은 시스템 글. 파이보에 소개가 없으면 SYSTEM 그대로.
+    about: 그 기기에 대해 모델이 알아야 할 것 (예: "교육용 코딩 로봇, 서큘러스에서 만듦, 하얀색")."""
+    text = SYSTEM.replace("로봇 파이보야.", f"로봇 {name}{'이야' if has_batchim(name) else '야'}.")
+    if about:
+        text += f" {name}에 대해: {about}"
+    return text
+
 SYSTEM = ("너는 초등학생부터 고등학생까지와 이야기하는 교육용 로봇 파이보야. "
           "친구처럼 친근한 존댓말로 짧게 말해. 이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.")
 #: 처음 만든 어린이(미취학~초저) 데이터에 들어 있는 시스템 글 (그 데이터와 채점용 질문에 그대로 남음)

@@ -9,6 +9,9 @@
   인사 동작과 눈 색을 같이 불러, 파이보에서 대답이 늦어지고 하지 않아도 될 일을 합니다.
 - 눈이나 색 이야기가 없는 말에 눈 색(eye_on)을 부른 예시도 뺍니다 (춤춰 달라는데 눈 색을 덤으로).
 - 대화 중 도구 예시(mixed)는 도구를 부른 차례마다 같은 규칙으로 봅니다.
+- 여러 기기에서 쓰게 (devices.py): 일부 예시의 이름을 다른 기기 이름으로, 기기 소개를 시스템 글에,
+  도구 목록 일부만 보여 주기, 없는 도구는 말로 거절, 시스템 글을 보고 하는 자기소개 3천 개.
+  --no-devices면 하지 않습니다.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from devices import vary
 from make_data import slot
 
 #: 인사만 한 말 (앞뒤의 '파이보야', 문장부호는 무시)
@@ -81,8 +85,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("data", nargs="+")
+    p.add_argument("--no-devices", action="store_true",
+                   help="이름 바꾸기·기기 소개·도구 일부만 보여 주기를 하지 않음")
     args = p.parse_args()
     lines, kept, why = merge(args.data)
+    if not args.no_devices:
+        lines, count = vary(lines)
+        print("여러 기기용: " + ", ".join(f"{k} {v}" for k, v in count.items()), flush=True)
     Path(args.out).write_text("\n".join(lines) + "\n")
     print(f"{args.out}: {len(lines)}줄 ({', '.join(f'{k} {v}' for k, v in sorted(kept.items()))})",
           flush=True)

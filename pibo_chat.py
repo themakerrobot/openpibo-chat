@@ -5,6 +5,8 @@
     python3 pibo_chat.py                 # 키보드로 말하기
     python3 pibo_chat.py --no-tools      # 대화만 (도구 목록을 보내지 않아 더 빠름)
     python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 도구는 흉내만
+    python3 pibo_chat.py --name 파이브레인 --about "코딩 로봇, 서큘러스에서 만듦" \
+        --tools eye_on,eye_off,get_weather   # 다른 기기: 이름·소개·있는 도구만 (모델은 같음)
 
 대화(chat)와 도구 실행만 합니다. 음성 인식·합성은 speak()/listen()을 지금
 쓰는 것으로 바꿔 끼우면 됩니다. 이 파일은 tools.py 하나만 있으면 됩니다.
@@ -19,7 +21,7 @@ import sys
 import time
 import urllib.request
 
-from tools import SYSTEM, TOOLS, check_call
+from tools import SYSTEM, TOOLS, check_call, system_for, tool_list
 
 #: 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈). 서버는 앞 요청과 같은 앞부분
 #: (시스템 글과 도구 목록)을 다시 쓰고 새로 붙은 말만 읽습니다 (재 보니 지난 대화 세 번을 붙여도
@@ -118,6 +120,8 @@ def fake_tool(name: str, args: dict) -> str:
 
 
 def run_tool(name: str, args: dict) -> str:
+    if name not in [t["function"]["name"] for t in TOOLS]:
+        return "실패: 이 기기에 없는 도구"
     problem = check_call(name, args)
     if problem:
         return f"실패: {problem}"
@@ -228,8 +232,9 @@ def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) 
     대답합니다 (도구 목록을 빼면 모델이 "앞으로 갈게요!"처럼 하지도 않은 일을 했다고 말함)."""
     history.append({"role": "user", "content": text})
     if tools and STOP.search(text):
-        run_calls([{"id": "stop", "function": {"name": "set_motion",
-                                               "arguments": '{"name": "stop"}'}}], [])
+        if any(t["function"]["name"] == "set_motion" for t in TOOLS):   # 몸이 없는 기기는 말로만
+            run_calls([{"id": "stop", "function": {"name": "set_motion",
+                                                   "arguments": '{"name": "stop"}'}}], [])
         history.append({"role": "assistant", "content": "네, 멈출게요."})
         return "네, 멈출게요."
     msgs = [{"role": "system", "content": SYSTEM}] + window(history)
@@ -298,8 +303,16 @@ def main():
     p.add_argument("--fake", action="store_true", help="openpibo 없이 도구를 부른 척만")
     p.add_argument("--history", type=int, default=HISTORY,
                    help="기억하는 주고받기 수 (지금 말 포함, 늘리면 파이보에서 많이 느려질 수 있음)")
+    p.add_argument("--name", default="파이보", help="기기 이름 (시스템 글에 들어감, 예: 파이브레인)")
+    p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색, 키 20센티미터')")
+    p.add_argument("--tools", help="이 기기에 있는 도구만, 쉼표로 (예: eye_on,eye_off,get_weather)")
+    p.add_argument("--motions", help="set_motion에서 쓸 수 있는 동작만, 쉼표로 (예: greeting,dance1,stop)")
     args = p.parse_args()
     FAKE = args.fake
+    # 기기마다 다른 이름·소개·도구는 시스템 글과 도구 목록으로 보냅니다 (모델은 하나)
+    globals()["SYSTEM"] = system_for(args.name, args.about)
+    globals()["TOOLS"] = tool_list(args.tools.split(",") if args.tools else None,
+                                   args.motions.split(",") if args.motions else None, args.name)
     globals()["HISTORY"] = max(1, args.history)
     warm_up(args.url, not args.no_tools)
     history: list = []
