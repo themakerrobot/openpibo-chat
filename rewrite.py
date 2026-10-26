@@ -26,7 +26,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from prompts import MASK, check_prompt, decide_check, decide_rewrite, rewrite_prompt, to_messages
+from prompts import (MASK, check_prompt, decide_check, decide_rewrite, first_turns, rewrite_prompt,
+                     to_messages)
 
 #: 이만큼씩 선생에게 보내고 기록합니다 (진행률이 로그에 남고, 끊겨도 이어 감)
 CHUNK = 1000
@@ -160,13 +161,17 @@ def main():
     p.add_argument("--out", help="남은 대화 (--dropped면 없어도 됨)")
     p.add_argument("--log", default="data/rewrite-log.jsonl")
     p.add_argument("--dropped", metavar="까닭", help="이 까닭으로 빠진 대화를 보여 주고 끝 (예: fit)")
+    p.add_argument("--skip", nargs="*", default=[], metavar="원본 이름", help="이 원본(source)은 쓰지 않음")
     p.add_argument("--limit", type=int, help="앞에서 이만큼만 (먼저 해 보기)")
     p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     args = p.parse_args()
 
     if not Path(args.data).exists():
         raise SystemExit(f"원본 대화 {args.data}가 없어요: PC에서 먼저 만들어 두세요")
-    sources = [json.loads(x) for x in Path(args.data).read_text().splitlines() if x.strip()]
+    sources = [first_turns(json.loads(x)) for x in Path(args.data).read_text().splitlines()
+               if x.strip()]
+    if args.skip:
+        sources = [s for s in sources if s["source"] not in args.skip]
     whole = len(sources)
     if args.limit:
         sources = sources[:args.limit]

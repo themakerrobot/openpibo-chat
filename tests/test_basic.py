@@ -56,7 +56,12 @@ def rewritten(*pairs_, ok=True):
 def test_rewritten_pibo_words_are_checked_letter_by_letter():
     from prompts import decide_rewrite, rewrite_prompt
 
+    from prompts import MAX_TURNS, first_turns
+
+    many = dict(SRC, turns=SRC["turns"] * 5)
+    assert len(first_turns(many)["turns"]) == MAX_TURNS == 4 and len(many["turns"]) == 10
     text = rewrite_prompt(SRC)
+    assert "미리 쓰지 않아요" in text and "그 앞에서 끊고" in text
     assert "A: 우리 강아지가 오늘 산책하다가 넘어졌어\nB: 헐 괜찮아? 다친 데는 없어?" in text
     assert "열네 살 친구" in text and "주제: 반려동물" in text
     u1, u2 = SRC["turns"][0]["user"], SRC["turns"][1]["user"]
@@ -375,7 +380,7 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "train", "small", "gguf", "score-before", "score-themaker", "score-judge"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
-                                  "data/pibo.jsonl"], [])
+                                  "data/pibo.jsonl", "--skip", *run_all.SKIP], [])
     assert cmds["data-themaker"] == (["merge_data.py", "--out", run_all.DATA, "data/pibo.jsonl",
                                       "data/tools.jsonl"], ["data-pibo", "data-tools"])
     assert cmds["score-judge"][1] == ["score-before", "score-themaker"]

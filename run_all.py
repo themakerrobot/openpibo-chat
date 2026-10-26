@@ -31,6 +31,8 @@ BASE = "Qwen/Qwen3.5-0.8B"   # 2026-03, Apache-2.0
 NAME = "themaker-0.8b"
 DATA = "data/train-themaker.jsonl"
 GGUF = f"out/{NAME}-Q4_K_M.gguf"
+#: 쓰지 않을 원본 (원본 파일의 source 이름, PC의 환경 변수 SKIP으로, 띄어쓰기로 여럿)
+SKIP = os.environ.get("SKIP", "").split()
 #: 견줄 예전 모델 (지금 파이보에 올린 것)
 BEFORE = "baseline/before-Q4_K_M.gguf"
 
@@ -41,9 +43,10 @@ def steps():
     return [
         # 원본 대화(data/source.jsonl, 채점용 data/source-heldout.jsonl: PC에만 있음)의 상대 말을
         # 선생이 파이보 말투로 바꿔 쓰고, 다시 검사해 좋은 것만
-        ("data-pibo", ["rewrite.py", "--data", "data/source.jsonl", "--out", "data/pibo.jsonl"], []),
+        ("data-pibo", ["rewrite.py", "--data", "data/source.jsonl", "--out", "data/pibo.jsonl",
+                       "--skip", *SKIP], []),
         ("data-heldout", ["rewrite.py", "--data", "data/source-heldout.jsonl",
-                          "--out", "data/heldout.jsonl"], []),
+                          "--out", "data/heldout.jsonl", "--skip", *SKIP], []),
         # 도구(불빛, 보기, 움직이기)를 부르는 대화: 정해 둔 말 모양으로 (선생 없이, 몇 초)
         ("data-tools", ["tool_data.py", "--out", "data/tools.jsonl", "--n", "4000",
                         "--chat", "data/pibo.jsonl"], ["data-pibo"]),
