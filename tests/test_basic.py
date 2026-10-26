@@ -277,7 +277,7 @@ def test_distillation_runs_only_when_switched_on(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     (tmp_path / "state").mkdir()
     names = [n for n, _, _ in run_all.steps()]
-    assert "kd-teacher" not in names and names[-2:] == ["judge", "judge-school"]
+    assert "kd-teacher" not in names and names[-3:] == ["judge", "judge-school", "judge-english"]
     (tmp_path / "state" / "kd.on").touch()
     steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
     cmd, needs = steps["train-qwen3-0.6b-kd"]
@@ -947,7 +947,9 @@ def test_school2_student_learns_merged_data_and_school_students_get_tool_questio
     assert "--log" in steps["data-school-tools-clean"][0]    # 학교 대화 검사 기록을 덮지 않게
     assert "--log" in steps["data-school-tools-check"][0]
     cmd, needs = steps["data-school2"]
-    assert cmd[0] == "merge_data.py" and set(needs) == {"data-school-clean", "data-school-tools-clean"}
+    assert cmd[0] == "merge_data.py" and set(needs) == {"data-school-clean", "data-school-tools-clean",
+                                                    "data-english-clean"}
+    assert "data/english-clean.jsonl" in cmd
     cmd, needs = steps["train-qwen3.5-0.8b-school2"]
     assert needs == ["data-school2"] and "data/train-school2.jsonl" in cmd and "Qwen/Qwen3.5-0.8B" in cmd
     assert names.index("data-school2") < names.index("train-qwen3.5-0.8b-school2") \
@@ -1005,3 +1007,108 @@ def test_steps_picked_with_first_run_first_and_late_answers_are_judged(tmp_path,
     assert ran == ["train-old", "eval-old", "judge-school", "data", "train-new", "eval-new",
                    "judge-school"]
     assert not run_all.unscored(str(results))
+
+
+# ------------------------------------------------------------- 영어
+
+def test_english_requests_set_the_language_and_keep_it_in_the_examples():
+    import make_data
+    import prompts
+
+    reqs = prompts.requests(0, 0, seed=8, audience="school", n_en=300, n_en_tool=200, n_learn=200)
+    assert {make_data.slot(r) for r in reqs} == {"en", "entool", "learn"}
+    assert all(r["grade"] in prompts.GRADES for r in reqs)
+    en = next(r for r in reqs if r["lang"] == "en" and r["kind"] == "chat" and r["grade"] == "고")
+    assert "영어로 로봇 파이보에게" in en["prompt"] and "쉬운 영어로" in en["prompt"]
+    assert "Circulus" in en["prompt"]
+    assert any(prompts.EN_STOP_HINT in r["prompt"] for r in reqs if r["kind"] == "tool")
+    assert not any(prompts.STOP_HINT in r["prompt"] for r in reqs)
+    learn = next(r for r in reqs if r["lang"] == "learn")
+    assert "설명은 한국어로" in learn["prompt"]
+    long = "That sounds really fun! I love games too. What kind of games do you like to play " \
+           "after school with your friends on weekends?"
+    assert 120 < len(long) <= 220
+    ex = prompts.to_example(en, json.dumps({"turns": [{"user": "I like game.", "pibo": long}]}),
+                            random.Random(0))
+    assert ex["lang"] == "en" and ex["grade"] == "고" and prompts.max_len(ex) == 220
+    assert "영어 대화" in prompts.style_for(ex)
+    assert prompts.max_len({"lang": "en", "grade": "초저"}) == 130
+    assert prompts.max_len({"grade": "초저"}) == 120          # 한국어는 그대로
+    assert prompts.to_example(en, json.dumps({"turns": [{"user": "Hi", "pibo": "Pibo: Hi!"}]}),
+                              random.Random(0)) is None
+    tool = next(r for r in reqs if r["kind"] == "tool" and r["fn"] == "eye_off")
+    ex = prompts.to_example(tool, json.dumps({"user": "Turn off your eyes please", "calls": [
+        {"name": "eye_off", "arguments": {}}], "result": "완료", "pibo": "Okay, my eyes are off now."}),
+        random.Random(0))
+    assert ex["lang"] == "en" and ex["kind"] == "tool" and make_data.slot(ex) == "entool"
+
+
+def test_english_questions_are_judged_for_the_language_they_were_asked_in(tmp_path, monkeypatch):
+    import evaluate
+    import prompts
+
+    rng = random.Random(0)
+    reqs = prompts.requests(0, 0, seed=8, audience="school", n_en=5, n_learn=5)
+    en = next(r for r in reqs if r["lang"] == "en")
+    learn = next(r for r in reqs if r["lang"] == "learn")
+    lines = [json.dumps(prompts.to_example(en, json.dumps({"turns": [
+                 {"user": "I'm hungry.", "pibo": "Oh no! What do you want to eat?"}]}), rng)),
+             json.dumps(prompts.to_example(learn, json.dumps({"turns": [
+                 {"user": "사과 영어로 뭐야", "pibo": "사과는 영어로 apple이에요."}]},
+                 ensure_ascii=False), rng), ensure_ascii=False)]
+    (tmp_path / "en.jsonl").write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(evaluate, "EN_HELD", tmp_path / "en.jsonl")
+    monkeypatch.setitem(evaluate.SETS, "english", (tmp_path / "re", None))
+    evaluate.use_set("english")
+    try:
+        qs = evaluate.questions()
+        assert [q["lang"] for q in qs] == ["en", "learn"]
+        assert evaluate.MARKS == evaluate.EN_MARKS
+        assert "영어로 말했으면 쉬운 영어로" in evaluate.for_english(evaluate.JUDGE)
+        assert "학생: {user}" in evaluate.for_english(evaluate.JUDGE)
+        assert evaluate.same_language(qs[0], "Let's eat some pizza!")
+        assert not evaluate.same_language(qs[0], "피자 먹어요!")
+        assert evaluate.same_language(qs[1], "사과는 apple이에요.")
+        assert not evaluate.same_language(qs[1], "It's apple.")
+        (tmp_path / "re").mkdir()
+        (tmp_path / "re" / "answers-m.json").write_text(json.dumps(
+            {"answers": ["Pizza sounds good!", "apple이에요."]}, ensure_ascii=False))
+        text = evaluate.report()
+    finally:
+        evaluate.use_set("kids")
+    assert "| 자연스러움 |" in text.splitlines()[0]
+    assert text.splitlines()[2].endswith("| 100% |")
+    assert evaluate.MARKS == evaluate.KIDS_MARKS and not evaluate.ENGLISH
+
+
+def test_english_data_is_made_checked_and_merged_and_every_school_model_is_asked(tmp_path,
+                                                                                 monkeypatch):
+    import run_all
+    from merge_data import EYE_WORDS, GREETING
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    cmd, _ = steps["data-english"]
+    assert cmd[cmd.index("--english") + 1] == "6000" and "--learn" in cmd
+    assert steps["data-english-clean"][1] == ["data-english-check"]
+    assert "--log" in steps["data-english-check"][0] and "--log" in steps["data-english-clean"][0]
+    for st in ("qwen3.5-0.8b-school2", "qwen3.5-0.8b-school", "qwen3-0.6b-school"):
+        cmd, needs = steps[f"eval-english-{st}-small-Q4_K_M"]
+        assert cmd[-2:] == ["--set", "english"] and "data-english-check" in needs
+    cmd, needs = steps["small-qwen3.5-0.8b-school2"]
+    assert cmd[cmd.index("--check") + 1:] == ["data/heldout-school.jsonl", "data/heldout-english.jsonl"]
+    cmd, _ = steps["small-qwen3.5-0.8b-school"]   # 영어 채점용 질문은 학습 데이터보다 먼저 생김
+    assert cmd[cmd.index("--check") + 1:] == ["data/heldout-school.jsonl"]
+    assert "eval-english-gemma3-1b" in steps and "--no-tools" in steps["eval-english-gemma3-1b"][0]
+    assert steps["judge-english"][0] == ["evaluate.py", "judge", "--set", "english"]
+    assert all(GREETING.match(t) for t in ["Hi Pibo!", "hello", "Good morning, Pibo.", "How are you?"])
+    assert not any(GREETING.match(t) for t in ["Hi Pibo, can you dance?", "Stop!"])
+    assert EYE_WORDS.search("Make your eyes blue") and not EYE_WORDS.search("Dance for me")
+
+
+def test_reply_language_picks_the_tts_voice():
+    import pibo_chat
+
+    assert pibo_chat.lang_of("안녕하세요!") == "ko" and pibo_chat.lang_of("Hello there!") == "en"
+    assert pibo_chat.lang_of("사과는 apple이에요.") == "ko"
+    assert pibo_chat.STOP.search("Freeze!") and not pibo_chat.STOP.search("freezer")

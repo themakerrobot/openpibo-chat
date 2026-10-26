@@ -194,7 +194,8 @@ def main():
     p.add_argument("--model", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--data", nargs="+", required=True, help="펼쳐서 나온 토큰을 남길 학습 데이터")
-    p.add_argument("--check", help="학습에 안 쓴 글: 토큰이 달라지는 말의 비율을 셉니다")
+    p.add_argument("--check", nargs="+", default=[],
+                   help="학습에 안 쓴 글: 토큰이 달라지는 말의 비율을 셉니다 (파일마다)")
     p.add_argument("--ascii-merges", type=int, default=20000,
                    help="영어·숫자·기호 토큰은 BPE 병합 앞에서 이만큼 안에 든 것을 남김")
     args = p.parse_args()
@@ -202,9 +203,9 @@ def main():
     info = prune(model, out, args.data, args.ascii_merges)
     print(f"어휘 {info['old_vocab']} → {info['new_vocab']} (병합 {info['merges']}개) → {out}",
           flush=True)
-    if args.check:
-        changed, total = check(model, out, args.check)
-        print(f"학습에 안 쓴 말 {total}개 중 토큰이 달라진 것 {changed}개 "
+    for path in args.check:
+        changed, total = check(model, out, path)
+        print(f"{path}: 학습에 안 쓴 말 {total}개 중 토큰이 달라진 것 {changed}개 "
               f"({changed / max(total, 1):.2%})", flush=True)
 
 

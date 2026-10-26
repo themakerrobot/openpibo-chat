@@ -45,9 +45,11 @@ STUDENTS = [
     # 위의 초·중·고 데이터 + 초·중·고 학생 말의 도구 예시, 이야기하다가 중간에 도구를 부탁하는
     # 대화, 도구와 비슷한 말이지만 부탁은 아닌 이야기, 인사만 한 말에 도구를 부른 예시와 덤으로
     # 눈 색을 바꾼 예시를 뺀 것 (merge_data.py). 어린이 도구 예시는 두 번씩 넣던 것을 한 번만.
+    # 영어: 학생이 영어로 말하면 쉬운 영어로, 한국어로 묻는 영어 공부는 한국어로 설명하며 영어를,
+    # "영어로 이야기하자"면 그다음은 영어로 (영어 대화 6천, 영어 도구 부탁 2천, 영어 공부 3천).
     {"name": "qwen3.5-0.8b-school2", "base": QWEN35, "lr": 2e-5, "batch": 2, "accum": 16,
      "data": ("data/train-school2.jsonl", "data-school2"),
-     "quants": [], "no_kd": True, "set": "school", "small": SMALL},
+     "quants": [], "no_kd": True, "set": "school", "small": SMALL, "english": True},
     # 초·중·고 친구 대화(학년 고르게, 초등 70자·중고 120자, 호기심 질문 15%)를 선생이
     # 생각을 켜고 사실·한국어를 다시 본 데이터 + 거른 도구 예시 (filter_chat.py).
     # 증류는 어린이 데이터에서 v1보다 나빠서(대화 4.64, 도구 92%) 하지 않습니다.
@@ -71,7 +73,9 @@ STUDENTS = [
 KD = "data/kd"
 #: 채점용 질문 묶음마다 (그 질문을 만드는 단계, 답을 두는 곳, 채점 단계)
 SETS = {"kids": ("data-heldout", "results", "judge"),
-        "school": ("data-school-heldout", "results-school", "judge-school")}
+        "school": ("data-school-heldout", "results-school", "judge-school"),
+        # 영어 대화·영어 도구 부탁·한국어로 묻는 영어 공부 (채점용 질문과 도구 표시는 검사 단계가 씀)
+        "english": ("data-english-check", "results-english", "judge-english")}
 #: 초·중·고 도구 질문 (evaluate.py --set tools): 그 질문을 거르는 단계, 답을 두는 곳.
 #: 선생이 채점하지 않고 도구 호출만 셉니다
 TOOL_SET = ("data-school-tools-check", "results-tools")
@@ -153,9 +157,28 @@ def steps():
                                        "--out", "data/school-tools-clean.jsonl",
                                        "--log", "data/chat-check-school-tools.jsonl"],
            ["data-school-tools-check"]),
+          ("data-english", ["make_data.py", "--audience", "school", "--out", "data/english.jsonl",
+                            "--chat", "0", "--tool", "0", "--english", "6000",
+                            "--english-tool", "2000", "--learn", "3000", "--seed", "3"], []),
+          ("data-english-heldout", ["make_data.py", "--audience", "school", "--out",
+                                    "data/heldout-english.jsonl", "--chat", "0", "--tool", "0",
+                                    "--english", "300", "--english-tool", "150", "--learn", "150",
+                                    "--seed", "996", "--avoid", "data/english.jsonl"],
+           ["data-english"]),
+          ("data-english-check", ["filter_tools.py", "--train", "data/english.jsonl",
+                                  "--heldout", "data/heldout-english.jsonl",
+                                  "--out", "data/english-checked.jsonl",
+                                  "--marks", "data/heldout-english-marks.json",
+                                  "--log", "data/tool-check-english.jsonl"],
+           ["data-english", "data-english-heldout"]),
+          ("data-english-clean", ["filter_chat.py", "--data", "data/english-checked.jsonl",
+                                  "--out", "data/english-clean.jsonl",
+                                  "--log", "data/chat-check-english.jsonl"],
+           ["data-english-check"]),
           ("data-school2", ["merge_data.py", "--out", "data/train-school2.jsonl",
-                            "data/train-school.jsonl", "data/school-tools-clean.jsonl"],
-           ["data-school-clean", "data-school-tools-clean"])]
+                            "data/train-school.jsonl", "data/school-tools-clean.jsonl",
+                            "data/english-clean.jsonl"],
+           ["data-school-clean", "data-school-tools-clean", "data-english-clean"])]
     for st in students():
         name, (data, made_by) = st["name"], st["data"]
         cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",
@@ -188,8 +211,12 @@ def steps():
             s.append((f"small-{name}", ["prune_vocab.py", "--model", f"runs/{name}/final",
                                         "--out", f"runs/{name}/small", "--data", data,
                                         *(["data/school.jsonl"] if st.get("set") == "school" else []),
-                                        "--check", "data/heldout-school.jsonl"
-                                        if st.get("set") == "school" else "data/heldout.jsonl"],
+                                        "--check", *(["data/heldout-school.jsonl"]
+                                                     if st.get("set") == "school" else
+                                                     ["data/heldout.jsonl"]),
+                                        # 영어를 배운 모델은 영어 글도 그대로 나뉘는지
+                                        *(["data/heldout-english.jsonl"]
+                                          if st.get("english") else [])],
                       [f"train-{name}", *wait]))
         for quant in st.get("small", []):
             imat = ["--imatrix", st["data"][0]] if quant in IMATRIX else []
@@ -200,10 +227,13 @@ def steps():
             s.append((f"eval-{name}-small-{quant}", ["evaluate.py", "gguf", "--gguf", gguf,
                                                      "--name", f"{name}-small-{quant}", *extra],
                       [f"gguf-{name}-small-{quant}", *wait]))
-            if st.get("set") == "school":   # 초·중·고 도구 질문으로도
+            if st.get("set") == "school":   # 초·중·고 도구 질문, 영어 질문으로도
                 s.append((f"eval-tools-{name}-small-{quant}", [
                     "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}",
                     "--set", "tools"], [f"gguf-{name}-small-{quant}", TOOL_SET[0]]))
+                s.append((f"eval-english-{name}-small-{quant}", [
+                    "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}",
+                    "--set", "english"], [f"gguf-{name}-small-{quant}", SETS["english"][0]]))
             if st.get("kv8") and quant == "Q4_K_M":
                 s.append((f"eval-{name}-small-{quant}-kv8", [
                     "evaluate.py", "gguf", "--gguf", gguf, "--name", f"{name}-small-{quant}-kv8",
@@ -367,9 +397,10 @@ def report():
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
     titles = {"school": "초·중·고 채점용 질문 (선생 모델이 대화 채점)",
               "tools": "초·중·고 도구 질문 (도구 호출만 셈)",
+              "english": "영어 질문 (선생 모델이 대화 채점)",
               "kids": "어린이 채점용 질문 (처음 데이터, 선생 모델이 대화 채점)"}
     where = {**{k: v[1] for k, v in SETS.items()}, "tools": TOOL_SET[1]}
-    for which in ("school", "tools", "kids"):
+    for which in ("school", "tools", "english", "kids"):
         if not any((HERE / where[which]).glob("answers-*.json")):
             continue
         sys.path.insert(0, str(HERE))

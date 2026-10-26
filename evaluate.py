@@ -6,6 +6,7 @@
     python evaluate.py report         # results/eval.md
     python evaluate.py ... --set school   # 초·중·고 질문으로 (results-school/)
     python evaluate.py ... --set tools    # 초·중·고 도구 질문으로 (results-tools/, 채점 없이 셈)
+    python evaluate.py ... --set english  # 영어 대화·영어 도구·영어 공부 질문으로 (results-english/)
 
 대화: 아이의 첫마디에 대한 대답을 선생 모델이 네 가지로 1~5점 채점합니다. 따로
 선생이 생각을 켜고 틀린 사실과 정설을 얼버무린 대답을 찾습니다 (생각을 끈 채점은
@@ -37,8 +38,15 @@ MARKS = Path("data/heldout-marks.json")
 #: 문제와 그 표시는 그대로), 시스템 글은 지금 것(tools.SYSTEM)으로 묻습니다.
 SETS = {"kids": (Path("results"), None),
         "school": (Path("results-school"), Path("data/heldout-school.jsonl")),
-        "tools": (Path("results-tools"), None)}
+        "tools": (Path("results-tools"), None),
+        "english": (Path("results-english"), None)}
 SCHOOL_CHAT: Path | None = None
+#: english 묶음의 질문 (make_data.py --english --english-tool --learn)과 filter_tools.py의 표시
+EN_HELD = Path("data/heldout-english.jsonl")
+EN_MARKS = Path("data/heldout-english-marks.json")
+KIDS_MARKS = MARKS
+ENGLISH = False
+HANGUL = re.compile(r"[가-힣]")
 #: tools 묶음의 질문 (make_data.py --tool --mixed --near)과 filter_tools.py가 적은 표시
 TOOL_HELD = Path("data/heldout-school-tools.jsonl")
 TOOL_MARKS = Path("data/heldout-school-tools-marks.json")
@@ -53,9 +61,18 @@ PARAM = re.compile(r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
 
 
 def use_set(name: str) -> None:
-    global RESULTS, SCHOOL_CHAT, TOOL_SET
+    global RESULTS, SCHOOL_CHAT, TOOL_SET, ENGLISH, MARKS
     RESULTS, SCHOOL_CHAT = SETS[name]
-    TOOL_SET = name == "tools"
+    TOOL_SET, ENGLISH = name == "tools", name == "english"
+    MARKS = EN_MARKS if ENGLISH else KIDS_MARKS
+
+
+def same_language(q: dict, reply: str) -> bool:
+    """물은 말로 대답했는지: 영어 대화 질문이면 한글 없이 영어로, 그 밖에는 한국어로."""
+    text = say(reply)
+    if q.get("lang") == "en":
+        return bool(re.search(r"[A-Za-z]", text)) and not HANGUL.search(text)
+    return bool(HANGUL.search(text))
 
 
 def tool_questions():
@@ -90,7 +107,7 @@ def questions():
         return tool_questions()
     school = iter(SCHOOL_CHAT.read_text().splitlines()) if SCHOOL_CHAT else None
     out = []
-    for line in HELDOUT.read_text().splitlines():
+    for line in (EN_HELD if ENGLISH else HELDOUT).read_text().splitlines():
         ex = json.loads(line)
         if school is not None:
             if ex["kind"] == "chat":
@@ -104,7 +121,8 @@ def questions():
         out.append({"kind": ex["kind"], "tools": tools_for(ex) is not None,
                     "messages": msgs[:user_at + 1],
                     "calls": [c["function"] for c in expect.get("tool_calls", [])],
-                    "reference": expect.get("content", ""), "grade": ex.get("grade")})
+                    "reference": expect.get("content", ""), "grade": ex.get("grade"),
+                    "lang": ex.get("lang")})
     return out
 
 
@@ -277,6 +295,14 @@ def for_school(text: str) -> str:
             .replace("아이들은", "학생들은").replace("아이: {user}", "학생: {user}"))
 
 
+def for_english(text: str) -> str:
+    """영어 묶음의 채점 글: 한국어 대신 물은 말로 자연스럽게 대답했는지를 봅니다."""
+    return for_school(text).replace(
+        "- korean: 한국어가 자연스러운가",
+        "- korean: 말이 자연스러운가 (학생이 영어로 말했으면 쉬운 영어로, 한국어로 물었으면 한국어로 "
+        "대답해야 하며, 다른 말로 대답했으면 2점 이하)")
+
+
 def fact_marks(texts: list[str]) -> list[dict]:
     """선생의 사실 판단 → [{"wrong": bool|None, "dodged": bool|None}] (못 읽으면 None)."""
     out = []
@@ -295,7 +321,8 @@ def judge():
     llm = load_teacher()
     params = SamplingParams(temperature=0.0, max_tokens=80)
     idx = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
-    judge_text, fact_text = ((for_school(JUDGE), for_school(FACT)) if SCHOOL_CHAT
+    judge_text, fact_text = ((for_english(JUDGE), for_school(FACT)) if ENGLISH
+                             else (for_school(JUDGE), for_school(FACT)) if SCHOOL_CHAT
                              else (JUDGE, FACT))
     for f in files:
         answers = json.loads(f.read_text())["answers"]
@@ -363,9 +390,10 @@ def report() -> str:
     qs = questions()
     marked = json.loads(MARKS.read_text()) if MARKS.exists() else {}
     bad, loose = set(marked.get("bad", [])), set(marked.get("names_only", []))
-    rows = [("| 모델 | 대화 점수 (5점 만점) | 한국어 | 알맞음 | 짧음 | 사실 | 틀린 사실 | 얼버무림 | "
-             "도구 정답률 | 춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | 평균 글자 수 |"),
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    rows = [(f"| 모델 | 대화 점수 (5점 만점) | {'자연스러움' if ENGLISH else '한국어'} | 알맞음 | 짧음 | "
+             "사실 | 틀린 사실 | 얼버무림 | 도구 정답률 | 춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | "
+             "평균 글자 수 | 같은 말로 대답 |"),
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
         data = json.loads(f.read_text())
@@ -405,14 +433,18 @@ def report() -> str:
             false_call = f"{fc / max(len(chat_tools), 1):.0%}"
         chat_q = [i for i, q in enumerate(qs) if q["kind"] == "chat"]
         length = statistics.mean(len(say(answers[i])) for i in chat_q) if chat_q else 0
+        same = (f"{sum(same_language(qs[i], answers[i]) for i in chat_q) / len(chat_q):.0%}"
+                if chat_q else "-")
         rows.append(f"| {name} | {total:.2f} | {avg('korean'):.2f} | {avg('fit'):.2f} | "
                     f"{avg('short'):.2f} | {avg('true'):.2f} | {rate('wrong')} | "
                     f"{rate('dodged')} | {right} | {extra} | "
-                    f"{wrong_fmt} | {false_call} | {length:.0f} |")
+                    f"{wrong_fmt} | {false_call} | {length:.0f} | {same} |")
     text = "\n".join(rows) + "\n"
     n_tool = sum(q["kind"] == "tool" for q in qs)
     text += ("\n틀린 사실·얼버무림: 선생이 생각을 켜고 본 대화 대답의 비율 (낮을수록 좋음)."
              " 사실 칸(1~5점)은 생각을 끈 채점이라 이런 실수를 잘 못 잡습니다.\n")
+    text += ("\n같은 말로 대답: 영어로 말을 건 대화 질문에 한글 없이 영어로, 그 밖의 대화 질문에 한국어로"
+             " 대답한 비율.\n")
     text += (f"\n도구 정답률: 춤 번호는 따지지 않음. 춤에 덤으로 부른 눈 색은 빼고 보고 따로 셈."
              + (f" 도구 문제 {n_tool}개 중 선생이 억지라고 본 {len(bad)}개는 빼고, 동작·색·"
                 f"지역이 아이 말로 안 정해지는 {len(loose)}개는 도구 이름만 봄." if marked else "")

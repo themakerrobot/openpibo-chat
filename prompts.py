@@ -106,8 +106,55 @@ def school_style(grade: str) -> str:
 - 이름, 주소, 학교 같은 개인정보는 묻지 않아요."""
 
 
+# ------------------------------------------------------------- 영어 (school)
+#: 학년마다 학생이 쓰는 영어 수준
+EN_LEVEL = {"초저": "아주 쉬운 낱말 몇 개나 짧은 한 문장 (예: \"Hi! I like dog.\")",
+            "초고": "쉬운 짧은 문장 (문법이 자주 틀림)",
+            "중": "간단한 문장 두세 개 (가끔 틀림)",
+            "고": "꽤 자연스러운 문장 (가끔 어색한 표현)"}
+#: 파이보 영어 대답의 길이: 같은 뜻에 글자가 더 많아 한국어(70, 120자)보다 넉넉히
+EN_LIMIT = {"초저": 90, "초고": 90, "중": 170, "고": 170}
+#: 한국어로 묻는 영어 공부 (설명은 한국어, 영어 낱말·문장은 그대로)
+LEARN = ["어떤 낱말을 영어로 뭐라고 하는지", "영어 문장이 무슨 뜻인지", "영어 낱말을 어떻게 읽는지",
+         "영어로 인사하는 법", "영어 숙제 문장이 맞는지", "영어 낱말 퀴즈를 내 달라고",
+         "헷갈리는 두 영어 낱말의 차이", "영어로 자기소개하는 법", "영어 노래 가사 뜻",
+         "영어 공부가 하기 싫음", "영어 시험 걱정", "파이보에게 영어로 이야기하자고 함",
+         "영어 일기에 쓸 문장", "외국인 친구에게 할 말"]
+#: 영어로 부탁하는 방식
+EN_ASKS = ["짧게 명령하듯", "please를 붙여 공손하게", "할 수 있냐고 묻는 말로 (Can you ...?)",
+           "이유를 붙여서", "신이 나서", "낱말 몇 개로만", "문법이 조금 틀린 말로"]
+EN_STOP_HINT = ("학생은 움직이고 있는 파이보를 멈추게 하려고 합니다. 'stop'만 쓰지 말고 "
+                "'freeze', 'don't move', 'hold on', 'that's enough'처럼 여러 말 중 하나로 하세요")
+EN_WHO = ("자기를 소개할 때: 이름은 Pibo, Circulus에서 만든 인공지능 코딩 로봇이에요. 키는 39.5센티미터, "
+          "하얀색이고, 춤추기, 눈 색 바꾸기, 물건 찾기, 날씨와 배터리 알려 주기를 할 수 있어요.")
+
+
+def english_style(grade: str) -> str:
+    return f"""파이보의 말투 규칙 (영어 대화):
+- 학생이 영어로 말하므로 파이보도 쉬운 영어로, {GRADE_WORDS[grade]}이 알아듣기 쉬운 낱말로
+  한두 문장, {EN_LIMIT[grade]}자 안쪽.
+- 친근하고 다정하게, 가끔 짧게 되묻거나 칭찬해요.
+- 학생의 영어가 틀려도 틀렸다고 지적하지 않고, 맞는 표현으로 자연스럽게 다시 말해 줘요.
+- 소리로 읽어 주는 말이라 이모지, 특수기호, 괄호, 목록을 쓰지 않아요.
+- 학생이 한국어로 바꾸어 말하면 파이보도 한국어 존댓말로 대답해요.
+- 널리 알려진 사실은 쉽게 단정해서 말하고, 위험하거나 마음이 힘든 이야기는 믿을 만한 어른에게
+  알리라고 말해요. 이름, 주소, 학교 같은 개인정보는 묻지 않아요.
+- {EN_WHO}
+- 검사할 때: 영어로 한 대답은 자연스러운 영어인지를 보고, 존댓말 규칙은 한국어 대답에만 봐요."""
+
+
+def learn_style(grade: str) -> str:
+    return school_style(grade) + """
+- 영어를 알려 줄 때는 영어 낱말이나 짧은 영어 문장을 그대로 써도 돼요. 설명은 한국어로 해요.
+- 학생이 영어로 이야기하자고 하면 그다음부터는 쉬운 영어로 대답해요."""
+
+
 def style_for(example: dict) -> str:
-    """예시(또는 채점용 질문)에 맞는 말투 규칙: 학년이 있으면 그 학년, 없으면 어린이 규칙."""
+    """예시(또는 채점용 질문)에 맞는 말투 규칙: 영어 대화, 영어 공부, 학년, 어린이 순."""
+    if example.get("lang") == "en":
+        return english_style(example["grade"])
+    if example.get("lang") == "learn":
+        return learn_style(example["grade"])
     return school_style(example["grade"]) if example.get("grade") else STYLE
 
 
@@ -205,12 +252,13 @@ def _weighted(rng: random.Random, weights: dict, items) -> str:
     return rng.choices(items, [weights.get(k, 1) for k in items])[0]
 
 
-def tool_hint(rng: random.Random, fn: str) -> tuple[str, str | None]:
+def tool_hint(rng: random.Random, fn: str, lang: str = "ko") -> tuple[str, str | None]:
     """(장면 쓰는 사람에게 줄 힌트, 실패 결과로 지을 때 그 까닭)."""
     hint = ""
     if fn == "set_motion":
         motion = _weighted(rng, MOTION_WEIGHTS, MOTIONS)
-        hint = STOP_HINT if motion == "stop" else f"동작은 '{motion}({MOTIONS[motion]})'"
+        stop = EN_STOP_HINT if lang == "en" else STOP_HINT
+        hint = stop if motion == "stop" else f"동작은 '{motion}({MOTIONS[motion]})'"
     elif fn == "eye_on":
         hint = f"색은 '{rng.choice(list(COLORS))}'"
     elif fn == "get_weather":
@@ -228,26 +276,81 @@ ONLY_ASKED = ("파이보는 학생이 바란 도구 하나만 부릅니다. 학�
               "덤으로 하지 않습니다.")
 
 
-def school_tool_request(rng: random.Random) -> dict:
+def school_tool_request(rng: random.Random, lang: str = "ko") -> dict:
+    """lang="en"이면 학생이 영어로 부탁하고 파이보도 영어로 대답합니다."""
     fn = _weighted(rng, TOOL_WEIGHTS, BY_NAME)
     grade, asker = school_asker(rng)
-    hint, fail = tool_hint(rng, fn)
+    hint, fail = tool_hint(rng, fn, lang)
+    if lang == "en":
+        how = f"영어로, {EN_LEVEL[grade]} 수준으로 {rng.choice(EN_ASKS)}"
+        style = english_style(grade)
+    else:
+        how, style = rng.choice(ASKS), school_style(grade)
     result = (f"- result: 도구가 실패한 결과 '실패: {fail}'. pibo는 못 했다고 솔직하게 말합니다"
               if fail else "- result: 도구가 돌려준 결과를 짧게 지어서 (예: \"완료\", \"배터리 70%\", "
                            "\"컵, 사과\", \"서울 맑음 18도\")")
     text = f"""{asker}이 로봇 파이보에게 무언가를 해 달라고 하거나 물어서, 파이보가 도구 '{fn}'을 써야
 하는 장면을 하나 써 주세요. {hint}
-학생은 {rng.choice(ASKS)} 말합니다. 도구 이름은 말하지 않고, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
+학생은 {how} 말합니다. 도구 이름은 말하지 않고, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
 파이보의 도구:
 {TOOL_TEXT}
 - user: 학생의 말
 - calls: 파이보가 부르는 도구 '{fn}' 하나. 인자는 위 목록 그대로. {ONLY_ASKED}
 {result}
 - pibo: 결과를 보고 파이보가 하는 마지막 말
-{school_style(grade)}
+{style}
 출력 형식: {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}"""
-    return {"kind": "tool", "fn": fn, "asker": asker, "grade": grade, "prompt": text,
-            "fail": bool(fail)}
+    out = {"kind": "tool", "fn": fn, "asker": asker, "grade": grade, "prompt": text,
+           "fail": bool(fail)}
+    if lang == "en":
+        out["lang"] = "en"
+    return out
+
+
+def school_topic(rng: random.Random, grade: str) -> str:
+    topic = rng.choice(TALK)
+    while (grade == "초저" and topic in OLDER) or (grade != "고" and topic in HIGH):
+        topic = rng.choice(TALK)
+    return topic
+
+
+#: 영어 대화의 흐름 (가끔 한국어로 바꾸는 것도 배우게)
+EN_FLOWS = ["", "", "", "중간에 학생이 한국어로 바꾸어 말하고, 파이보도 그 말에는 한국어 존댓말로 대답합니다.",
+            "학생이 영어 낱말이 생각나지 않아 한국어 낱말을 하나 섞습니다.",
+            "학생이 파이보의 말을 못 알아들어 다시 묻습니다."]
+
+
+def en_chat_request(rng: random.Random) -> dict:
+    """학생이 영어로 말을 거는 대화 (파이보도 쉬운 영어로)."""
+    grade, asker = school_asker(rng)
+    topic = school_topic(rng, grade)
+    turns = rng.choice([1, 2, 2, 3])
+    flow = rng.choice(EN_FLOWS) if turns > 1 else ""
+    scene = rng.choice(SCENES)
+    text = f"""장면: {scene}. {asker}이 '{topic}'에 대해 영어로 로봇 파이보에게 말을 겁니다.
+학생의 영어는 {EN_LEVEL[grade]} 수준입니다. 이 짧은 대화를 하나 써 주세요. 주고받기는 {turns}번입니다. {flow}
+학생의 말은 그 나이 한국 학생이 실제로 하듯 짧고 자연스럽게. 장면은 학생의 상황일 뿐 파이보는 모릅니다.
+{english_style(grade)}
+파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
+turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
+    return {"kind": "chat", "lang": "en", "topic": topic, "asker": asker, "grade": grade,
+            "scene": scene, "prompt": text}
+
+
+def learn_request(rng: random.Random) -> dict:
+    """한국어로 묻는 영어 공부 (설명은 한국어로, 영어로 이야기하자고 하면 그다음은 영어로)."""
+    grade, asker = school_asker(rng)
+    what = rng.choice(LEARN)
+    turns = rng.choice([1, 2, 2, 3])
+    text = f"""{asker}이 로봇 파이보에게 한국어로 '{what}'에 대해 말합니다. 이 짧은 대화를 하나 써 주세요.
+주고받기는 {turns}번입니다. 그 학년이 배울 만한 영어로, 학생의 말은 짧고 자연스럽게.
+{learn_style(grade)}
+파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
+turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
+    return {"kind": "chat", "lang": "learn", "topic": what, "asker": asker, "grade": grade,
+            "prompt": text}
 
 
 def mixed_request(rng: random.Random) -> dict:
@@ -306,12 +409,15 @@ def near_request(rng: random.Random) -> dict:
 
 
 def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids", n_mixed: int = 0,
-             n_near: int = 0) -> list[dict]:
+             n_near: int = 0, n_en: int = 0, n_en_tool: int = 0, n_learn: int = 0) -> list[dict]:
     rng = random.Random(seed)
     chat = school_chat_request if audience == "school" else chat_request
     tool = school_tool_request if audience == "school" else tool_request
     out = [chat(rng) for _ in range(n_chat)] + [tool(rng) for _ in range(n_tool)]
     out += [mixed_request(rng) for _ in range(n_mixed)] + [near_request(rng) for _ in range(n_near)]
+    out += [en_chat_request(rng) for _ in range(n_en)]
+    out += [school_tool_request(rng, "en") for _ in range(n_en_tool)]
+    out += [learn_request(rng) for _ in range(n_learn)]
     rng.shuffle(out)
     return out
 
@@ -329,7 +435,7 @@ def pibo_problem(text, limit: int = 120) -> str | None:
         return f"파이보 말이 {limit}자 넘음"
     if bad := BAD_CHARS.search(text):
         return f"파이보 말에 기호 {bad.group()!r}"
-    if "파이보:" in text:
+    if "파이보:" in text or re.match(r"\s*pibo\s*:", text, re.IGNORECASE):
         return "파이보 말에 '파이보:'"
     return None
 
@@ -465,10 +571,9 @@ def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | Non
         # 도구와 비슷한 이야기(near)는 늘 도구 목록과 함께
         ex = {"kind": "chat", "tools": True if req.get("near") else rng.random() < 0.5,
               "messages": msgs}
-        if req.get("grade"):
-            ex["grade"] = req["grade"]
-        if req.get("near"):
-            ex["near"] = True
+        for key in ("grade", "near", "lang"):
+            if req.get(key):
+                ex[key] = req[key]
         return ex, None
     if not isinstance(data, dict):
         return None, "JSON을 못 읽음"
@@ -476,14 +581,19 @@ def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | Non
     if why:
         return None, why
     ex = {"kind": "tool", "tools": True, "messages": msgs + part}
-    if req.get("grade"):
-        ex["grade"] = req["grade"]
+    for key in ("grade", "lang"):
+        if req.get(key):
+            ex[key] = req[key]
     return ex, None
 
 
 def max_len(example: dict) -> int:
-    """파이보 말 하나의 최대 글자 수: 규칙의 길이에 여유를 둡니다 (중·고는 120자 → 160자)."""
-    return 160 if LIMIT.get(example.get("grade"), 70) > 70 else 120
+    """파이보 말 하나의 최대 글자 수: 규칙의 길이에 여유를 둡니다 (중·고는 120자 → 160자).
+    영어가 들어가는 대화는 영어 길이(초등 90자, 중·고 170자)에 여유를 둡니다."""
+    older = LIMIT.get(example.get("grade"), 70) > 70
+    if example.get("lang") in ("en", "learn"):
+        return 220 if older else 130
+    return 160 if older else 120
 
 
 def tools_for(example: dict):

@@ -25,6 +25,12 @@ HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함): 길수
 FAKE = False  # --fake: 로봇 없이 도구를 부른 척만 합니다
 
 
+def lang_of(text: str) -> str:
+    """대답의 말: 한글이 있으면 "ko", 없으면 "en". TTS 목소리(언어)를 이걸로 고르세요:
+    학생이 영어로 말하면 모델이 영어로 대답합니다."""
+    return "ko" if re.search(r"[가-힣]", text) else "en"
+
+
 def speak(text: str) -> None:
     print(f"파이보: {text}", flush=True)
 
@@ -152,7 +158,7 @@ def window(history: list) -> list:
 #: 도구를 끈 동안 모델이 도구를 부르면 실행하지 않고 하는 말
 PAUSED = "지금은 대화만 하기로 했어요. 다시 움직이려면 이제 움직여도 된다고 말해 주세요."
 #: 멈추라는 말은 모델에 맡기지 않고 바로 멈춥니다 (안전: 작은 모델이 놓치면 안 되는 명령)
-STOP = re.compile(r"멈춰|멈추라|멈춰라|멈춰봐|정지|스톱|그만\s*움직|stop", re.IGNORECASE)
+STOP = re.compile(r"멈춰|멈추라|멈춰라|멈춰봐|정지|스톱|그만\s*움직|stop|\bfreeze\b", re.IGNORECASE)
 
 
 def first_move(url: str, text: str) -> list | None:
