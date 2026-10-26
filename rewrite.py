@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -49,8 +50,10 @@ def load_log(path: Path, sources: list[dict]) -> dict[tuple[str, str], dict]:
     return done
 
 
-def run(llm_ask, sources: list[dict], log_path: Path) -> dict[tuple[str, str], dict]:
-    """llm_ask(글 목록, 최대 토큰) → 답 목록. 바꿔 쓰기와 검사를 하고 기록을 돌려줍니다."""
+def run(llm_ask, sources: list[dict], log_path: Path,
+        timing: dict | None = None) -> dict[tuple[str, str], dict]:
+    """llm_ask(글 목록, 최대 토큰) → 답 목록. 바꿔 쓰기와 검사를 하고 기록을 돌려줍니다.
+    timing을 주면 단계마다 [한 개수, 걸린 초]를 더해 둡니다."""
     done = load_log(log_path, sources)
     stages = [("rewrite", 3072, lambda s: rewrite_prompt(s),
                lambda s, text: dict(zip(("turns", "why"), decide_rewrite(text, s), strict=True))),
@@ -62,7 +65,11 @@ def run(llm_ask, sources: list[dict], log_path: Path) -> dict[tuple[str, str], d
         print(f"{stage}: {len(todo)}개 할 차례", flush=True)
         for start in range(0, len(todo), CHUNK):
             part = todo[start:start + CHUNK]
+            t = time.time()
             answers = llm_ask([make(s) for s in part], tokens)
+            if timing is not None:
+                n, sec = timing.get(stage, [0, 0.0])
+                timing[stage] = [n + len(part), sec + time.time() - t]
             with log_path.open("a") as log:
                 for s, text in zip(part, answers, strict=True):
                     r = {"id": s["id"], "key": key_of(s), "stage": stage, **decide(s, text)}
@@ -105,20 +112,36 @@ def main():
     if not Path(args.data).exists():
         raise SystemExit(f"원본 대화 {args.data}가 없어요: PC에서 먼저 만들어 두세요")
     sources = [json.loads(x) for x in Path(args.data).read_text().splitlines() if x.strip()]
+    whole = len(sources)
     if args.limit:
         sources = sources[:args.limit]
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    llm = None
+    llm, load_s = None, 0.0
 
     def llm_ask(prompts, tokens):
-        nonlocal llm
+        nonlocal llm, load_s
         from teacher import ask, load_teacher
 
-        llm = llm or load_teacher(args.teacher)
+        if llm is None:
+            t = time.time()
+            llm = load_teacher(args.teacher)
+            load_s = time.time() - t
         return ask(llm, prompts, tokens)
 
-    done = run(llm_ask, sources, log_path)
+    timing: dict = {}
+    done = run(llm_ask, sources, log_path, timing)
+    if timing:                                # 걸린 시간과, 원본 전체를 하면 걸릴 시간
+        first = next(iter(timing))
+        timing[first][1] -= load_s            # 선생 모델 띄우는 시간은 빼고
+        hours = 0.0
+        for stage, (n, sec) in timing.items():
+            per = max(sec, 0.0) / n
+            share = n / timing[first][0]      # 검사는 바꿔 쓰기를 통과한 것만
+            hours += per * share * whole / 3600
+            print(f"시간: {stage} {n}개 {sec:.0f}초 (개당 {per:.2f}초)", flush=True)
+        print(f"시간: 선생 모델 띄우기 {load_s:.0f}초. 원본 전체 {whole}개를 하면 약 {hours:.1f}시간 "
+              f"(이번 속도 그대로라면)", flush=True)
     kept, by_source, why = results(sources, done)
     total = Counter(s["source"] for s in sources)
     print("남은 것: " + ", ".join(f"{k} {by_source[k]}/{n}" for k, n in sorted(total.items())),
