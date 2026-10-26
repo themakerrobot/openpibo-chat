@@ -23,6 +23,7 @@ import argparse
 import json
 import re
 import statistics
+from collections import Counter
 from pathlib import Path
 
 from make_data import load_teacher, thinking_params
@@ -420,8 +421,8 @@ def report() -> str:
     bad, loose = set(marked.get("bad", [])), set(marked.get("names_only", []))
     rows = [(f"| 모델 | 대화 점수 (5점 만점) | {'자연스러움' if ENGLISH else '한국어'} | 알맞음 | 짧음 | "
              "사실 | 틀린 사실 | 얼버무림 | 도구 정답률 | 춤에 덤 눈 색 | 도구 형식 오류 | 잘못 부름 | "
-             "평균 글자 수 | 같은 말로 대답 |"),
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+             "평균 글자 수 | 같은 말로 대답 | 같은 대답 |"),
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
         data = json.loads(f.read_text())
@@ -463,16 +464,20 @@ def report() -> str:
         length = statistics.mean(len(say(answers[i])) for i in chat_q) if chat_q else 0
         same = (f"{sum(same_language(qs[i], answers[i]) for i in chat_q) / len(chat_q):.0%}"
                 if chat_q else "-")
+        # 서로 다른 질문에 글자 그대로 같은 대답을 한 비율 (늘 하던 말로 때우는지)
+        shapes = Counter(re.sub(r"[\s.,!?~…'\"]", "", say(answers[i])) for i in chat_q)
+        dup = (f"{sum(shapes[re.sub(r'[\s.,!?~…\'\"]', '', say(answers[i]))] > 1 for i in chat_q) / len(chat_q):.0%}"
+               if chat_q else "-")
         rows.append(f"| {name} | {total:.2f} | {avg('korean'):.2f} | {avg('fit'):.2f} | "
                     f"{avg('short'):.2f} | {avg('true'):.2f} | {rate('wrong')} | "
                     f"{rate('dodged')} | {right} | {extra} | "
-                    f"{wrong_fmt} | {false_call} | {length:.0f} | {same} |")
+                    f"{wrong_fmt} | {false_call} | {length:.0f} | {same} | {dup} |")
     text = "\n".join(rows) + "\n"
     n_tool = sum(q["kind"] == "tool" for q in qs)
     text += ("\n틀린 사실·얼버무림: 선생이 생각을 켜고 본 대화 대답의 비율 (낮을수록 좋음)."
              " 사실 칸(1~5점)은 생각을 끈 채점이라 이런 실수를 잘 못 잡습니다.\n")
     text += ("\n같은 말로 대답: 영어로 말을 건 대화 질문에 한글 없이 영어로, 그 밖의 대화 질문에 한국어로"
-             " 대답한 비율.\n")
+             " 대답한 비율. 같은 대답: 서로 다른 질문에 글자 그대로 같은 대답을 한 비율 (낮을수록 좋음).\n")
     text += (f"\n도구 정답률: 춤 번호는 따지지 않음. 춤에 덤으로 부른 눈 색은 빼고 보고 따로 셈."
              + (f" 도구 문제 {n_tool}개 중 선생이 억지라고 본 {len(bad)}개는 빼고, 동작·색·"
                 f"지역이 아이 말로 안 정해지는 {len(loose)}개는 도구 이름만 봄." if marked else "")

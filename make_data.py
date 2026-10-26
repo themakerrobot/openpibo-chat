@@ -97,6 +97,8 @@ def slot(ex: dict) -> str:
     en(영어 대화), entool(영어 도구 부탁), learn(한국어로 묻는 영어 공부)."""
     if ex.get("near"):
         return "near"
+    if ex.get("lead"):
+        return "lead"
     if ex.get("lang") == "learn":
         return "learn"
     if ex.get("lang") == "en":
@@ -106,7 +108,7 @@ def slot(ex: dict) -> str:
 
 #: 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다 (칸마다 버려지는 비율이 달라서)
 ASK_MORE = {"chat": 1.4, "tool": 1.6, "mixed": 2.0, "near": 1.4, "en": 1.4, "entool": 1.6,
-            "learn": 1.4}
+            "learn": 1.4, "lead": 1.6}
 
 
 def main():
@@ -120,6 +122,8 @@ def main():
                    help="도구와 비슷한 말이지만 부탁은 아닌 이야기 (--audience school)")
     p.add_argument("--english", type=int, default=0, help="영어 대화 (--audience school)")
     p.add_argument("--english-tool", type=int, default=0, help="영어 도구 부탁 (--audience school)")
+    p.add_argument("--lead", type=int, default=0,
+                   help="파이보가 대화를 이어 가는 긴 대화 (--audience school)")
     p.add_argument("--learn", type=int, default=0,
                    help="한국어로 묻는 영어 공부 (--audience school)")
     p.add_argument("--seed", type=int, default=0)
@@ -140,9 +144,10 @@ def main():
         seen |= {first_user(json.loads(line))
                  for line in Path(args.avoid).read_text().splitlines()}
     want = {"chat": args.chat, "tool": args.tool, "mixed": args.mixed, "near": args.near,
-            "en": args.english, "entool": args.english_tool, "learn": args.learn}
+            "en": args.english, "entool": args.english_tool, "learn": args.learn,
+            "lead": args.lead}
     count = {k: sum(slot(e) == k for e in have) for k in want}
-    if any(want[k] for k in ("mixed", "near", "en", "entool", "learn")) \
+    if any(want[k] for k in ("mixed", "near", "en", "entool", "learn", "lead")) \
             and args.audience != "school":
         raise SystemExit("--mixed, --near, --english, --english-tool, --learn은 --audience school에서만")
     print(f"이미 {count}, 목표 {want}", flush=True)
@@ -152,8 +157,8 @@ def main():
     from vllm import SamplingParams
 
     llm = load_teacher(args.teacher)
-    # 중·고 다섯 번 주고받기(도구 호출 포함)도 들어가게
-    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1400)
+    # 중·고 일곱 번 주고받기도 들어가게
+    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1800)
     rng = random.Random(args.seed)
     for rnd in range(50):
         need = {k: max(0, want[k] - count[k]) for k in want}
@@ -164,7 +169,8 @@ def main():
         # 이어서 만들 때 처음과 같은 요청을 다시 청하지 않게 이미 쓴 수만큼 건너뜁니다
         reqs = requests(n["chat"], n["tool"], seed=args.seed * 1000 + rnd + len(have) * 7919,
                         audience=args.audience, n_mixed=n["mixed"], n_near=n["near"],
-                        n_en=n["en"], n_en_tool=n["entool"], n_learn=n["learn"])
+                        n_en=n["en"], n_en_tool=n["entool"], n_learn=n["learn"],
+                        n_lead=n["lead"])
         convs = [[{"role": "system", "content": TEACHER_SYSTEM},
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},

@@ -392,6 +392,49 @@ result는 도구가 돌려준 결과를 짧게 지어서 (예: "완료", "배터
             "calls_at": {str(k): fn for k, fn in fns.items()}, "prompt": text}
 
 
+#: 대화를 이어 가는 흐름 (앞의 것일수록 자주): 파이보가 앞에서 한 말을 되풀이하고, 이어 묻는
+#: 말("그래서 뭐 먹을까?")에 구체적으로 답하지 못하던 것을 고칩니다
+LEAD_FLOWS = [
+    ("학생이 파이보의 말에 이어서 '그래서 뭐 해?', '뭐 먹을까?', '왜?', '어떻게?', '예를 들면?'처럼 "
+     "구체적으로 묻습니다. 파이보는 앞에서 한 말을 되풀이하지 않고, 구체적인 예를 두세 가지 들어 대답합니다", 5),
+    ("학생이 같은 것을 말만 바꿔 다시 묻습니다. 파이보는 앞의 대답을 그대로 되풀이하지 않고, 다른 말과 "
+     "새로운 내용을 더해 대답합니다", 3),
+    ("학생이 '응', '몰라', '그냥', '심심해'처럼 짧게만 대답합니다. 파이보는 쉽게 대답할 수 있는 질문을 "
+     "하거나 재미있는 이야깃거리를 꺼내 대화를 이어 갑니다", 3),
+    ("학생이 놀자고 합니다. 파이보가 끝말잇기, 스무고개, 퀴즈, 수수께끼, 이야기 이어 만들기 중 하나를 "
+     "제안하고 몇 번 주고받으며 실제로 놀이를 합니다 (끝말잇기는 앞 낱말의 끝 글자로 시작하는 진짜 "
+     "낱말만)", 2),
+    ("학생이 오늘 있었던 일을 조금씩 말합니다. 파이보는 학생이 한 말을 구체적으로 짚어 반응하고 "
+     "궁금한 것을 하나씩 묻습니다", 2),
+    ("학생이 파이보에게 좋아하는 것, 하루, 생각을 묻습니다. 파이보는 로봇답게 대답하되 지어낸 경험은 "
+     "말하지 않고 (예: '저는 직접 먹어 보진 못했지만 떡볶이 이야기를 들으면 궁금해져요'), 학생에게도 "
+     "되묻습니다", 2),
+]
+LEAD_RULES = """대화를 이어 가는 규칙:
+- 앞에서 한 말이나 표현을 되풀이하지 않아요. 같은 칭찬("정말 멋져요")을 여러 번 쓰지 않아요.
+- 학생이 한 말을 구체적으로 짚어서 대답하고, 물으면 구체적인 예를 들어 답해요.
+- 대화가 끊길 것 같으면 쉬운 질문이나 새 이야깃거리, 놀이를 꺼내요. 질문은 한 번에 하나만."""
+
+
+def lead_request(rng: random.Random) -> dict:
+    """파이보가 대화를 이어 가는 긴 대화 (4~7번 주고받기)."""
+    grade, asker = school_asker(rng)
+    topic = school_topic(rng, grade)
+    flow = rng.choices([f for f, _ in LEAD_FLOWS], [w for _, w in LEAD_FLOWS])[0]
+    turns = rng.choice([4, 5, 5, 6, 7])
+    text = f"""장면: {rng.choice(SCENES)}. {asker}이 '{topic}' 이야기로 로봇 파이보에게 말을 겁니다.
+이 대화를 하나 써 주세요. 주고받기는 {turns}번입니다. {flow}.
+학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게 (반말, 줄임말도 됩니다).
+장면은 학생의 상황일 뿐 파이보는 모릅니다: 파이보는 학생이 말한 것만 알고 대답합니다.
+{school_style(grade)}
+{LEAD_RULES}
+파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
+turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
+    return {"kind": "chat", "lead": True, "topic": topic, "asker": asker, "grade": grade,
+            "prompt": text}
+
+
 def near_request(rng: random.Random) -> dict:
     """도구와 비슷한 말이지만 해 달라는 것이 아닌 이야기 (도구 목록이 있어도 말로만 대답)."""
     grade, asker = school_asker(rng)
@@ -409,7 +452,8 @@ def near_request(rng: random.Random) -> dict:
 
 
 def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids", n_mixed: int = 0,
-             n_near: int = 0, n_en: int = 0, n_en_tool: int = 0, n_learn: int = 0) -> list[dict]:
+             n_near: int = 0, n_en: int = 0, n_en_tool: int = 0, n_learn: int = 0,
+             n_lead: int = 0) -> list[dict]:
     rng = random.Random(seed)
     chat = school_chat_request if audience == "school" else chat_request
     tool = school_tool_request if audience == "school" else tool_request
@@ -418,6 +462,7 @@ def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids", n_mixe
     out += [en_chat_request(rng) for _ in range(n_en)]
     out += [school_tool_request(rng, "en") for _ in range(n_en_tool)]
     out += [learn_request(rng) for _ in range(n_learn)]
+    out += [lead_request(rng) for _ in range(n_lead)]
     rng.shuffle(out)
     return out
 
@@ -571,7 +616,7 @@ def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | Non
         # 도구와 비슷한 이야기(near)는 늘 도구 목록과 함께
         ex = {"kind": "chat", "tools": True if req.get("near") else rng.random() < 0.5,
               "messages": msgs}
-        for key in ("grade", "near", "lang"):
+        for key in ("grade", "near", "lang", "lead"):
             if req.get(key):
                 ex[key] = req[key]
         return ex, None

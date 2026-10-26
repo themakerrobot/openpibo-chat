@@ -256,8 +256,14 @@ def do_command(url: str, text: str, tool: str, args: dict, reply: str) -> str:
 
 # ------------------------------------------------------------ talking
 
-def ask(url: str, messages: list, tools: bool, max_tokens: int = 150, timeout: int = 300) -> dict:
-    body = {"messages": messages, "temperature": 0.6, "max_tokens": max_tokens}
+#: 대답 설정: 같은 말을 되풀이하지 않게 (repeat_penalty: 같은 토큰, dry: 앞에 나온 말 덩어리)
+SAMPLING = {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.1,
+            "dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 3}
+
+
+def ask(url: str, messages: list, tools: bool, max_tokens: int = 150, timeout: int = 300,
+        **extra) -> dict:
+    body = {"messages": messages, **SAMPLING, "max_tokens": max_tokens, **extra}
     if tools:
         body["tools"] = TOOLS
     req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
@@ -372,8 +378,17 @@ def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) 
         said = do_command(url, text, *cmd) if allowed else PAUSED
     else:
         said = (ask(url, msgs, False).get("content") or "").strip()
+        before = {same(m["content"]) for m in history if m["role"] == "assistant"}
+        if same(said) in before:             # 앞에서 한 말 그대로: 한 번만 더 다르게
+            print("  (앞과 같은 대답이라 다시 물음)", flush=True)
+            said = (ask(url, msgs, False, temperature=1.0).get("content") or "").strip() or said
     history.append({"role": "assistant", "content": said})
     return said
+
+
+def same(text: str) -> str:
+    """대답을 견줄 모양: 띄어쓰기와 문장부호를 뺌."""
+    return re.sub(r"[\s.,!?~…'\"]", "", text or "")
 
 
 def warm_up(url: str, tools: bool) -> None:

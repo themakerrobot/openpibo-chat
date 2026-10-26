@@ -153,9 +153,17 @@ def steps():
                                   "--out", "data/english-clean.jsonl",
                                   "--log", "data/chat-check-english.jsonl"],
            ["data-english"]),
+          # 파이보가 대화를 이어 가는 4~7번 주고받기 8천 개: 이어 묻는 말("그래서 뭐 먹을까?")에
+          # 앞의 말을 되풀이하던 것, 짧은 대답에 대화가 끊기던 것을 고칩니다
+          ("data-lead", ["make_data.py", "--audience", "school", "--out", "data/lead.jsonl",
+                         "--chat", "0", "--tool", "0", "--lead", "8000", "--seed", "4"], []),
+          ("data-lead-clean", ["filter_chat.py", "--data", "data/lead.jsonl",
+                               "--out", "data/lead-clean.jsonl",
+                               "--log", "data/chat-check-lead.jsonl"], ["data-lead"]),
           ("data-school2", ["merge_data.py", "--chat-only", "--out", "data/train-school2.jsonl",
-                            "data/train-school.jsonl", "data/english-clean.jsonl"],
-           ["data-school-clean", "data-english-clean"])]
+                            "data/train-school.jsonl", "data/english-clean.jsonl",
+                            "data/lead-clean.jsonl"],
+           ["data-school-clean", "data-english-clean", "data-lead-clean"])]
     for st in students():
         name, (data, made_by) = st["name"], st["data"]
         cmd = ["train.py", "--base", st["base"], "--data", data, "--out", f"runs/{name}",

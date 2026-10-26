@@ -14,6 +14,8 @@
   --no-devices면 하지 않습니다.
 - --chat-only: 도구 없는 대화 모델용. 도구를 부르는 예시(tool, mixed)를 빼고, 남은 예시도 도구
   목록 없이 학습하게 합니다.
+- 똑같은 파이보 대답(띄어쓰기·문장부호 무시)은 REPEAT_MAX번까지만: 같은 대답이 많으면 모델이
+  비슷한 말에 늘 같은 말을 합니다. 가장 흔한 첫 문장들을 찍어 사람이 볼 수 있게 합니다.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ from pathlib import Path
 
 from devices import vary
 from make_data import slot
+
+#: 똑같은 파이보 대답을 남기는 최대 횟수
+REPEAT_MAX = 3
 
 #: 인사만 한 말 (앞뒤의 '파이보야', 문장부호는 무시)
 GREETING = re.compile(
@@ -73,9 +78,18 @@ def chat_only(ex: dict) -> dict | None:
     return ex
 
 
+def said(text: str) -> str:
+    """대답을 견줄 모양: 띄어쓰기와 문장부호를 뺌."""
+    return re.sub(r"[\s.,!?~…'\"]", "", text)
+
+
+def first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s", text.strip(), maxsplit=1)[0]
+
+
 def merge(paths: list[str], only_chat: bool = False) -> tuple[list[str], Counter, Counter]:
     """(합친 줄들, 칸마다 남은 수, 뺀 까닭마다 수)."""
-    out, seen, kept, why = [], set(), Counter(), Counter()
+    out, seen, kept, why, replies = [], set(), Counter(), Counter(), Counter()
     for path in paths:
         for line in Path(path).read_text().splitlines():
             if not line.strip():
@@ -93,6 +107,12 @@ def merge(paths: list[str], only_chat: bool = False) -> tuple[list[str], Counter
                     why["도구를 부르는 예시 (--chat-only)"] += 1
                     continue
                 line = json.dumps(ex, ensure_ascii=False)
+            mine = [said(m["content"]) for m in ex["messages"]
+                    if m["role"] == "assistant" and m.get("content")]
+            if any(replies[r] >= REPEAT_MAX for r in mine):
+                why[f"같은 파이보 대답이 {REPEAT_MAX}번 넘음"] += 1
+                continue
+            replies.update(mine)
             kept[slot(ex)] += 1
             out.append(line)
     return out, kept, why
@@ -115,6 +135,11 @@ def main():
     print(f"{args.out}: {len(lines)}줄 ({', '.join(f'{k} {v}' for k, v in sorted(kept.items()))})",
           flush=True)
     print("뺀 것: " + (", ".join(f"{k} {v}" for k, v in why.most_common()) or "없음"), flush=True)
+    firsts = Counter(first_sentence(m["content"]) for line in lines
+                     for m in json.loads(line)["messages"]
+                     if m["role"] == "assistant" and m.get("content"))
+    print("가장 흔한 첫 문장: " + " / ".join(f"{t} ({n})" for t, n in firsts.most_common(10)),
+          flush=True)
 
 
 if __name__ == "__main__":

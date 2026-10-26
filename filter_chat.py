@@ -247,7 +247,7 @@ def main():
     llm = None
     if left:
         llm = llm or load_teacher()
-        params = thinking_params(2048)
+        params = thinking_params(3072)   # 일곱 번 주고받는 대화도 생각이 잘리지 않게
         for start in range(0, len(left), CHUNK):
             part = left[start:start + CHUNK]
             outs = llm.chat([[{"role": "user", "content": prompt(ex, u, b)}]

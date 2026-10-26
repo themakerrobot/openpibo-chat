@@ -136,7 +136,7 @@ def test_the_robot_runs_the_tool_then_answers(monkeypatch):
     ])
     seen = []
     monkeypatch.setattr(pibo_chat, "MODEL_TOOLS", True)  # --model-tools: 예전 도구 모델
-    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: next(replies))
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: next(replies))
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: seen.append((n, a)) or "완료")
     history = []
     assert pibo_chat.turn("x", history, "춤춰", True) == "춤췄어요!"
@@ -181,7 +181,7 @@ def test_chat_window_starts_with_the_child(monkeypatch):
 
     sent = []
     monkeypatch.setattr(pibo_chat, "ask",
-                        lambda url, msgs, tools: sent.append(msgs) or {"content": "네."})
+                        lambda url, msgs, tools, **k: sent.append(msgs) or {"content": "네."})
     history = []
     for text in ("하나", "둘", "셋", "넷"):
         pibo_chat.turn("x", history, text, False)
@@ -665,7 +665,7 @@ def test_tool_calls_stay_in_the_remembered_conversation(monkeypatch):
         {"content": "네."}, {"content": "네."}, {"content": "네."},
     ])
     sent = []
-    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs)) or next(replies))
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: sent.append(list(msgs)) or next(replies))
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: "완료")
     monkeypatch.setattr(pibo_chat, "MODEL_TOOLS", True)  # --model-tools
     monkeypatch.setattr(pibo_chat, "HISTORY", 3)       # --history 3
@@ -698,7 +698,7 @@ def test_child_can_switch_tools_off_and_on():
 def test_tools_called_while_paused_are_not_run(monkeypatch):
     import pibo_chat
 
-    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: {"content": "", "tool_calls": [
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: {"content": "", "tool_calls": [
         {"id": "1", "function": {"name": "set_motion", "arguments": '{"name": "forward1"}'}}]})
     ran = []
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: ran.append(n) or "완료")
@@ -951,7 +951,10 @@ def test_school2_is_one_chat_model_for_every_device(tmp_path, monkeypatch):
     assert not any("school-tools" in n or n.startswith("eval-tools") for n in names)  # 도구 뺌
     cmd, needs = steps["data-school2"]
     assert cmd[:2] == ["merge_data.py", "--chat-only"] and "data/english-clean.jsonl" in cmd
-    assert set(needs) == {"data-school-clean", "data-english-clean"}
+    assert set(needs) == {"data-school-clean", "data-english-clean", "data-lead-clean"}
+    assert "data/lead-clean.jsonl" in cmd
+    cmd, _ = steps["data-lead"]
+    assert cmd[cmd.index("--lead") + 1] == "8000" and steps["data-lead-clean"][1] == ["data-lead"]
     cmd, needs = steps["train-qwen3.5-0.8b-school2"]
     assert needs == ["data-school2"] and "data/train-school2.jsonl" in cmd and "Qwen/Qwen3.5-0.8B" in cmd
     assert names.index("data-school2") < names.index("train-qwen3.5-0.8b-school2") \
@@ -1079,7 +1082,7 @@ def test_english_questions_are_judged_for_the_language_they_were_asked_in(tmp_pa
     finally:
         evaluate.use_set("kids")
     assert "| 자연스러움 |" in text.splitlines()[0]
-    assert text.splitlines()[2].endswith("| 100% |")
+    assert text.splitlines()[2].endswith("| 100% | 0% |")
     assert evaluate.MARKS == evaluate.KIDS_MARKS and not evaluate.ENGLISH
 
 
@@ -1145,8 +1148,8 @@ def test_history_can_be_cut_to_the_current_words_and_server_errors_do_not_kill_t
     import pibo_chat
 
     sent = []
-    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs))
-                        or {"content": "네."})
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: sent.append(list(msgs))
+                        or {"content": f"네 {len(sent)}."})
     monkeypatch.setattr(pibo_chat, "HISTORY", 1)       # --history 1: 지금 말만
     history = []
     for text in ("하나", "둘"):
@@ -1266,7 +1269,7 @@ def test_the_app_runs_the_few_motions_itself_and_the_model_only_talks(monkeypatc
     import pibo_chat
 
     sent = []
-    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append((msgs, tools))
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: sent.append((msgs, tools))
                         or {"content": "그랬구나, 재미있었겠어요."})
     monkeypatch.setattr(pibo_chat, "FAKE", True)
     history = []
@@ -1276,6 +1279,7 @@ def test_the_app_runs_the_few_motions_itself_and_the_model_only_talks(monkeypatc
     assert pibo_chat.turn("x", history, "앞에 뭐 있어?", True) == "앞에 컵, 사과가 보여요."
     assert sent == []                                    # 여기까지 모델을 부르지 않음
     assert pibo_chat.turn("x", history, "어제 춤 학원 갔어", True) == "그랬구나, 재미있었겠어요."
+    assert len(sent) == 1                                # 처음 한 말이라 다시 묻지 않음
     msgs, tools = sent[-1]
     assert tools is False and msgs[0]["content"] == pibo_chat.SYSTEM   # 도구 목록 없이
     assert [m["role"] for m in msgs].count("user") == pibo_chat.HISTORY
@@ -1310,7 +1314,7 @@ def test_chat_only_merge_drops_tool_examples_and_keeps_names(tmp_path):
         {"user": "눈 꺼 줘", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
          "pibo": "껐어요."}, ensure_ascii=False), rng), ensure_ascii=False)
     chats = [json.dumps(dict(to_example({"kind": "chat"}, json.dumps({"turns": [
-        {"user": f"파이보야 {k}", "pibo": "저는 파이보예요."}]}, ensure_ascii=False), rng), tools=True),
+        {"user": f"파이보야 {k}", "pibo": f"저는 파이보예요 {k}."}]}, ensure_ascii=False), rng), tools=True),
         ensure_ascii=False) for k in range(200)]
     (tmp_path / "a.jsonl").write_text("\n".join([tool, *chats]) + "\n")
     lines, kept, why = merge([str(tmp_path / "a.jsonl")], only_chat=True)
@@ -1319,3 +1323,44 @@ def test_chat_only_merge_drops_tool_examples_and_keeps_names(tmp_path):
     exs = [json.loads(x) for x in out]
     assert not any(e.get("tools") or e.get("tool_names") for e in exs)
     assert count["이름 바꿈"] > 20 and count["없는 도구 거절"] == 0 and count["자기소개"] == 100
+
+
+
+def test_same_replies_are_capped_and_lead_dialogs_keep_the_talk_going(tmp_path):
+    import make_data
+    import prompts
+    from merge_data import REPEAT_MAX, merge
+
+    rng = random.Random(0)
+    lines = [json.dumps(prompts.to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": f"추워 {k}", "pibo": "따뜻한 음식을 먹으면 좋겠어요!" if k % 2 else f"그렇군요 {k}."}]},
+        ensure_ascii=False), rng), ensure_ascii=False) for k in range(20)]
+    (tmp_path / "a.jsonl").write_text("\n".join(lines) + "\n")
+    out, kept, why = merge([str(tmp_path / "a.jsonl")])
+    same = [x for x in out if "따뜻한 음식" in x]
+    assert len(same) == REPEAT_MAX and len(out) == 10 + REPEAT_MAX
+    reqs = prompts.requests(0, 0, seed=9, audience="school", n_lead=400)
+    assert all(make_data.slot(r) == "lead" for r in reqs)
+    follow = sum("구체적인 예를 두세 가지" in r["prompt"] for r in reqs)
+    assert follow > 100 and all(prompts.LEAD_RULES in r["prompt"] for r in reqs)   # 이어 묻기가 가장 많음
+    assert {r["grade"] for r in reqs} == set(prompts.GRADES)
+    ex = prompts.to_example(reqs[0], json.dumps({"turns": [
+        {"user": "날씨가 춥네", "pibo": "정말 추워요. 따뜻한 걸 먹으면 좋겠어요."},
+        {"user": "그래서 뭐 먹을까", "pibo": "어묵탕이나 호빵, 군고구마는 어때요?"}]}, ensure_ascii=False), rng)
+    assert ex["lead"] and make_data.slot(ex) == "lead"
+
+
+
+def test_a_reply_said_before_is_asked_again_once_with_more_variety(monkeypatch):
+    import pibo_chat
+
+    asked = []
+    replies = iter(["따뜻한 음식을 먹으면 좋겠어요.", "따뜻한 음식을 먹으면 좋겠어요!",
+                    "어묵탕이나 호빵은 어때요?"])
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools, **k: asked.append(k)
+                        or {"content": next(replies)})
+    history = []
+    assert pibo_chat.turn("x", history, "날씨가 춥네", True) == "따뜻한 음식을 먹으면 좋겠어요."
+    assert pibo_chat.turn("x", history, "그래서 뭐 먹을까", True) == "어묵탕이나 호빵은 어때요?"
+    assert asked == [{}, {}, {"temperature": 1.0}]
+    assert pibo_chat.SAMPLING["repeat_penalty"] > 1 and pibo_chat.SAMPLING["dry_multiplier"] > 0
