@@ -2,6 +2,7 @@
 
     python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b
     python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b --quant Q8_0
+    python export.py --retemplate out/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf   # 템플릿만
 
 결과: out/<name>-<quant>.gguf (파이보로 복사할 파일)과 out/<name>-<quant>-check.json.
 llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (setup 단계가 해 둡니다).
@@ -10,6 +11,11 @@ llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (setup 단계가 해 
 (<think></think>) 뒤의 대답만 했는데, llama-server는 따로 말하지 않으면 생각하는
 쪽으로 템플릿을 펼쳐서 대답 전에 영어로 한참 생각합니다. 템플릿에 박아 두면
 파이보 앱이나 서버 설정을 따로 고치지 않아도 됩니다.
+
+시스템 글 없이 물으면(llama-server 웹 화면, 시스템 글을 안 보내는 앱) 학습 때와 같은 시스템
+글(tools.SYSTEM)을 넣도록 템플릿 앞에 한 줄을 더합니다: 모델은 늘 이 글과 함께 배워서, 없으면
+"파이썬으로 웹소설을 만들었어요" 같은 엉뚱한 말을 합니다. 앱이 시스템 글을 보내면 그걸 씁니다.
+이미 만든 GGUF는 --retemplate으로 템플릿만 바꿉니다 (다시 변환하지 않음).
 """
 
 from __future__ import annotations
@@ -63,15 +69,32 @@ def force_no_think(template: str) -> str:
     return template
 
 
+DEFAULT_MARK = "{#- pibo: 시스템 글이 없으면 학습 때의 시스템 글 #}"
+
+
+def default_system(template: str, system: str = SYSTEM) -> str:
+    """시스템 글로 시작하지 않는 대화에 학습 때의 시스템 글을 앞에 넣는 템플릿."""
+    if DEFAULT_MARK in template:
+        return template
+    return (DEFAULT_MARK + "\n{%- if not messages or messages[0].role != 'system' %}"
+            "{%- set messages = [{'role': 'system', 'content': "
+            + json.dumps(system, ensure_ascii=False) + "}] + messages %}{%- endif %}\n" + template)
+
+
+def pibo_template(template: str) -> str:
+    """파이보용 템플릿: 늘 생각 없이, 시스템 글이 없으면 학습 때의 것."""
+    return default_system(force_no_think(template))
+
+
 def fix_template(model: Path) -> None:
     """chat_template.jinja(transformers 5.x)와 tokenizer_config.json 둘 다 고칩니다."""
     jinja = model / "chat_template.jinja"
     if jinja.exists():
-        jinja.write_text(force_no_think(jinja.read_text()))
+        jinja.write_text(pibo_template(jinja.read_text()))
     config = model / "tokenizer_config.json"
     data = json.loads(config.read_text())
     if isinstance(data.get("chat_template"), str):
-        data["chat_template"] = force_no_think(data["chat_template"])
+        data["chat_template"] = pibo_template(data["chat_template"])
         config.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     elif not jinja.exists():
         raise SystemExit(f"{model}에 대화 템플릿이 없어요")
@@ -153,6 +176,26 @@ def gguf_template(path: Path) -> str:
     return bytes(field.parts[field.data[0]]).decode() if field else ""
 
 
+def retemplate(path: Path) -> bool:
+    """GGUF를 다시 만들지 않고 대화 템플릿만 파이보용으로 바꿉니다. 바꿨으면 True."""
+    old = gguf_template(path)
+    new = pibo_template(old)
+    if new == old:
+        return False
+    jinja = path.with_name(path.name + ".jinja")
+    tmp = path.with_name(path.name + ".tmp")
+    jinja.write_text(new)
+    try:
+        subprocess.run([sys.executable, "-m", "gguf.scripts.gguf_new_metadata", str(path),
+                        str(tmp), "--chat-template-file", str(jinja), "--force"], check=True)
+        os.replace(tmp, path)
+    finally:
+        jinja.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+    print(f"{path}: 대화 템플릿을 바꿨어요 (생각 끄기, 기본 시스템 글)", flush=True)
+    return True
+
+
 def post(url, body, timeout=300):
     req = urllib.request.Request(url, json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
@@ -229,18 +272,26 @@ def check(gguf: Path) -> dict:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", required=True)
-    p.add_argument("--name", required=True)
+    p.add_argument("--model")
+    p.add_argument("--name")
     p.add_argument("--quant", default="Q4_K_M")
     p.add_argument("--imatrix", metavar="DATA",
                    help="이 학습 데이터로 imatrix를 재서 양자화 (llama-imatrix)")
+    p.add_argument("--retemplate", metavar="GGUF", nargs="+",
+                   help="이미 만든 GGUF의 대화 템플릿만 파이보용으로 (다시 변환하지 않음)")
     args = p.parse_args()
+    if args.retemplate:
+        for path in args.retemplate:
+            if not retemplate(Path(path)):
+                print(f"{path}: 이미 파이보용 템플릿이에요", flush=True)
+        return
+    if not (args.model and args.name):
+        p.error("--model과 --name이 필요해요")
     OUT.mkdir(exist_ok=True)
     f16 = OUT / f"{args.name}-f16.gguf"
     q = OUT / f"{args.name}-{args.quant}.gguf"
-    if q.exists() and thinks(gguf_template(q)):
-        print(f"{q}: 생각 끄기 전 템플릿이라 다시 만듭니다", flush=True)
-        q.unlink()
+    if q.exists():
+        retemplate(q)                        # 예전에 만든 파일: 템플릿만 바꿈
     if not q.exists():
         fix_template(Path(args.model))
         convert(Path(args.model), f16)
@@ -251,8 +302,8 @@ def main():
         f16.unlink()
         if imat:
             imat.unlink()
-    if thinks(gguf_template(q)):
-        raise SystemExit(f"{q}: 템플릿에 생각 끄기가 들어가지 않았어요")
+    if thinks(gguf_template(q)) or DEFAULT_MARK not in gguf_template(q):
+        raise SystemExit(f"{q}: 템플릿에 생각 끄기나 기본 시스템 글이 들어가지 않았어요")
     result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}
     (OUT / f"{q.stem}-check.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     print(json.dumps(result, ensure_ascii=False, indent=1))

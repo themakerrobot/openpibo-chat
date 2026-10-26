@@ -1112,3 +1112,25 @@ def test_reply_language_picks_the_tts_voice():
     assert pibo_chat.lang_of("안녕하세요!") == "ko" and pibo_chat.lang_of("Hello there!") == "en"
     assert pibo_chat.lang_of("사과는 apple이에요.") == "ko"
     assert pibo_chat.STOP.search("Freeze!") and not pibo_chat.STOP.search("freezer")
+
+
+def test_gguf_template_adds_the_training_system_prompt_only_when_missing():
+    from export import DEFAULT_MARK, default_system, pibo_template, thinks
+
+    jinja2 = pytest.importorskip("jinja2")
+    src = (ROOT / "templates" / "qwen3.jinja").read_text()
+    fixed = pibo_template(src)
+    assert DEFAULT_MARK in fixed and not thinks(fixed) and pibo_template(fixed) == fixed
+    assert default_system(fixed) == fixed
+    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
+    env.filters["tojson"] = lambda v, **k: json.dumps(v, ensure_ascii=False)
+    t = env.from_string(fixed)
+    bare = t.render(messages=[{"role": "user", "content": "안녕"}], tools=TOOLS,
+                    add_generation_prompt=True)
+    assert bare.count(SYSTEM) == 1 and "<tools>" in bare
+    own = t.render(messages=[{"role": "system", "content": "다른 앱의 글"},
+                             {"role": "user", "content": "안녕"}], add_generation_prompt=True)
+    assert SYSTEM not in own and "다른 앱의 글" in own
+    ours = t.render(messages=[{"role": "system", "content": SYSTEM},
+                              {"role": "user", "content": "안녕"}], add_generation_prompt=True)
+    assert ours.count(SYSTEM) == 1
