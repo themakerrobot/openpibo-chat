@@ -436,14 +436,51 @@ def test_stop_is_run_without_asking_the_model(app, monkeypatch):
 
 def test_commands_only_use_what_the_device_has(app, monkeypatch):
     monkeypatch.setattr(app, "TOOLS", tool_list(["eye_on", "eye_off"]))
-    assert app.command_for("앞으로 가") is None and app.command_for("춤춰 줘") is None
+    assert app.command_for("앞으로 가") == (None, {}, app.MISSING["set_motion"])   # 없다고 말함
+    assert app.command_for("춤춰 줘") == (None, {}, app.MISSING["set_motion"])
+    assert app.command_for("앞으로 가고 싶은 대학이 있어") is None              # 이야기는 그대로 모델로
     assert app.command_for("눈 꺼 줘")[0] == "eye_off"
     assert app.run_tool("get_weather", {"region": "서울"}) == "실패: 이 기기에 없는 도구"
     monkeypatch.setattr(app, "TOOLS", tool_list(["set_motion"], ["dance3", "stop"]))
     assert app.command_for("춤춰 줘")[1] == {"name": "dance3"}
-    assert app.command_for("앞으로 가") is None
+    assert app.command_for("앞으로 가") == (None, {}, app.NO_MOTION)
     assert app.run_tool("set_motion", {"name": "moonwalk"}).startswith("실패")
     assert check_call("set_motion", {"name": "dance1"}) is None
+
+
+def test_pibrain_lights_its_led_and_says_it_cannot_move(app, monkeypatch):
+    calls = []
+
+    class Led:
+        def led_on(self, *c):
+            calls.append(("led_on", c))
+
+        def led_off(self):
+            calls.append(("led_off",))
+
+    fake = type(sys)("openpibo.device")
+    fake.DeviceByPiBrain = Led
+    monkeypatch.setitem(sys.modules, "openpibo", type(sys)("openpibo"))
+    monkeypatch.setitem(sys.modules, "openpibo.device", fake)
+    monkeypatch.setattr(app, "_parts", {})
+    monkeypatch.setattr(app, "FAKE", False)
+    monkeypatch.setattr(app, "DEVICE", "pibrain")
+    monkeypatch.setattr(app, "TOOLS", tool_list(app.DEVICES["pibrain"]["tools"], device="파이브레인"))
+    monkeypatch.setattr(app, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("모델 안 부름")))
+    history = []
+    assert app.turn("x", history, "빨간 불 켜 줘", True) == "불빛 색을 바꿨어요!"
+    assert app.turn("x", history, "LED 파란색으로 바꿔 줘", True) == "불빛 색을 바꿨어요!"
+    assert app.turn("x", history, "불 켜 줘", True) == "불빛을 켰어요."
+    assert app.turn("x", history, "엘이디 꺼", True) == "불빛을 껐어요."
+    assert calls == [("led_on", (255, 0, 0)), ("led_on", (0, 0, 255)), ("led_on", (255, 255, 255)),
+                     ("led_off",)]
+    assert app.turn("x", history, "앞으로 가 줘", True) == app.MISSING["set_motion"]
+    assert app.turn("x", history, "춤 좀 춰 봐", True) == app.MISSING["set_motion"]
+    assert app.turn("x", history, "배터리 얼마나 남았어?", True) == app.MISSING["get_battery"]
+    assert app.turn("x", history, "멈춰!", True) == "네, 멈출게요."
+    monkeypatch.setattr(app, "DEVICE", "pibo")
+    monkeypatch.setattr(app, "TOOLS", TOOLS)
+    assert app.command_for("빨간 눈으로 바꿔 줘") == ("eye_on", {"r": 255, "g": 0, "b": 0}, "눈 색을 바꿨어요!")
 
 
 def test_a_reply_said_before_is_asked_again_once_with_more_variety(app, monkeypatch):
@@ -487,6 +524,12 @@ def test_other_devices_send_their_own_name_and_motions(app, monkeypatch):
     app.main()
     assert "로봇 파이브레인이야" in app.SYSTEM and "파이브레인에 대해: 코딩 로봇" in app.SYSTEM
     assert [t["function"]["name"] for t in app.TOOLS] == ["set_motion", "eye_on", "eye_off"]
+    said = iter(["그만"])
+    monkeypatch.setattr(sys, "argv", ["pibo_chat.py", "--device", "pibrain"])
+    app.main()
+    assert app.DEVICE == "pibrain" and app.NAME == "파이브레인" and "로봇 파이브레인이야" in app.SYSTEM
+    assert sorted(t["function"]["name"] for t in app.TOOLS) == ["eye_off", "eye_on", "find_objects",
+                                                                "get_weather"]
 
 
 def test_server_errors_do_not_stop_the_app(app, monkeypatch, capsys):

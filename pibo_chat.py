@@ -5,13 +5,15 @@
     python3 pibo_chat.py                 # 키보드로 말하기
     python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 동작은 흉내만
     python3 pibo_chat.py --no-commands   # 동작 없이 대화만
-    python3 pibo_chat.py --name 파이브레인 --about "코딩 로봇, 서큘러스에서 만듦" \\
+    python3 pibo_chat.py --device pibrain   # 파이브레인: 이름, 불빛(LED), 카메라만 (몸·배터리 없음)
+    python3 pibo_chat.py --name 코코 --about "코딩 로봇, 서큘러스에서 만듦" \\
         --tools eye_on,eye_off,get_weather   # 다른 기기: 이름·소개·있는 동작만 (모델은 같음)
 
 대화 모델(themaker)은 모든 기기 공통이고 도구를 모릅니다 (도구 목록 1천 토큰을 읽느라
 파이보에서 너무 느려서 뺐습니다). 동작(멈춰, 춤, 인사, 앞으로·뒤로, 눈 색, 배터리, 앞에 뭐 있어, 날씨)은
 COMMANDS가 말을 보고 정해 바로 실행하고, 정해진 말로 대답합니다. 날씨만 받은 결과를 모델이 말로
-풀어 줍니다. 음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS
+풀어 줍니다. 기기에 없는 동작(파이브레인에게 "앞으로 가")은 없다고 정해진 말로 대답합니다.
+음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS
 목소리는 lang_of로). 이 파일은 tools.py 하나만 있으면 됩니다.
 """
 
@@ -30,6 +32,18 @@ from tools import COLORS, SYSTEM, TOOLS, check_call, has_batchim, system_for, to
 HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈)
 FAKE = False  # --fake: 로봇 없이 동작을 한 척만 합니다
 NAME = "파이보"   # --name: 기기 이름
+
+#: 기기마다 있는 동작과 불빛 말 (openpibo-os.pibo / openpibo-os.pibrain의 openpibo 함수 기준).
+#: tools가 None이면 tools.TOOLS 전부
+DEVICES = {
+    # 서보 10축(Motion.set_motion), 눈 LED(Device.eye_on/eye_off), 배터리, 카메라
+    "pibo": {"name": "파이보", "tools": None,
+             "color": "눈 색을 바꿨어요!", "on": "눈 불빛을 켰어요.", "off": "눈 불빛을 껐어요."},
+    # 서보·배터리·마이크 없음. NeoPixel 1개(DeviceByPiBrain.led_on/led_off), 카메라
+    "pibrain": {"name": "파이브레인", "tools": ["eye_on", "eye_off", "find_objects", "get_weather"],
+                "color": "불빛 색을 바꿨어요!", "on": "불빛을 켰어요.", "off": "불빛을 껐어요."},
+}
+DEVICE = "pibo"   # --device
 
 
 def lang_of(text: str) -> str:
@@ -62,10 +76,30 @@ def _part(name):
         if name == "motion":
             from openpibo.motion import Motion
             _parts[name] = Motion()
+        elif name == "device" and DEVICE == "pibrain":
+            from openpibo.device import DeviceByPiBrain
+            _parts[name] = DeviceByPiBrain()
         elif name == "device":
             from openpibo.device import Device
             _parts[name] = Device()
     return _parts[name]
+
+
+def _light(on: bool, args: dict) -> None:
+    """눈(파이보) 또는 불빛(파이브레인). 파이브레인의 NeoPixel은 show()가 가끔 돌아오지 않아
+    (openpibo-os.pibrain tools의 led_call과 같은 까닭) 2초 넘으면 실패로 봅니다."""
+    import threading
+
+    dev = _part("device")
+    if DEVICE == "pibrain":
+        call = (lambda: dev.led_on(args["r"], args["g"], args["b"])) if on else dev.led_off
+    else:
+        call = (lambda: dev.eye_on(args["r"], args["g"], args["b"])) if on else dev.eye_off
+    t = threading.Thread(target=call, daemon=True)
+    t.start()
+    t.join(2)
+    if t.is_alive():
+        raise TimeoutError("불빛이 2초 안에 응답하지 않음")
 
 
 #: YOLO 같은 검출기의 COCO 이름(VOC 이름도) → 한국어. 영어 이름을 그대로 주면 영어 낱말을
@@ -132,9 +166,9 @@ def run_tool(name: str, args: dict) -> str:
         if name == "set_motion":
             _part("motion").set_motion(args["name"])
         elif name == "eye_on":
-            _part("device").eye_on(args["r"], args["g"], args["b"])
+            _light(True, args)
         elif name == "eye_off":
-            _part("device").eye_off()
+            _light(False, {})
         elif name == "get_battery":
             return f"배터리 {_part('device').get_battery()}"
         elif name == "find_objects":
@@ -158,8 +192,15 @@ STOP = re.compile(r"멈춰|멈추라|멈춰라|멈춰봐|정지|스톱|그만\s*
 COLOR_WORDS = {"빨": "빨강", "주황": "주황", "노": "노랑", "초록": "초록", "파": "파랑", "하늘": "하늘",
                "남": "남색", "보라": "보라", "분홍": "분홍", "핑크": "분홍", "하얗": "하양",
                "하얀": "하양", "흰": "하양", "연두": "연두", "청록": "청록", "갈": "갈색"}
-EYE_COLOR = (r"눈\s*(을|색|색깔|불빛|빛|불)?\s*(을|좀)?\s*(?P<color>빨갛|빨간|주황|노랗|노란|초록|파랗|"
-             r"파란|하늘|남|보라|분홍|핑크|하얗|하얀|흰|연두|청록|갈)\S*\s*(으로|로)?\s*(해|바꿔|켜|만들어)")
+#: 불빛을 가리키는 말 (파이보는 눈, 파이브레인은 LED)
+LIGHT = r"(눈|불빛|불|엘이디|led|라이트)"
+COLOR = (r"(?P<color>빨갛|빨간|주황|노랗|노란|초록|파랗|파란|하늘|남|보라|분홍|핑크|하얗|하얀|흰|연두|"
+         r"청록|갈)")
+#: "눈 파랗게 해 줘", "LED 빨간색으로 켜 줘"
+EYE_COLOR = LIGHT + r"\s*(을|색|색깔|불빛|빛|불)?\s*(을|좀)?\s*" + COLOR + \
+    r"\S*\s*(으로|로)?\s*(해|바꿔|켜|만들어)"
+#: "빨간 불 켜 줘", "파란색으로 눈 바꿔", "빨간 눈으로 바꿔"
+COLOR_LIGHT = COLOR + r"\S*\s*(색\s*)?(으로|로)?\s*" + LIGHT + r"\s*(을|좀|으로|로)?\s*(켜|바꿔|해)"
 #: (말 모양, 도구, 인자, 한국어 대답, 영어 대답). 인자가 None이면 아래 command_for가 정함
 COMMANDS = [
     (r"춤\s*(을\s*)?(좀\s*)?(춰|추어|추자|출래|보여)" + TAIL, "set_motion", "dance",
@@ -183,8 +224,10 @@ COMMANDS = [
      "왼쪽으로 돌게요.", None),
     (r"(오른쪽|오른편)\s*(으로)?\s*(돌아|가|돌|돌자)" + TAIL, "set_motion", {"name": "right"},
      "오른쪽으로 돌게요.", None),
-    (r"눈\s*(불빛|빛|불)?\s*(을|좀)?\s*(꺼|끄자|끌래)" + TAIL, "eye_off", {}, "눈 불빛을 껐어요.", None),
-    (EYE_COLOR + TAIL, "eye_on", "color", "눈 색을 바꿨어요!", None),
+    (LIGHT + r"\s*(불빛|빛|불)?\s*(을|좀)?\s*(꺼|끄자|끌래)" + TAIL, "eye_off", {}, "off", None),
+    (EYE_COLOR + TAIL, "eye_on", "color", "color", None),
+    (COLOR_LIGHT + TAIL, "eye_on", "color", "color", None),
+    (LIGHT + r"\s*(을|좀)?\s*(켜|켜자|켤래)" + TAIL, "eye_on", {"r": 255, "g": 255, "b": 255}, "on", None),
     # 휴대폰 배터리 이야기는 빼고
     (r"^(?!.*(휴대폰|핸드폰|폰|노트북|태블릿)).*배터리\s*(가|는|이|좀)?\s*(얼마|몇|남았|남은|확인)",
      "get_battery", {}, "battery", None),
@@ -197,18 +240,30 @@ REGIONS = ["서울", "부산", "대구", "인천", "광주", "대전", "울산",
 DANCES = ["dance1", "dance2", "dance3", "dance4", "dance5"]
 
 
-def command_for(text: str) -> tuple[str, dict, str] | None:
+#: 기기에 없는 동작을 부탁받았을 때 (모델에 묻지 않고 이 말로 대답)
+MISSING = {"set_motion": "저는 몸을 움직일 수 없어요. 대신 이야기는 얼마든지 할 수 있어요!",
+           "get_battery": "저는 배터리 없이 전원에 연결해서 써요.",
+           "find_objects": "저는 카메라가 없어서 앞을 볼 수 없어요.",
+           "eye_on": "저는 불빛이 없어요.", "eye_off": "저는 불빛이 없어요."}
+NO_MOTION = "그 동작은 아직 할 수 없어요."
+
+
+def command_for(text: str) -> tuple[str | None, dict, str] | None:
     """앱이 바로 할 동작: (도구, 인자, 대답 종류 또는 대답) 또는 None (그냥 대화).
-    기기에 없는 도구·동작은 고르지 않습니다."""
+    기기에 없는 도구·동작이면 (None, {}, 없다는 말)."""
     have = {t["function"]["name"]: t["function"] for t in TOOLS}
     for pattern, tool, args, ko, en in COMMANDS:
-        m = re.search(pattern, text, re.IGNORECASE) if tool in have else None
+        m = re.search(pattern, text, re.IGNORECASE)
         if not m:
+            continue
+        if tool not in have:
+            if tool in MISSING and lang_of(text) == "ko":
+                return None, {}, MISSING[tool]
             continue
         if args == "dance":
             moves = [m for m in DANCES if m in _motions(have)]
             if not moves:
-                continue
+                return None, {}, NO_MOTION
             args = {"name": random.choice(moves)}
         elif args == "color":
             word = m.group("color")
@@ -217,7 +272,9 @@ def command_for(text: str) -> tuple[str, dict, str] | None:
         elif args == "region":
             args = {"region": next((r for r in REGIONS if r in text), "서울")}
         if tool == "set_motion" and args["name"] not in _motions(have):
-            continue
+            return None, {}, NO_MOTION
+        if ko in ("color", "on", "off"):
+            ko = DEVICES[DEVICE][ko]
         return tool, args, (ko if ko is not None and lang_of(text) == "ko" or en is None else en)
     return None
 
@@ -228,7 +285,10 @@ def _motions(have: dict) -> list:
 
 
 def do_command(url: str, text: str, tool: str, args: dict, reply: str) -> str:
-    """동작을 실행하고 할 말을 돌려줍니다. 날씨는 결과를 모델이 말로 풀어 줍니다."""
+    """동작을 실행하고 할 말을 돌려줍니다. 날씨는 결과를 모델이 말로 풀어 줍니다.
+    tool이 None이면(기기에 없는 동작) 실행하지 않고 그 말만."""
+    if tool is None:
+        return reply
     t = time.time()
     result = run_tool(tool, args)
     print(f"  [동작] {tool}({args}) -> {result} ({time.time() - t:.1f}초)", flush=True)
@@ -354,11 +414,17 @@ def main():
     p.add_argument("--fake", action="store_true", help="openpibo 없이 동작을 한 척만")
     p.add_argument("--history", type=int, default=HISTORY,
                    help="기억하는 주고받기 수 (지금 말 포함)")
-    p.add_argument("--name", default="파이보", help="기기 이름 (시스템 글에 들어감, 예: 파이브레인)")
+    p.add_argument("--device", choices=list(DEVICES), default="pibo",
+                   help="기기: 이름·있는 동작·불빛 함수가 정해짐 (pibrain: 몸·배터리 없음, LED 1개)")
+    p.add_argument("--name", help="기기 이름 (시스템 글에 들어감, 기본: --device의 이름)")
     p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색, 키 20센티미터')")
     p.add_argument("--tools", help="이 기기에 있는 도구만, 쉼표로 (예: eye_on,eye_off,get_weather)")
     p.add_argument("--motions", help="set_motion에서 쓸 수 있는 동작만, 쉼표로 (예: greeting,dance1,stop)")
     args = p.parse_args()
+    global DEVICE
+    DEVICE = args.device
+    args.name = args.name or DEVICES[DEVICE]["name"]
+    args.tools = args.tools or (",".join(DEVICES[DEVICE]["tools"]) if DEVICES[DEVICE]["tools"] else None)
     FAKE, NAME = args.fake, args.name
     globals()["HISTORY"] = max(1, args.history)
     # 기기마다 다른 이름·소개·동작은 시스템 글과 도구 목록으로 (모델은 하나)
