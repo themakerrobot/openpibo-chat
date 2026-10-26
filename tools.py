@@ -1,90 +1,50 @@
-"""파이보 앱이 실행하는 동작 목록과 그 검사, 그리고 대화 모델의 시스템 글.
+"""대화 모델(themaker)의 시스템 글과, 모든 기기 공통의 도구 목록.
 
-대화 모델(themaker)은 도구를 모릅니다: 동작은 앱(pibo_chat.COMMANDS)이 말을 보고 정해
-openpibo로 실행합니다. 이름과 인자는 openpibo의 함수에 그대로 대응합니다
-(Motion.set_motion, Device.eye_on, Device.eye_off, Device.get_battery, Weather.search,
-카메라 물체 찾기). 기기마다 있는 것만 쓰려면 tool_list로 고릅니다.
+모델은 하나이고 도구도 모든 기기에 같은 목록을 보냅니다 (불빛, 보기, 움직이기). 학생 말을 보고
+도구를 부를지는 모델이 정하고, 기기 앱이 그 호출을 자기 함수로 실행합니다:
+
+- 파이보 (pibo_chat.py): 불빛 = Device.eye_on/eye_off, 움직이기 = Motion.set_motion,
+  보기 = Camera + Detect
+- 파이브레인 (pibrain_chat.py): 불빛 = DeviceByPiBrain.led_on/led_off, 보기 = Camera + Detect,
+  움직이기는 몸이 없어 실행하지 않고 못 움직인다고 말함
+
+도구 목록은 학습 때와 글자까지 같아야 합니다 (모델이 그 모양을 보고 배움). 바꾸면 다시 학습합니다.
 """
 
 from __future__ import annotations
 
 import json
 
-#: 아이와 놀 때 쓸 만한 동작만 (openpibo motion_db의 이름 그대로)
-MOTIONS = {
-    "greeting": "인사하기",
-    "welcome": "반갑게 맞이하기",
-    "bow": "고개 숙여 인사",
-    "wave1": "손 흔들기",
-    "hifive": "하이파이브",
-    "handshaking": "악수",
-    "clapping1": "박수",
-    "cheer1": "응원하기",
-    "dance1": "춤 1",
-    "dance2": "춤 2",
-    "dance3": "춤 3",
-    "dance4": "춤 4",
-    "dance5": "춤 5",
-    "happy1": "기뻐하기",
-    "sad1": "슬퍼하기",
-    "think1": "생각하기",
-    "yes_h": "고개 끄덕이기",
-    "no_h": "고개 젓기",
-    "look_l": "왼쪽 보기",
-    "look_r": "오른쪽 보기",
-    "lookup": "위 보기",
-    "forward1": "앞으로 가기",
-    "backward1": "뒤로 가기",
-    "left": "왼쪽으로 돌기",
-    "right": "오른쪽으로 돌기",
-    "sleep": "잠자기",
-    "wake_up1": "잠에서 깨기",
-    "stop": "멈추기",
-}
-
-#: 데이터를 만들 때 알려 주는 색 (모델은 RGB 숫자로 부릅니다)
+#: 불빛 색 (모델이 고르는 이름) → RGB. "끄기"는 불빛을 끔
 COLORS = {
     "빨강": (255, 0, 0), "주황": (255, 120, 0), "노랑": (255, 220, 0), "초록": (0, 255, 0),
-    "파랑": (0, 0, 255), "하늘": (0, 180, 255), "남색": (20, 30, 160), "보라": (150, 0, 255),
-    "분홍": (255, 100, 180), "하양": (255, 255, 255), "연두": (150, 255, 50),
-    "청록": (0, 200, 160), "갈색": (140, 70, 20),
+    "파랑": (0, 0, 255), "하늘": (0, 180, 255), "보라": (150, 0, 255), "분홍": (255, 100, 180),
+    "하양": (255, 255, 255), "끄기": None,
+}
+
+#: 움직이기 (모델이 고르는 이름) → openpibo motion_db의 동작 이름 (여럿이면 하나를 골라 씀)
+ACTIONS = {
+    "인사": ["greeting"], "춤": ["dance1", "dance2", "dance3", "dance4", "dance5"],
+    "손흔들기": ["wave1"], "박수": ["clapping1"], "하이파이브": ["hifive"],
+    "끄덕이기": ["yes_h"], "도리도리": ["no_h"], "앞으로": ["forward1"], "뒤로": ["backward1"],
+    "왼쪽": ["left"], "오른쪽": ["right"],
 }
 
 TOOLS = [
     {"type": "function", "function": {
-        "name": "set_motion",
-        "description": "파이보가 몸을 움직입니다 (춤, 인사, 박수, 고개 끄덕이기, 이동 등).",
+        "name": "light",
+        "description": "불빛 색을 바꾸거나 끕니다.",
         "parameters": {"type": "object", "properties": {
-            "name": {"type": "string", "enum": list(MOTIONS),
-                     "description": "동작 이름: " + ", ".join(f"{k}({v})" for k, v in
-                                                          MOTIONS.items())}},
-            "required": ["name"]}}},
+            "color": {"type": "string", "enum": list(COLORS)}}, "required": ["color"]}}},
     {"type": "function", "function": {
-        "name": "eye_on",
-        "description": "파이보 눈의 불빛 색을 바꿉니다. 색은 0~255 사이의 빨강, 초록, 파랑 값입니다.",
-        "parameters": {"type": "object", "properties": {
-            "r": {"type": "integer", "minimum": 0, "maximum": 255},
-            "g": {"type": "integer", "minimum": 0, "maximum": 255},
-            "b": {"type": "integer", "minimum": 0, "maximum": 255}},
-            "required": ["r", "g", "b"]}}},
-    {"type": "function", "function": {
-        "name": "eye_off",
-        "description": "파이보 눈의 불빛을 끕니다.",
+        "name": "look",
+        "description": "카메라로 앞에 있는 것을 봅니다.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "find_objects",
-        "description": "카메라로 파이보 앞에 무엇이 있는지 찾아봅니다.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "get_battery",
-        "description": "파이보의 배터리가 얼마나 남았는지 봅니다.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "get_weather",
-        "description": "지역의 오늘 날씨를 알아봅니다 (인터넷이 필요합니다).",
+        "name": "move",
+        "description": "몸을 움직입니다.",
         "parameters": {"type": "object", "properties": {
-            "region": {"type": "string", "description": "지역 이름, 예: 서울, 부산, 전국"}},
-            "required": ["region"]}}},
+            "action": {"type": "string", "enum": list(ACTIONS)}}, "required": ["action"]}}},
 ]
 
 BY_NAME = {t["function"]["name"]: t["function"] for t in TOOLS}
@@ -95,27 +55,6 @@ ENGINE_EN = "TheMaker"
 SYSTEM = ("너는 초등학생부터 고등학생까지와 이야기하는 교육용 로봇 파이보야. "
           "열네 살 친구처럼 밝고 친근하게, 존댓말로 짧게 말해. "
           "이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.")
-
-
-def tool_list(names=None, motions=None, device: str = "파이보") -> list:
-    """기기에 있는 도구만 고른 목록. names: 도구 이름들 (None이면 모두), motions: set_motion에서
-    쓸 수 있는 동작들 (None이면 모두), device: 설명에 쓰는 기기 이름. 셋 다 기본값이면 TOOLS 그대로.
-    학습 때 일부만 보여 줘서, 모델이 외운 목록이 아니라 앱이 보낸 목록을 따르게 합니다."""
-    if names is None and motions is None and device == "파이보":
-        return TOOLS
-    out = []
-    for t in TOOLS:
-        f = t["function"]
-        if names is not None and f["name"] not in names:
-            continue
-        f = json.loads(json.dumps(f, ensure_ascii=False).replace("파이보", device))
-        if f["name"] == "set_motion" and motions is not None:
-            keep = [m for m in MOTIONS if m in motions]
-            spec = f["parameters"]["properties"]["name"]
-            spec["enum"] = keep
-            spec["description"] = "동작 이름: " + ", ".join(f"{k}({MOTIONS[k]})" for k in keep)
-        out.append({"type": "function", "function": f})
-    return out
 
 
 def has_batchim(word: str) -> bool:
@@ -133,18 +72,24 @@ def system_for(name: str = "파이보", about: str | None = None) -> str:
     return text
 
 
+def parse_args(args) -> dict | None:
+    """도구 호출의 인자: llama-server는 JSON 글로, 학습 데이터는 객체로 줍니다."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args or "{}")
+        except json.JSONDecodeError:
+            return None
+    return args if isinstance(args, dict) else None
+
+
 def check_call(name: str, args) -> str | None:
     """잘못된 곳이 있으면 그 이유, 맞으면 None."""
     fn = BY_NAME.get(name)
     if fn is None:
         return f"없는 도구 {name}"
-    if isinstance(args, str):
-        try:
-            args = json.loads(args)
-        except json.JSONDecodeError:
-            return "인자가 JSON이 아님"
-    if not isinstance(args, dict):
-        return "인자가 객체가 아님"
+    args = parse_args(args)
+    if args is None:
+        return "인자가 JSON 객체가 아님"
     props = fn["parameters"].get("properties", {})
     for key in fn["parameters"].get("required", []):
         if key not in args:
@@ -155,29 +100,13 @@ def check_call(name: str, args) -> str | None:
             return f"{name}: 모르는 인자 {key}"
         if "enum" in spec and value not in spec["enum"]:
             return f"{name}: {key}={value!r}는 목록에 없음"
-        if spec["type"] == "integer":
-            if not isinstance(value, int) or isinstance(value, bool):
-                return f"{name}: {key}는 정수"
-            if not spec.get("minimum", value) <= value <= spec.get("maximum", value):
-                return f"{name}: {key}={value} 범위 밖"
-        if spec["type"] == "string" and not (isinstance(value, str) and value.strip()):
-            return f"{name}: {key}는 글자"
     return None
 
 
-def same_call(a: dict, b: dict) -> bool:
-    """두 호출이 같은 일을 하는지 (색은 조금 달라도 같은 색으로 봅니다)."""
-    if a.get("name") != b.get("name"):
-        return False
-    x, y = a.get("arguments") or {}, b.get("arguments") or {}
-    if a["name"] == "eye_on":
-        try:
-            return all(abs(int(x[k]) - int(y[k])) <= 60 for k in "rgb")
-        except (KeyError, TypeError, ValueError):
-            return False
-    if a["name"] == "get_weather":
-        return str(x.get("region", "")).strip() == str(y.get("region", "")).strip()
-    if a["name"] == "set_motion" and all(str(c.get("name", "")).startswith("dance")
-                                         for c in (x, y)):
-        return True                          # 춤은 몇 번 춤이든 같은 일
-    return x == y
+def calls_of(message: dict) -> list[tuple[str, dict]]:
+    """모델 대답(OpenAI 형식)의 도구 호출들 [(이름, 인자)]. 인자를 못 읽으면 {}."""
+    out = []
+    for c in message.get("tool_calls") or []:
+        fn = c.get("function") or {}
+        out.append((fn.get("name", ""), parse_args(fn.get("arguments")) or {}))
+    return out

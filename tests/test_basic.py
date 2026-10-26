@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tools import ENGINE, SYSTEM, TOOLS, check_call, system_for, tool_list  # noqa: E402
+from tools import ENGINE, SYSTEM, check_call, system_for  # noqa: E402
 
 
 class FakeTok:
@@ -249,6 +249,20 @@ def test_only_pibos_turns_are_learned_with_the_qwen35_template():
     assert prompt.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
 
 
+def test_tool_calls_are_learned_with_the_tool_list():
+    from train import targets
+    from tool_data import make
+
+    ex = next(e for e in make(50, 3, []) if e["topic"] == "불빛")
+    (ids, labels), = list(targets(FakeTok(), ex, 8192))
+    said = "".join(chr(i) for i, lab in zip(ids, labels) if lab != -100)
+    prompt = "".join(chr(i) for i, lab in zip(ids, labels) if lab == -100)
+    color = ex["messages"][-1]["tool_calls"][0]["function"]["arguments"]["color"]
+    assert "<tools>" in prompt and '"name": "light"' in prompt and '"name": "move"' in prompt
+    assert "<tool_call>\n<function=light>\n<parameter=color>\n" + color in said
+    assert said.startswith(ex["messages"][-1]["content"])
+
+
 def test_own_dialogues_are_read(tmp_path):
     from train import read_extra
 
@@ -334,14 +348,15 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     steps = run_all.steps()
     names = [n for n, _, _ in steps]
-    assert names == ["data-pibo", "data-heldout", "data-themaker", "train", "small",
-                     "gguf", "score-before", "score-themaker", "score-judge"]
+    assert names == ["data-pibo", "data-heldout", "data-tools", "data-tools-heldout", "data-themaker",
+                     "train", "small", "gguf", "score-before", "score-themaker", "score-judge"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
                                   "data/pibo.jsonl"], [])
-    assert cmds["data-themaker"][1] == ["data-pibo"]
+    assert cmds["data-themaker"] == (["merge_data.py", "--out", run_all.DATA, "data/pibo.jsonl",
+                                      "data/tools.jsonl"], ["data-pibo", "data-tools"])
     assert cmds["score-judge"][1] == ["score-before", "score-themaker"]
-    assert cmds["score-before"][1] == ["data-heldout"]
+    assert cmds["score-before"][1] == ["data-heldout", "data-tools-heldout"]
     cmd, needs = cmds["train"]
     assert "Qwen/Qwen3.5-0.8B" in cmd and run_all.DATA in cmd and needs == ["data-themaker"]
     cmd, _ = cmds["gguf"]
@@ -390,65 +405,119 @@ def test_orphaned_vllm_engines_are_stopped_before_a_step(monkeypatch):
 
 # ------------------------------------------------------------- 파이보 앱
 
-@pytest.fixture
-def app(monkeypatch):
-    import pibo_chat
+# ------------------------------------------------------------- 도구 데이터
 
-    monkeypatch.setattr(pibo_chat, "FAKE", True)
-    monkeypatch.setattr(pibo_chat, "SYSTEM", SYSTEM)
-    monkeypatch.setattr(pibo_chat, "TOOLS", TOOLS)
-    return pibo_chat
+def test_tool_dialogs_call_the_right_tool_or_none():
+    from tool_data import KINDS, make
+
+    rows = make(2000, 0, [])
+    topics = {}
+    for r in rows:
+        topics[r["topic"]] = topics.get(r["topic"], 0) + 1
+        last = r["messages"][-1]
+        assert r["tools"] is True and last["role"] == "assistant" and last["content"]
+        name = r.get("device", "파이보")
+        assert r["messages"][0]["content"] == system_for(name)
+        for c in last.get("tool_calls", []):
+            fn = c["function"]
+            assert check_call(fn["name"], fn["arguments"]) is None, fn
+        if r["topic"] == "부르지 않음":
+            assert "tool_calls" not in last
+    assert set(topics) == {"불빛", "불빛 끄기", "불빛 이어서", "움직이기", "보기", "부르지 않음"}
+    assert all(topics[t] > 100 for t in topics) and len(KINDS) == 7
+    follow = next(r for r in rows if r["topic"] == "불빛 이어서")
+    assert "tool_calls" not in follow["messages"][-3]       # 앞의 불빛은 말로만 남음 (앱의 기억과 같게)
+    devices = {r.get("device", "파이보") for r in rows}
+    assert {"파이보", "파이브레인", ENGINE} <= devices
+    assert any(r["topic"] == "움직이기" and r.get("device") == "파이브레인" for r in rows)
 
 
-def test_the_app_runs_the_few_motions_itself_and_the_model_only_talks(app, monkeypatch):
+def test_merge_keeps_tool_dialogs_and_shows_tools_to_some_chats(tmp_path):
+    from devices import vary
+    from merge_data import TOOL_SHARE, merge
+    from tool_data import make
+
+    chats = [chat_line((f"오늘 {k}번째 이야기", f"그랬군요 {k}."), source="a") for k in range(400)]
+    tools = [json.dumps(r, ensure_ascii=False) for r in make(50, 1, [])]
+    (tmp_path / "c.jsonl").write_text("\n".join(chats) + "\n")
+    (tmp_path / "t.jsonl").write_text("\n".join(tools) + "\n")
+    out, kept, _ = merge([str(tmp_path / "c.jsonl"), str(tmp_path / "t.jsonl")])
+    assert kept["tools"] == 50 and kept["a"] == 400
+    with_tools = sum(1 for x in out[:400] if json.loads(x).get("tools"))
+    assert 400 * TOOL_SHARE * 0.6 < with_tools < 400 * TOOL_SHARE * 1.4
+    varied, _ = vary(out, n_identity=0)
+    assert varied[400:] == out[400:]                     # 도구 대화는 이름을 바꾸지 않음
+
+
+# ------------------------------------------------------------- 파이보·파이브레인 앱 (참고용)
+
+def reply(content="", call=None, **args):
+    msg = {"role": "assistant", "content": content}
+    if call:
+        msg["tool_calls"] = [{"type": "function",
+                              "function": {"name": call, "arguments": json.dumps(args, ensure_ascii=False)}}]
+    return msg
+
+
+class Robot:
+    name, can_move = "파이보", True
+    cant_move = "저는 몸이 없어서 움직일 수는 없어요. 대신 불빛을 바꿔 볼까요?"
+
+    def __init__(self):
+        self.did = []
+
+    def light(self, color):
+        self.did.append(("light", color))
+
+    def move(self, action):
+        self.did.append(("move", action))
+
+    def stop(self):
+        self.did.append(("stop",))
+
+    def look(self):
+        return "컵, 사과"
+
+
+def test_the_model_decides_tools_and_the_app_runs_them(monkeypatch):
+    import pibo_chat as app
+
+    replies = iter([reply("빨간색으로 바꿀게요!", "light", color="빨강"),
+                    reply("한번 볼게요.", "look"),
+                    reply("신나게 춤춰 볼게요!", "move", action="춤"),
+                    reply("빨간색 예쁘죠! 왜 좋아요?"),
+                    reply("", "light", color="보라색")])
     sent = []
     monkeypatch.setattr(app, "ask", lambda url, msgs, tools, **k: sent.append((msgs, tools))
-                        or {"content": f"그랬구나, 재미있었겠어요 {len(sent)}."})
-    history = []
-    assert app.turn("x", history, "파이보야 춤 좀 춰 봐!", True) == "신나게 춤춰 볼게요!"
-    assert app.turn("x", history, "눈 파랗게 해 줘", True) == "눈 색을 바꿨어요!"
-    assert app.turn("x", history, "배터리 얼마나 남았어?", True) == "배터리가 80% 남았어요."
-    assert app.turn("x", history, "앞에 뭐 있어?", True) == "앞에 컵, 사과가 보여요."
-    assert sent == []                                    # 여기까지 모델을 부르지 않음
-    assert app.turn("x", history, "어제 춤 학원 갔어", True) == "그랬구나, 재미있었겠어요 1."
-    msgs, tools = sent[-1]
-    assert tools is False and msgs[0]["content"] == SYSTEM          # 도구 목록 없이
-    assert [m["role"] for m in msgs].count("user") == app.HISTORY
-    assert app.turn("x", history, "춤춰 줘", True, allowed=False) == app.PAUSED
-    assert app.turn("x", history, "춤춰 줘", False).startswith("그랬구나")    # 동작 없이 대화만
-    app.turn("x", history, "오늘 부산 날씨 어때?", True)
-    assert "부산 맑음 18도" in sent[-1][0][-1]["content"]
-    for text in ("앞으로 가고 싶은 대학이 있어", "휴대폰 배터리가 얼마 없어", "눈이 빨개졌어 어떻게 해",
-                 "날씨가 좋아", "I like to dance", "안녕"):
-        assert app.command_for(text) is None, text
-    assert app.command_for("앞으로 가")[1] == {"name": "forward1"}
-    assert app.command_for("눈 빨간색으로 바꿔")[1] == {"r": 255, "g": 0, "b": 0}
+                        or next(replies))
+    robot, history = Robot(), []
+    assert app.turn("x", history, "빨간 불 켜 줘", robot, SYSTEM) == "빨간색으로 바꿀게요!"
+    assert app.turn("x", history, "앞에 뭐 있어?", robot, SYSTEM) == "한번 볼게요. 앞에 컵, 사과가 보여요."
+    assert app.turn("x", history, "춤춰 줘", robot, SYSTEM) == "신나게 춤춰 볼게요!"
+    assert app.turn("x", history, "난 빨간색이 좋아", robot, SYSTEM) == "빨간색 예쁘죠! 왜 좋아요?"
+    assert app.turn("x", history, "보라로", robot, SYSTEM).startswith("미안해요")   # 목록에 없는 색
+    assert robot.did == [("light", "빨강"), ("move", "춤")]
+    assert all(tools is True for _, tools in sent) and sent[0][0][0]["content"] == SYSTEM
+    assert all("tool_calls" not in m for m in history)  # 기억에는 한 말만
+    robot.can_move = False                             # 파이브레인
+    monkeypatch.setattr(app, "ask", lambda *a, **k: reply("춤출게요!", "move", action="춤"))
+    assert app.turn("x", history, "춤춰 줘", robot, SYSTEM) == robot.cant_move
+    assert robot.did[-1] == ("move", "춤")               # 실행하지 않음
 
 
-def test_stop_is_run_without_asking_the_model(app, monkeypatch):
-    ran = []
-    monkeypatch.setattr(app, "run_tool", lambda n, a: ran.append((n, a)) or "완료")
+def test_stop_is_run_without_asking_the_model(monkeypatch):
+    import pibo_chat as app
+
     monkeypatch.setattr(app, "ask", lambda *a, **k: pytest.fail("모델에 묻지 않아야 함"))
-    assert app.turn("x", [], "멈춰!", True) == "네, 멈출게요."
-    assert app.turn("x", [], "freeze", True) == "Okay, I'll stop."
-    assert ran == [("set_motion", {"name": "stop"})] * 2
+    robot = Robot()
+    assert app.turn("x", [], "멈춰!", robot, SYSTEM) == "네, 멈출게요."
+    assert app.turn("x", [], "freeze", robot, SYSTEM) == "Okay, I'll stop."
+    assert robot.did == [("stop",)] * 2
 
 
-def test_commands_only_use_what_the_device_has(app, monkeypatch):
-    monkeypatch.setattr(app, "TOOLS", tool_list(["eye_on", "eye_off"]))
-    assert app.command_for("앞으로 가") == (None, {}, app.MISSING["set_motion"])   # 없다고 말함
-    assert app.command_for("춤춰 줘") == (None, {}, app.MISSING["set_motion"])
-    assert app.command_for("앞으로 가고 싶은 대학이 있어") is None              # 이야기는 그대로 모델로
-    assert app.command_for("눈 꺼 줘")[0] == "eye_off"
-    assert app.run_tool("get_weather", {"region": "서울"}) == "실패: 이 기기에 없는 도구"
-    monkeypatch.setattr(app, "TOOLS", tool_list(["set_motion"], ["dance3", "stop"]))
-    assert app.command_for("춤춰 줘")[1] == {"name": "dance3"}
-    assert app.command_for("앞으로 가") == (None, {}, app.NO_MOTION)
-    assert app.run_tool("set_motion", {"name": "moonwalk"}).startswith("실패")
-    assert check_call("set_motion", {"name": "dance1"}) is None
+def test_pibrain_uses_its_led_and_cannot_move(monkeypatch):
+    import pibrain_chat
 
-
-def test_pibrain_lights_its_led_and_says_it_cannot_move(app, monkeypatch):
     calls = []
 
     class Led:
@@ -462,51 +531,40 @@ def test_pibrain_lights_its_led_and_says_it_cannot_move(app, monkeypatch):
     fake.DeviceByPiBrain = Led
     monkeypatch.setitem(sys.modules, "openpibo", type(sys)("openpibo"))
     monkeypatch.setitem(sys.modules, "openpibo.device", fake)
-    monkeypatch.setattr(app, "_parts", {})
-    monkeypatch.setattr(app, "FAKE", False)
-    monkeypatch.setattr(app, "DEVICE", "pibrain")
-    monkeypatch.setattr(app, "TOOLS", tool_list(app.DEVICES["pibrain"]["tools"], device="파이브레인"))
-    monkeypatch.setattr(app, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("모델 안 부름")))
-    history = []
-    assert app.turn("x", history, "빨간 불 켜 줘", True) == "불빛 색을 바꿨어요!"
-    assert app.turn("x", history, "LED 파란색으로 바꿔 줘", True) == "불빛 색을 바꿨어요!"
-    assert app.turn("x", history, "불 켜 줘", True) == "불빛을 켰어요."
-    assert app.turn("x", history, "엘이디 꺼", True) == "불빛을 껐어요."
-    assert calls == [("led_on", (255, 0, 0)), ("led_on", (0, 0, 255)), ("led_on", (255, 255, 255)),
-                     ("led_off",)]
-    assert app.turn("x", history, "앞으로 가 줘", True) == app.MISSING["set_motion"]
-    assert app.turn("x", history, "춤 좀 춰 봐", True) == app.MISSING["set_motion"]
-    assert app.turn("x", history, "배터리 얼마나 남았어?", True) == app.MISSING["get_battery"]
-    assert app.turn("x", history, "멈춰!", True) == "네, 멈출게요."
-    monkeypatch.setattr(app, "DEVICE", "pibo")
-    monkeypatch.setattr(app, "TOOLS", TOOLS)
-    assert app.command_for("빨간 눈으로 바꿔 줘") == ("eye_on", {"r": 255, "g": 0, "b": 0}, "눈 색을 바꿨어요!")
+    robot = pibrain_chat.PiBrain()
+    robot.light("파랑")
+    robot.light("끄기")
+    assert calls == [("led_on", (0, 0, 255)), ("led_off",)]
+    assert robot.name == "파이브레인" and robot.can_move is False
 
 
-def test_a_reply_said_before_is_asked_again_once_with_more_variety(app, monkeypatch):
+def test_a_reply_said_before_is_asked_again_once_with_more_variety(monkeypatch):
+    import pibo_chat as app
+
     asked = []
-    replies = iter(["따뜻한 음식을 먹으면 좋겠어요.", "따뜻한 음식을 먹으면 좋겠어요!",
-                    "어묵탕이나 호빵은 어때요?"])
-    monkeypatch.setattr(app, "ask", lambda url, msgs, tools, **k: asked.append(k)
-                        or {"content": next(replies)})
+    replies = iter([reply("따뜻한 음식을 먹으면 좋겠어요."), reply("따뜻한 음식을 먹으면 좋겠어요!"),
+                    reply("어묵탕이나 호빵은 어때요?")])
+    monkeypatch.setattr(app, "ask", lambda url, msgs, tools, **k: asked.append(k) or next(replies))
     history = []
-    assert app.turn("x", history, "날씨가 춥네", True) == "따뜻한 음식을 먹으면 좋겠어요."
-    assert app.turn("x", history, "그래서 뭐 먹을까", True) == "어묵탕이나 호빵은 어때요?"
+    assert app.turn("x", history, "날씨가 춥네", Robot(), SYSTEM) == "따뜻한 음식을 먹으면 좋겠어요."
+    assert app.turn("x", history, "그래서 뭐 먹을까", Robot(), SYSTEM) == "어묵탕이나 호빵은 어때요?"
     assert asked == [{}, {}, {"temperature": 1.0}]
     assert app.SAMPLING["repeat_penalty"] > 1 and app.SAMPLING["dry_multiplier"] > 0
 
 
-def test_child_can_switch_motions_off_and_on():
+def test_child_can_switch_tools_off_and_on():
     from pibo_chat import tool_switch
 
     assert tool_switch("대화만 하자", True) is False
     assert tool_switch("이제 움직이지 마", True) is False
     assert tool_switch("이제 움직여도 돼", False) is True
-    assert tool_switch("앞으로 가", False) is False      # 끈 동안은 명령도 대화로
+    assert tool_switch("앞으로 가", False) is False
     assert tool_switch("앞으로 가", True) is True
 
 
-def test_window_starts_with_the_child_and_keeps_recent_turns(app, monkeypatch):
+def test_window_starts_with_the_child_and_keeps_recent_turns(monkeypatch):
+    import pibo_chat as app
+
     monkeypatch.setattr(app, "HISTORY", 2)
     history = []
     for k in range(4):
@@ -515,36 +573,35 @@ def test_window_starts_with_the_child_and_keeps_recent_turns(app, monkeypatch):
     assert got[0] == {"role": "user", "content": "말 2"} and len(got) == 4
 
 
-def test_other_devices_send_their_own_name_and_motions(app, monkeypatch):
-    said = iter(["그만"])
-    monkeypatch.setattr(app, "listen", lambda: next(said))
-    monkeypatch.setattr(app, "warm_up", lambda url, tools=False: None)
-    monkeypatch.setattr(sys, "argv", ["pibo_chat.py", "--name", "파이브레인", "--about", "코딩 로봇",
-                                      "--tools", "eye_on,eye_off,set_motion", "--motions", "dance1,stop"])
+def test_each_device_sends_its_own_name_and_the_same_tools(monkeypatch):
+    import pibo_chat as app
+    import pibrain_chat
+
+    seen = []
+    monkeypatch.setattr(app, "listen", lambda: "그만")
+    monkeypatch.setattr(app, "warm_up", lambda url, system, tools: seen.append((system, tools)))
+    monkeypatch.setattr(sys, "argv", ["x", "--fake", "--about", "코딩 로봇"])
+    app.main(pibrain_chat.PiBrain)
+    monkeypatch.setattr(sys, "argv", ["x", "--fake", "--no-tools"])
     app.main()
-    assert "로봇 파이브레인이야" in app.SYSTEM and "파이브레인에 대해: 코딩 로봇" in app.SYSTEM
-    assert [t["function"]["name"] for t in app.TOOLS] == ["set_motion", "eye_on", "eye_off"]
-    said = iter(["그만"])
-    monkeypatch.setattr(sys, "argv", ["pibo_chat.py", "--device", "pibrain"])
-    app.main()
-    assert app.DEVICE == "pibrain" and app.NAME == "파이브레인" and "로봇 파이브레인이야" in app.SYSTEM
-    assert sorted(t["function"]["name"] for t in app.TOOLS) == ["eye_off", "eye_on", "find_objects",
-                                                                "get_weather"]
+    assert seen == [(system_for("파이브레인", "코딩 로봇"), True), (SYSTEM, False)]
 
 
-def test_server_errors_do_not_stop_the_app(app, monkeypatch, capsys):
+def test_server_errors_do_not_stop_the_app(monkeypatch, capsys):
     import io
     import urllib.error
 
+    import pibo_chat as app
+
     said = iter(["안녕", "그만"])
     monkeypatch.setattr(app, "listen", lambda: next(said))
-    monkeypatch.setattr(app, "warm_up", lambda url, tools=False: None)
+    monkeypatch.setattr(app, "warm_up", lambda *a: None)
 
     def broken(*a, **k):
         raise urllib.error.HTTPError("x", 500, "Internal", {}, io.BytesIO(b"server said no"))
 
     monkeypatch.setattr(app, "turn", broken)
-    monkeypatch.setattr(sys, "argv", ["pibo_chat.py"])
+    monkeypatch.setattr(sys, "argv", ["pibo_chat.py", "--fake"])
     app.main()
     out = capsys.readouterr().out
     assert "server said no" in out and "다시 말해 줄래요" in out
@@ -570,6 +627,13 @@ def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
     (tmp_path / "h.jsonl").write_text("\n".join(held) + "\n")
     monkeypatch.setattr(score, "HELDOUT", tmp_path / "h.jsonl")
     monkeypatch.setattr(score, "RESULTS", tmp_path / "r")
+    from tool_data import make
+
+    tool_rows = [r for r in make(40, 5, []) if r["topic"] in ("불빛", "부르지 않음")][:4]
+    (tmp_path / "t.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in tool_rows))
+    monkeypatch.setattr(score, "TOOLS_HELDOUT", tmp_path / "t.jsonl")
+    wants = [q["want"] for q in score.tool_questions()]
+    assert any(wants) and None in wants
     qs = score.questions()
     assert [q["set"] for q in qs] == ["첫마디", "첫마디", "첫마디", "이어지는 대화"]
     assert qs[3]["messages"][-1]["content"] == "좋아" and len(qs[3]["messages"]) == 6
@@ -582,8 +646,9 @@ def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
     for name, answers in (("before", ["속상했겠어요.", "속상했겠어요.", "추워요.", "정말 추워요. 따뜻하게 입어요."]),
                           ("themaker", ["많이 속상했겠어요. 무슨 일이었어요?", "수고했어요! 이제 뭐 할 거예요?",
                                         "정말 추운 날이에요.", "군고구마도 맛있어요."])):
-        (tmp_path / "r" / f"answers-{name}.json").write_text(json.dumps({"answers": answers},
-                                                                        ensure_ascii=False))
+        tools = wants if name == "themaker" else [None] * len(wants)
+        (tmp_path / "r" / f"answers-{name}.json").write_text(json.dumps(
+            {"answers": answers, "tools": tools}, ensure_ascii=False))
     good = {"korean": 5, "fit": 5, "short": 5, "engage": 5, "wrong": False, "repeat": False}
     (tmp_path / "r" / "scores-themaker.json").write_text(json.dumps([good] * 4))
     text = score.report()
@@ -592,3 +657,7 @@ def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
     assert rows["before이어지는 대화 (1)"].split(" | ")[9] == "100%"     # 앞 말 되풀이 (글자)
     assert rows["themaker첫마디 (3)"].split(" | ")[2] == "5.00"
     assert (tmp_path / "r" / "score.md").exists()
+    tool_rows = {r.split(" | ")[0][2:]: r for r in text.splitlines() if r.startswith("| before |")
+                 or r.startswith("| themaker |")}
+    assert tool_rows["themaker"].split(" | ")[1].startswith("100%")
+    assert tool_rows["before"].split(" | ")[1].startswith("0%") and "100%" in tool_rows["before"].split(" | ")[2]

@@ -15,19 +15,26 @@ import json
 from pathlib import Path
 
 
-def render(tok, messages, generation: bool) -> str:
-    return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=generation,
-                                   enable_thinking=False)
+def render(tok, messages, generation: bool, tools=None) -> str:
+    return tok.apply_chat_template(messages, tools=tools, tokenize=False,
+                                   add_generation_prompt=generation, enable_thinking=False)
+
+
+def tools_of(example: dict):
+    """"tools"가 있는 대화는 기기 앱처럼 도구 목록(tools.TOOLS, 모든 기기 공통)을 함께 보여 줌."""
+    from tools import TOOLS
+
+    return TOOLS if example.get("tools") else None
 
 
 def targets(tok, example: dict, max_len: int):
-    """한 대화에서 파이보가 말하는 차례마다 (input_ids, labels) 하나."""
-    msgs = example["messages"]
+    """한 대화에서 파이보가 말하는(또는 도구를 부르는) 차례마다 (input_ids, labels) 하나."""
+    msgs, tools = example["messages"], tools_of(example)
     for i, m in enumerate(msgs):
         if m["role"] != "assistant":
             continue
-        prompt = render(tok, msgs[:i], True)
-        full = render(tok, msgs[:i + 1], False)
+        prompt = render(tok, msgs[:i], True, tools)
+        full = render(tok, msgs[:i + 1], False, tools)
         if not full.startswith(prompt):
             yield None                       # 템플릿이 예상과 다름: 세어서 알려 줍니다
             continue
@@ -48,7 +55,9 @@ def read_extra(path) -> list[dict]:
 
     def close():
         if any(m["role"] == "assistant" for m in msgs):
-            out.append({"kind": "chat", "messages": [{"role": "system", "content": SYSTEM}] + msgs[:]})
+            # 절반은 도구 목록과 함께 (도구가 있어도 이런 말엔 대화로)
+            out.append({"kind": "chat", "tools": len(out) % 2 == 0,
+                        "messages": [{"role": "system", "content": SYSTEM}] + msgs[:]})
         msgs.clear()
 
     for raw in Path(path).read_text(encoding="utf-8").splitlines():

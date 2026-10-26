@@ -1,20 +1,22 @@
-"""파이보에서: llama-server의 대화 모델과 이야기하고, 몇 안 되는 동작은 앱이 말을 보고 바로 실행합니다.
+"""파이보에서: llama-server의 대화 모델(themaker)과 이야기합니다. 불빛, 보기, 움직이기는 모델이
+학생 말을 보고 도구로 부르고, 이 앱이 파이보의 openpibo 함수로 실행합니다.
 
     llama-server -m themaker-0.8b-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 \\
-        -t 4 -ub 256 --port 8080 &
-    python3 pibo_chat.py                 # 키보드로 말하기
-    python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 동작은 흉내만
-    python3 pibo_chat.py --no-commands   # 동작 없이 대화만
-    python3 pibo_chat.py --device pibrain   # 파이브레인: 이름, 불빛(LED), 카메라만 (몸·배터리 없음)
-    python3 pibo_chat.py --name 코코 --about "코딩 로봇, 서큘러스에서 만듦" \\
-        --tools eye_on,eye_off,get_weather   # 다른 기기: 이름·소개·있는 동작만 (모델은 같음)
+        -t 4 -ub 256 --port 50020 &
+    sudo ~/.pyenv/bin/python3 pibo_chat.py --url http://127.0.0.1:50020   # 키보드로 말하기
+    python3 pibo_chat.py --fake        # openpibo가 없는 PC에서: 동작은 흉내만
+    python3 pibo_chat.py --no-tools    # 도구 없이 대화만
 
-대화 모델(themaker)은 모든 기기 공통이고 도구를 모릅니다 (도구 목록 1천 토큰을 읽느라
-파이보에서 너무 느려서 뺐습니다). 동작(멈춰, 춤, 인사, 앞으로·뒤로, 눈 색, 배터리, 앞에 뭐 있어, 날씨)은
-COMMANDS가 말을 보고 정해 바로 실행하고, 정해진 말로 대답합니다. 날씨만 받은 결과를 모델이 말로
-풀어 줍니다. 기기에 없는 동작(파이브레인에게 "앞으로 가")은 없다고 정해진 말로 대답합니다.
-음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS
-목소리는 lang_of로). 이 파일은 tools.py 하나만 있으면 됩니다.
+파이브레인은 pibrain_chat.py (같은 모델, 같은 도구 목록, 불빛 함수만 다르고 움직이기는 없음).
+
+- 앱은 매번 tools.TOOLS(모든 기기 공통: 불빛, 보기, 움직이기)를 모델에 보냅니다. 도구를 부를지는
+  모델이 정합니다. 시스템 글과 도구 목록은 매번 같은 앞부분이라, 켤 때 한 번 읽혀 두면(warm_up)
+  대화할 때는 새로 한 말만 읽습니다.
+- 모델이 도구를 부르면 그 앞의 짧은 말("빨간색으로 바꿀게요!")을 하고 실행합니다. 보기는 본
+  결과("앞에 컵이 보여요.")를 덧붙입니다. 기기에 없는 동작이면 실행하지 않고 없다고 말합니다.
+- "멈춰"는 안전을 위해 모델에 묻지 않고 바로 멈춥니다.
+- 음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS 목소리는 lang_of로).
+- openpibo의 Device(MCU)·카메라는 root 권한이 필요해 sudo로 실행합니다.
 """
 
 from __future__ import annotations
@@ -27,23 +29,9 @@ import sys
 import time
 import urllib.request
 
-from tools import COLORS, SYSTEM, TOOLS, check_call, has_batchim, system_for, tool_list
+from tools import ACTIONS, COLORS, TOOLS, calls_of, check_call, has_batchim, system_for
 
 HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈)
-FAKE = False  # --fake: 로봇 없이 동작을 한 척만 합니다
-NAME = "파이보"   # --name: 기기 이름
-
-#: 기기마다 있는 동작과 불빛 말 (openpibo-os.pibo / openpibo-os.pibrain의 openpibo 함수 기준).
-#: tools가 None이면 tools.TOOLS 전부
-DEVICES = {
-    # 서보 10축(Motion.set_motion), 눈 LED(Device.eye_on/eye_off), 배터리, 카메라
-    "pibo": {"name": "파이보", "tools": None,
-             "color": "눈 색을 바꿨어요!", "on": "눈 불빛을 켰어요.", "off": "눈 불빛을 껐어요."},
-    # 서보·배터리·마이크 없음. NeoPixel 1개(DeviceByPiBrain.led_on/led_off), 카메라
-    "pibrain": {"name": "파이브레인", "tools": ["eye_on", "eye_off", "find_objects", "get_weather"],
-                "color": "불빛 색을 바꿨어요!", "on": "불빛을 켰어요.", "off": "불빛을 껐어요."},
-}
-DEVICE = "pibo"   # --device
 
 
 def lang_of(text: str) -> str:
@@ -51,8 +39,8 @@ def lang_of(text: str) -> str:
     return "ko" if re.search(r"[가-힣]", text) else "en"
 
 
-def speak(text: str) -> None:
-    print(f"{NAME}: {text}", flush=True)
+def speak(name: str, text: str) -> None:
+    print(f"{name}: {text}", flush=True)
 
 
 def listen() -> str:
@@ -66,44 +54,9 @@ def listen() -> str:
     return input("나: ").strip()
 
 
-# ------------------------------------------------------------ the tools on the robot
+# ------------------------------------------------------------ 기기 (파이보)
 
-_parts: dict = {}
-
-
-def _part(name):
-    if name not in _parts:
-        if name == "motion":
-            from openpibo.motion import Motion
-            _parts[name] = Motion()
-        elif name == "device" and DEVICE == "pibrain":
-            from openpibo.device import DeviceByPiBrain
-            _parts[name] = DeviceByPiBrain()
-        elif name == "device":
-            from openpibo.device import Device
-            _parts[name] = Device()
-    return _parts[name]
-
-
-def _light(on: bool, args: dict) -> None:
-    """눈(파이보) 또는 불빛(파이브레인). 파이브레인의 NeoPixel은 show()가 가끔 돌아오지 않아
-    (openpibo-os.pibrain tools의 led_call과 같은 까닭) 2초 넘으면 실패로 봅니다."""
-    import threading
-
-    dev = _part("device")
-    if DEVICE == "pibrain":
-        call = (lambda: dev.led_on(args["r"], args["g"], args["b"])) if on else dev.led_off
-    else:
-        call = (lambda: dev.eye_on(args["r"], args["g"], args["b"])) if on else dev.eye_off
-    t = threading.Thread(target=call, daemon=True)
-    t.start()
-    t.join(2)
-    if t.is_alive():
-        raise TimeoutError("불빛이 2초 안에 응답하지 않음")
-
-
-#: YOLO 같은 검출기의 COCO 이름(VOC 이름도) → 한국어. 영어 이름을 그대로 주면 영어 낱말을
-#: 소리 내 읽습니다.
+#: YOLO 같은 검출기의 COCO 이름 → 한국어 (영어 이름을 그대로 주면 영어 낱말을 소리 내 읽음)
 KOREAN = {
     "person": "사람", "bicycle": "자전거", "car": "자동차", "motorcycle": "오토바이",
     "motorbike": "오토바이", "airplane": "비행기", "aeroplane": "비행기", "bus": "버스",
@@ -137,181 +90,82 @@ def korean_names(names) -> str:
     return ", ".join(sorted(said)) or "아무것도 안 보임"
 
 
-def find_objects() -> str:
-    try:
+class Pibo:
+    """파이보의 openpibo 함수 (openpibo-os.pibo 기준). fake면 실행하지 않고 흉내만."""
+
+    name = "파이보"
+    can_move = True
+    #: 몸이 없는 기기가 움직이라는 말을 들었을 때 (파이브레인)
+    cant_move = "저는 몸이 없어서 움직일 수는 없어요. 대신 불빛을 바꿔 볼까요?"
+
+    def __init__(self, fake: bool = False):
+        self.fake = fake
+        self._parts: dict = {}
+
+    def part(self, name: str):
+        if name not in self._parts:
+            if name == "motion":
+                from openpibo.motion import Motion
+                self._parts[name] = Motion()
+            elif name == "device":
+                from openpibo.device import Device
+                self._parts[name] = Device()
+        return self._parts[name]
+
+    def light(self, color: str) -> None:
+        """눈 불빛: Device.eye_on(r, g, b) / eye_off()."""
+        rgb = COLORS[color]
+        if self.fake:
+            return
+        dev = self.part("device")
+        dev.eye_off() if rgb is None else dev.eye_on(*rgb)
+
+    def move(self, action: str) -> None:
+        """Motion.set_motion(동작 이름): 춤처럼 여럿이면 하나를 골라서."""
+        if not self.fake:
+            self.part("motion").set_motion(random.choice(ACTIONS[action]))
+
+    def stop(self) -> None:
+        if not self.fake:
+            self.part("motion").set_motion("stop")
+
+    def look(self) -> str:
+        """카메라로 찍어 사물 인식 → "컵, 사람" (없으면 "아무것도 안 보임")."""
+        if self.fake:
+            return "컵, 사과"
         from openpibo.vision_camera import Camera
         from openpibo.vision_detect import Detect
-    except ImportError:
-        from openpibo.vision import Camera, Detect
-    img = Camera().read()
-    items = Detect().detect_object(img)
-    return korean_names(i.get("name") if isinstance(i, dict) else i for i in items or [])
+        items = Detect().detect_object(Camera().read())
+        return korean_names(i.get("name") if isinstance(i, dict) else i for i in items or [])
 
 
-def fake_tool(name: str, args: dict) -> str:
-    """로봇 없이 시험할 때의 결과."""
-    return {"get_battery": "배터리 80%", "find_objects": "컵, 사과",
-            "get_weather": f"{args.get('region', '서울')} 맑음 18도"}.get(name, "완료")
-
-
-def run_tool(name: str, args: dict) -> str:
-    if name not in [t["function"]["name"] for t in TOOLS]:
-        return "실패: 이 기기에 없는 도구"
-    problem = check_call(name, args)
-    if problem:
-        return f"실패: {problem}"
-    if FAKE:
-        return fake_tool(name, args)
-    try:
-        if name == "set_motion":
-            _part("motion").set_motion(args["name"])
-        elif name == "eye_on":
-            _light(True, args)
-        elif name == "eye_off":
-            _light(False, {})
-        elif name == "get_battery":
-            return f"배터리 {_part('device').get_battery()}"
-        elif name == "find_objects":
-            return find_objects()
-        elif name == "get_weather":
-            from openpibo.collect import Weather
-            return str(Weather().search(args["region"]))[:200]
-        return "완료"
-    except Exception as exc:  # noqa: BLE001 — 로봇이 멈추지 않게
-        return f"실패: {exc}"
-
-
-# ------------------------------------------------------------ commands (앱이 정하는 동작)
-
-#: 말 끝에 붙는 부탁 ("줘", "봐" …)과 문장부호: 동작 명령은 말이 그걸로 끝날 때만 (이야기 속
-#: "어제 앞으로 가 봤어"나 "춤 학원 갔어"는 동작이 아님)
-TAIL = r"(\s*(줘|줄래|봐|볼래|라|자|요|주세요|줘요|봐요))?\s*[!.~?ㅋㅎ^]*$"
-#: 멈추라는 말은 어디에 있어도 바로 멈춥니다 (안전)
-STOP = re.compile(r"멈춰|멈추라|멈춰라|멈춰봐|정지|스톱|그만\s*움직|stop|\bfreeze\b", re.IGNORECASE)
-#: 눈 색 낱말의 앞부분 → tools.COLORS의 색
-COLOR_WORDS = {"빨": "빨강", "주황": "주황", "노": "노랑", "초록": "초록", "파": "파랑", "하늘": "하늘",
-               "남": "남색", "보라": "보라", "분홍": "분홍", "핑크": "분홍", "하얗": "하양",
-               "하얀": "하양", "흰": "하양", "연두": "연두", "청록": "청록", "갈": "갈색"}
-#: 불빛을 가리키는 말 (파이보는 눈, 파이브레인은 LED)
-LIGHT = r"(눈|불빛|불|엘이디|led|라이트)"
-COLOR = (r"(?P<color>빨갛|빨간|주황|노랗|노란|초록|파랗|파란|하늘|남|보라|분홍|핑크|하얗|하얀|흰|연두|"
-         r"청록|갈)")
-#: "눈 파랗게 해 줘", "LED 빨간색으로 켜 줘"
-EYE_COLOR = LIGHT + r"\s*(을|색|색깔|불빛|빛|불)?\s*(을|좀)?\s*" + COLOR + \
-    r"\S*\s*(으로|로)?\s*(해|바꿔|켜|만들어)"
-#: "빨간 불 켜 줘", "파란색으로 눈 바꿔", "빨간 눈으로 바꿔"
-COLOR_LIGHT = COLOR + r"\S*\s*(색\s*)?(으로|로)?\s*" + LIGHT + r"\s*(을|좀|으로|로)?\s*(켜|바꿔|해)"
-#: (말 모양, 도구, 인자, 한국어 대답, 영어 대답). 인자가 None이면 아래 command_for가 정함
-COMMANDS = [
-    (r"춤\s*(을\s*)?(좀\s*)?(춰|추어|추자|출래|보여)" + TAIL, "set_motion", "dance",
-     "신나게 춤춰 볼게요!", None),
-    (r"\b(let'?s dance|dance for me|can you dance|please dance|dance now)\b", "set_motion", "dance",
-     None, "Let's dance!"),
-    (r"인사\s*(를\s*)?(해|하자|할래)" + TAIL, "set_motion", {"name": "greeting"},
-     "안녕하세요! 반가워요.", None),
-    (r"손\s*(을\s*)?흔들어" + TAIL, "set_motion", {"name": "wave1"}, "손을 흔들게요!", None),
-    (r"\b(wave|say hi)\b", "set_motion", {"name": "wave1"}, None, "Hi there!"),
-    (r"박수\s*(를\s*)?(쳐|치자|칠래)" + TAIL, "set_motion", {"name": "clapping1"}, "짝짝짝!", None),
-    (r"하이\s*파이브" + TAIL, "set_motion", {"name": "hifive"}, "하이파이브!", None),
-    (r"악수\s*(를\s*)?(해|하자|할래)" + TAIL, "set_motion", {"name": "handshaking"}, "악수해요!", None),
-    (r"고개\s*(를\s*)?끄덕여" + TAIL, "set_motion", {"name": "yes_h"}, "끄덕끄덕!", None),
-    (r"고개\s*(를\s*)?(저어|흔들어)" + TAIL, "set_motion", {"name": "no_h"}, "도리도리!", None),
-    (r"앞으로\s*(가|와|와\s*봐|가\s*봐|이동해|전진)" + TAIL, "set_motion", {"name": "forward1"},
-     "앞으로 갈게요.", None),
-    (r"뒤로\s*(가|물러\s*나|물러나|이동해)" + TAIL, "set_motion", {"name": "backward1"},
-     "뒤로 갈게요.", None),
-    (r"(왼쪽|왼편)\s*(으로)?\s*(돌아|가|돌|돌자)" + TAIL, "set_motion", {"name": "left"},
-     "왼쪽으로 돌게요.", None),
-    (r"(오른쪽|오른편)\s*(으로)?\s*(돌아|가|돌|돌자)" + TAIL, "set_motion", {"name": "right"},
-     "오른쪽으로 돌게요.", None),
-    (LIGHT + r"\s*(불빛|빛|불)?\s*(을|좀)?\s*(꺼|끄자|끌래)" + TAIL, "eye_off", {}, "off", None),
-    (EYE_COLOR + TAIL, "eye_on", "color", "color", None),
-    (COLOR_LIGHT + TAIL, "eye_on", "color", "color", None),
-    (LIGHT + r"\s*(을|좀)?\s*(켜|켜자|켤래)" + TAIL, "eye_on", {"r": 255, "g": 255, "b": 255}, "on", None),
-    # 휴대폰 배터리 이야기는 빼고
-    (r"^(?!.*(휴대폰|핸드폰|폰|노트북|태블릿)).*배터리\s*(가|는|이|좀)?\s*(얼마|몇|남았|남은|확인)",
-     "get_battery", {}, "battery", None),
-    (r"(앞에|눈앞에|지금|카메라로)\s*(뭐|무엇|뭐가|누가|누구)\s*(가\s*)?(있|보)", "find_objects", {},
-     "objects", None),
-    (r"날씨\s*(가|는|좀)?\s*(어때|어떄|어떨|어떻|알려)", "get_weather", "region",
-     "weather", None),
-]
-REGIONS = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "제주", "전국"]
-DANCES = ["dance1", "dance2", "dance3", "dance4", "dance5"]
-
-
-#: 기기에 없는 동작을 부탁받았을 때 (모델에 묻지 않고 이 말로 대답)
-MISSING = {"set_motion": "저는 몸을 움직일 수 없어요. 대신 이야기는 얼마든지 할 수 있어요!",
-           "get_battery": "저는 배터리 없이 전원에 연결해서 써요.",
-           "find_objects": "저는 카메라가 없어서 앞을 볼 수 없어요.",
-           "eye_on": "저는 불빛이 없어요.", "eye_off": "저는 불빛이 없어요."}
-NO_MOTION = "그 동작은 아직 할 수 없어요."
-
-
-def command_for(text: str) -> tuple[str | None, dict, str] | None:
-    """앱이 바로 할 동작: (도구, 인자, 대답 종류 또는 대답) 또는 None (그냥 대화).
-    기기에 없는 도구·동작이면 (None, {}, 없다는 말)."""
-    have = {t["function"]["name"]: t["function"] for t in TOOLS}
-    for pattern, tool, args, ko, en in COMMANDS:
-        m = re.search(pattern, text, re.IGNORECASE)
-        if not m:
-            continue
-        if tool not in have:
-            if tool in MISSING and lang_of(text) == "ko":
-                return None, {}, MISSING[tool]
-            continue
-        if args == "dance":
-            moves = [m for m in DANCES if m in _motions(have)]
-            if not moves:
-                return None, {}, NO_MOTION
-            args = {"name": random.choice(moves)}
-        elif args == "color":
-            word = m.group("color")
-            r, g, b = COLORS[next(n for k, n in COLOR_WORDS.items() if word.startswith(k))]
-            args = {"r": r, "g": g, "b": b}
-        elif args == "region":
-            args = {"region": next((r for r in REGIONS if r in text), "서울")}
-        if tool == "set_motion" and args["name"] not in _motions(have):
-            return None, {}, NO_MOTION
-        if ko in ("color", "on", "off"):
-            ko = DEVICES[DEVICE][ko]
-        return tool, args, (ko if ko is not None and lang_of(text) == "ko" or en is None else en)
-    return None
-
-
-def _motions(have: dict) -> list:
-    spec = have.get("set_motion", {}).get("parameters", {}).get("properties", {}).get("name", {})
-    return spec.get("enum", [])
-
-
-def do_command(url: str, text: str, tool: str, args: dict, reply: str) -> str:
-    """동작을 실행하고 할 말을 돌려줍니다. 날씨는 결과를 모델이 말로 풀어 줍니다.
-    tool이 None이면(기기에 없는 동작) 실행하지 않고 그 말만."""
-    if tool is None:
-        return reply
+def act(robot: Pibo, name: str, args: dict, said: str) -> str:
+    """모델이 부른 도구 하나를 실행하고 할 말을 돌려줍니다. said: 모델이 호출 앞에 쓴 말."""
+    if check_call(name, args):
+        return said or "미안해요, 잘 못 알아들었어요. 한 번만 다시 말해 줄래요?"
     t = time.time()
-    result = run_tool(tool, args)
-    print(f"  [동작] {tool}({args}) -> {result} ({time.time() - t:.1f}초)", flush=True)
-    failed = result.startswith("실패")
-    if reply == "battery":
-        return "배터리를 확인하지 못했어요." if failed else \
-            f"배터리가 {result.removeprefix('배터리').strip()} 남았어요."
-    if reply == "objects":
-        if failed:
-            return "지금은 카메라로 보지 못했어요."
-        if result == "아무것도 안 보임":
-            return "앞에 아무것도 안 보여요."
-        return f"앞에 {result}{'이' if has_batchim(result) else '가'} 보여요."
-    if reply == "weather":
-        if failed:
-            return "지금은 날씨를 알아보지 못했어요."
-        msg = ask(url, [{"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": f"{text}\n(알아본 날씨: {result})"}], False)
-        return (msg.get("content") or "").strip()
-    return "미안해요, 지금은 그걸 하지 못했어요." if failed else reply
+    try:
+        if name == "move" and not robot.can_move:
+            return robot.cant_move          # 모델의 "춤출게요!"는 버림
+        if name == "light":
+            robot.light(args["color"])
+            done = said or ("불빛을 껐어요." if args["color"] == "끄기" else "불빛을 바꿨어요.")
+        elif name == "move":
+            robot.move(args["action"])
+            done = said or "움직여 볼게요!"
+        else:                               # look
+            seen = robot.look()
+            done = (f"{said} " if said else "") + (
+                "앞에 아무것도 안 보여요." if seen == "아무것도 안 보임" else
+                f"앞에 {seen}{'이' if has_batchim(seen) else '가'} 보여요.")
+    except Exception as exc:  # noqa: BLE001 — 로봇이 멈추지 않게
+        print(f"  [도구] {name}({args}) 실패: {exc}", flush=True)
+        return "미안해요, 지금은 그걸 하지 못했어요."
+    print(f"  [도구] {name}({args}) ({time.time() - t:.1f}초)", flush=True)
+    return done
 
 
-# ------------------------------------------------------------ talking
+# ------------------------------------------------------------ 모델
 
 #: 대답 설정: 같은 말을 되풀이하지 않게 (repeat_penalty: 같은 토큰, dry: 앞에 나온 말 덩어리)
 SAMPLING = {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.1,
@@ -328,7 +182,7 @@ def ask(url: str, messages: list, tools: bool, max_tokens: int = 150, timeout: i
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read())
     t = data.get("timings") or {}
-    if t:   # 서버가 다시 읽은 토큰 수: 앞 요청을 못 쓰면 크게 나옵니다
+    if t:   # 서버가 다시 읽은 토큰 수: 앞부분을 기억하지 못하면 크게 나옵니다
         print(f"  (읽기 {t.get('prompt_n', 0)}토큰 {t.get('prompt_ms', 0) / 1000:.1f}초, "
               f"말하기 {t.get('predicted_n', 0)}토큰 {t.get('predicted_ms', 0) / 1000:.1f}초)",
               flush=True)
@@ -336,38 +190,9 @@ def ask(url: str, messages: list, tools: bool, max_tokens: int = 150, timeout: i
 
 
 def window(history: list) -> list:
-    """최근 HISTORY번의 주고받기. 아이 말에서 끊어 도구 호출과 그 결과가 짝으로 남게 하고,
-    젬마 템플릿처럼 아이 말로 시작해야 하는 경우도 맞춥니다."""
+    """최근 HISTORY번의 주고받기 (학생 말에서 시작)."""
     starts = [i for i, m in enumerate(history) if m["role"] == "user"]
     return history[starts[-HISTORY]:] if len(starts) > HISTORY else history[:]
-
-
-#: 동작을 끈 동안 동작을 부탁하면 하는 말
-PAUSED = "지금은 대화만 하기로 했어요. 다시 움직이려면 이제 움직여도 된다고 말해 주세요."
-
-
-def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) -> str:
-    """아이 말 하나 → 파이보가 할 말. tools가 거짓이면 동작 없이 대화만. allowed가 거짓("대화만
-    하자")이면 동작을 부탁해도 하지 않고 PAUSED로 대답합니다."""
-    history.append({"role": "user", "content": text})
-    if tools and STOP.search(text):
-        if any(t["function"]["name"] == "set_motion" for t in TOOLS):   # 몸이 없는 기기는 말로만
-            run_tool("set_motion", {"name": "stop"})
-        said = "네, 멈출게요." if lang_of(text) == "ko" else "Okay, I'll stop."
-        history.append({"role": "assistant", "content": said})
-        return said
-    msgs = [{"role": "system", "content": SYSTEM}] + window(history)
-    cmd = command_for(text) if tools else None
-    if cmd:
-        said = do_command(url, text, *cmd) if allowed else PAUSED
-    else:
-        said = (ask(url, msgs, False).get("content") or "").strip()
-        before = {same(m["content"]) for m in history if m["role"] == "assistant"}
-        if same(said) in before:             # 앞에서 한 말 그대로: 한 번만 더 다르게
-            print("  (앞과 같은 대답이라 다시 물음)", flush=True)
-            said = (ask(url, msgs, False, temperature=1.0).get("content") or "").strip() or said
-    history.append({"role": "assistant", "content": said})
-    return said
 
 
 def same(text: str) -> str:
@@ -375,9 +200,41 @@ def same(text: str) -> str:
     return re.sub(r"[\s.,!?~…'\"]", "", text or "")
 
 
-def warm_up(url: str, tools: bool = False) -> None:
-    """시스템 글을 서버가 미리 읽어 두게 합니다. 다음부터는 서버가 앞부분을 기억해 새로 한
-    말만 읽습니다."""
+#: 멈추라는 말은 어디에 있어도 바로 멈춥니다 (안전, 모델에 묻지 않음)
+STOP = re.compile(r"멈춰|멈추라|정지|스톱|그만\s*움직|stop|\bfreeze\b", re.IGNORECASE)
+
+
+def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bool = True) -> str:
+    """학생 말 하나 → 할 말. tools가 거짓("대화만 하자")이면 도구 목록 없이 대화만.
+    기억(history)에는 학생 말과 실제로 한 말만 남깁니다 (학습 때의 앞 대화와 같은 모양)."""
+    history.append({"role": "user", "content": text})
+    if STOP.search(text):
+        if robot.can_move:
+            robot.stop()
+        said = "네, 멈출게요." if lang_of(text) == "ko" else "Okay, I'll stop."
+        history.append({"role": "assistant", "content": said})
+        return said
+    msgs = [{"role": "system", "content": system}] + window(history)
+    msg = ask(url, msgs, tools)
+    content = (msg.get("content") or "").strip()
+    calls = calls_of(msg) if tools else []
+    if calls:
+        said = act(robot, *calls[0], content)
+    else:
+        said = content
+        before = {same(m["content"]) for m in history if m["role"] == "assistant"}
+        if same(said) in before:             # 앞에서 한 말 그대로: 한 번만 더 다르게
+            print("  (앞과 같은 대답이라 다시 물음)", flush=True)
+            again = ask(url, msgs, tools, temperature=1.0)
+            if not calls_of(again):
+                said = (again.get("content") or "").strip() or said
+    history.append({"role": "assistant", "content": said})
+    return said
+
+
+def warm_up(url: str, system: str, tools: bool) -> None:
+    """시스템 글과 도구 목록을 서버가 미리 읽어 두게 합니다 (파이보에서 수십 초). 다음부터는
+    서버가 앞부분을 기억해 새로 한 말만 읽습니다."""
     try:
         urllib.request.urlopen(f"{url}/health", timeout=10).read()
     except OSError as exc:
@@ -385,18 +242,18 @@ def warm_up(url: str, tools: bool = False) -> None:
                          f"확인하세요 ({exc})") from None
     print("  (준비 중)", flush=True)
     t = time.time()
-    ask(url, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "안녕"}],
-        False, max_tokens=1, timeout=900)
+    ask(url, [{"role": "system", "content": system}, {"role": "user", "content": "안녕"}],
+        tools, max_tokens=1, timeout=900)
     print(f"  (준비 {time.time() - t:.1f}초)", flush=True)
 
 
-#: "대화만 하자" 같은 말로 동작을 끄고 켭니다 (끈 동안 부탁한 동작은 하지 않음: turn의 allowed)
-SWITCH_REPLY = {True: "좋아요, 이제 다시 움직일 수 있어요!",
+#: "대화만 하자" 같은 말로 도구를 끄고 켭니다
+SWITCH_REPLY = {True: "좋아요, 이제 다시 움직이고 불빛도 바꿀 수 있어요!",
                 False: "좋아요, 지금부터는 대화만 할게요."}
 
 
 def tool_switch(text: str, on: bool) -> bool:
-    """아이 말에 따라 바뀐 동작 사용 여부 (띄어쓰기는 보지 않음)."""
+    """학생 말에 따라 바뀐 도구 사용 여부 (띄어쓰기는 보지 않음)."""
     t = re.sub(r"\s", "", text)
     if re.search(r"(쓰지|사용하지|움직이지)(마|말)|대화만|말로만|얘기만|이야기만|가만히있", t):
         return False
@@ -405,34 +262,22 @@ def tool_switch(text: str, on: bool) -> bool:
     return on
 
 
-def main():
-    global FAKE, NAME
+def main(robot_class=Pibo):
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="http://127.0.0.1:8080")
-    p.add_argument("--no-commands", "--no-tools", dest="no_commands", action="store_true",
-                   help="동작 없이 대화만")
+    p.add_argument("--url", default="http://127.0.0.1:50020")
+    p.add_argument("--no-tools", action="store_true", help="도구 없이 대화만")
     p.add_argument("--fake", action="store_true", help="openpibo 없이 동작을 한 척만")
     p.add_argument("--history", type=int, default=HISTORY,
                    help="기억하는 주고받기 수 (지금 말 포함)")
-    p.add_argument("--device", choices=list(DEVICES), default="pibo",
-                   help="기기: 이름·있는 동작·불빛 함수가 정해짐 (pibrain: 몸·배터리 없음, LED 1개)")
-    p.add_argument("--name", help="기기 이름 (시스템 글에 들어감, 기본: --device의 이름)")
-    p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색, 키 20센티미터')")
-    p.add_argument("--tools", help="이 기기에 있는 도구만, 쉼표로 (예: eye_on,eye_off,get_weather)")
-    p.add_argument("--motions", help="set_motion에서 쓸 수 있는 동작만, 쉼표로 (예: greeting,dance1,stop)")
+    p.add_argument("--name", help=f"기기 이름 (시스템 글에 들어감, 기본: {robot_class.name})")
+    p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색')")
     args = p.parse_args()
-    global DEVICE
-    DEVICE = args.device
-    args.name = args.name or DEVICES[DEVICE]["name"]
-    args.tools = args.tools or (",".join(DEVICES[DEVICE]["tools"]) if DEVICES[DEVICE]["tools"] else None)
-    FAKE, NAME = args.fake, args.name
     globals()["HISTORY"] = max(1, args.history)
-    # 기기마다 다른 이름·소개·동작은 시스템 글과 도구 목록으로 (모델은 하나)
-    globals()["SYSTEM"] = system_for(args.name, args.about)
-    globals()["TOOLS"] = tool_list(args.tools.split(",") if args.tools else None,
-                                   args.motions.split(",") if args.motions else None, args.name)
-    use_tools = not args.no_commands
-    warm_up(args.url, use_tools)
+    robot = robot_class(fake=args.fake)
+    name = args.name or robot.name
+    system = system_for(name, args.about)
+    use_tools = not args.no_tools
+    warm_up(args.url, system, use_tools)
     history: list = []
     while True:
         try:
@@ -443,22 +288,22 @@ def main():
             continue
         if text in ("그만", "종료", "quit"):
             break
-        if not args.no_commands:
+        if not args.no_tools:
             was, use_tools = use_tools, tool_switch(text, use_tools)
             if was != use_tools:
                 # 끄고 켜는 말은 모델에 보내지 않고 정해진 말로 대답하고 기억을 비웁니다
                 history.clear()
-                print(f"  (동작 {'켬' if use_tools else '끔'})", flush=True)
-                speak(SWITCH_REPLY[use_tools])
+                print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
+                speak(name, SWITCH_REPLY[use_tools])
                 continue
         t = time.time()
         try:
-            speak(turn(args.url, history, text, not args.no_commands, use_tools))
+            speak(name, turn(args.url, history, text, robot, system, use_tools))
         except OSError as exc:               # 서버 오류(HTTPError 포함)·연결 끊김: 앱은 계속
             body = exc.read().decode("utf-8", "ignore")[:300] if hasattr(exc, "read") else ""
             print(f"  (서버 오류: {exc} {body})", flush=True)
             history.clear()
-            speak("잠깐 문제가 생겼어요. 한 번만 다시 말해 줄래요?")
+            speak(name, "잠깐 문제가 생겼어요. 한 번만 다시 말해 줄래요?")
         print(f"  (모두 {time.time() - t:.1f}초)", flush=True)
 
 

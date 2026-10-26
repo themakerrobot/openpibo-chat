@@ -143,8 +143,11 @@ def calibration(model: Path, data: str, out: Path, n: int = 400) -> Path:
     tok = AutoTokenizer.from_pretrained(model)
     lines = Path(data).read_text().splitlines()
     picked = random.Random(0).sample(lines, min(n, len(lines)))
-    text = "\n".join(tok.apply_chat_template(json.loads(x)["messages"], tokenize=False,
-                                             enable_thinking=False) for x in picked)
+    from train import tools_of
+
+    exs = [json.loads(x) for x in picked]
+    text = "\n".join(tok.apply_chat_template(ex["messages"], tools=tools_of(ex), tokenize=False,
+                                             enable_thinking=False) for ex in exs)
     out.write_text(text)
     return out
 
@@ -250,24 +253,34 @@ def server(gguf: Path, port: int, kv: str | None = None):
 
 
 #: 만든 파일을 바로 확인하는 질문: (이름, 시스템 글 (None이면 보내지 않음), 말)
-CHECKS = [("대화", SYSTEM, "학교에서 친구랑 싸웠어"),
-          ("이어 묻기", SYSTEM, "날씨가 춥네"),
-          ("영어", SYSTEM, "Hi! What did you do today?"),
-          ("시스템 글 없음", None, "너는 누구야?"),
-          ("다른 기기", system_for("파이브레인"), "너 이름이 뭐야?")]
+#: (이름, 시스템 글, 학생 말, 도구 목록을 보낼지)
+CHECKS = [("대화", SYSTEM, "학교에서 친구랑 싸웠어", False),
+          ("이어 묻기", SYSTEM, "날씨가 춥네", False),
+          ("시스템 글 없음", None, "너는 누구야?", False),
+          ("다른 기기", system_for("파이브레인"), "너 이름이 뭐야?", False),
+          ("도구 있을 때 대화", SYSTEM, "오늘 학교에서 발표했어", True),
+          ("불빛", SYSTEM, "빨간 불 켜 줘", True),
+          ("움직이기", system_for("파이브레인"), "춤 좀 춰 봐", True),
+          ("보기", SYSTEM, "앞에 뭐 있어?", True),
+          ("부르면 안 됨", SYSTEM, "난 빨간색이 좋아", True)]
 
 
 def check(gguf: Path) -> dict:
     """대화 몇 개를 llama-server로 물어봅니다 (생각 끄기를 따로 보내지 않고, 앱처럼)."""
+    from tools import TOOLS, calls_of
+
     out = {}
     with server(gguf, 8399) as url:
-        for key, system, text in CHECKS:
+        for key, system, text, tools in CHECKS:
             msgs = ([{"role": "system", "content": system}] if system else []) + \
                 [{"role": "user", "content": text}]
-            r = post(f"{url}/v1/chat/completions", {"messages": msgs, "temperature": 0,
-                                                    "max_tokens": 150})
-            msg = r["choices"][0]["message"]
+            body = {"messages": msgs, "temperature": 0, "max_tokens": 150}
+            if tools:
+                body["tools"] = TOOLS
+            msg = post(f"{url}/v1/chat/completions", body)["choices"][0]["message"]
             out[key] = {"말": text, "대답": msg.get("content")}
+            if calls_of(msg):
+                out[key]["도구"] = [f"{n}({json.dumps(a, ensure_ascii=False)})" for n, a in calls_of(msg)]
             if msg.get("reasoning_content"):
                 out[key]["생각"] = msg["reasoning_content"][:200]
     return out

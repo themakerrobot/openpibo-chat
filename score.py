@@ -29,6 +29,7 @@ from teacher import after_think, first_json
 
 RESULTS = Path("results")
 HELDOUT = Path("data/heldout.jsonl")
+TOOLS_HELDOUT = Path("data/heldout-tools.jsonl")
 
 JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마지막 파이보의 대답을 채점합니다.
 {style}
@@ -59,6 +60,38 @@ def questions() -> list[dict]:
     return out + later
 
 
+def tool_questions() -> list[dict]:
+    """도구 채점용: 마지막 학생 말까지와 정답 호출 (부르면 안 되는 말이면 None)."""
+    if not TOOLS_HELDOUT.exists():
+        return []
+    out = []
+    for line in TOOLS_HELDOUT.read_text().splitlines():
+        ex = json.loads(line)
+        last = ex["messages"][-1]
+        want = None
+        if last.get("tool_calls"):
+            fn = last["tool_calls"][0]["function"]
+            want = [fn["name"], fn["arguments"]]
+        out.append({"topic": ex.get("topic"), "messages": ex["messages"][:-1], "want": want})
+    return out
+
+
+def tool_answer(url: str) -> list:
+    """도구 목록을 보내고 물어 첫 호출 [이름, 인자] 또는 None."""
+    from export import post
+    from pibo_chat import SAMPLING
+    from tools import TOOLS, calls_of
+
+    got = []
+    for q in tool_questions():
+        msg = post(f"{url}/v1/chat/completions", {"messages": q["messages"], "tools": TOOLS,
+                                                  **SAMPLING, "seed": 0, "max_tokens": 100}
+                   )["choices"][0]["message"]
+        calls = calls_of(msg)
+        got.append([calls[0][0], calls[0][1]] if calls else None)
+    return got
+
+
 def answer(gguf: str, name: str) -> None:
     from export import post, server
     from pibo_chat import SAMPLING
@@ -76,9 +109,10 @@ def answer(gguf: str, name: str) -> None:
                        {"messages": q["messages"], **SAMPLING, "seed": 0, "max_tokens": 200}
                        )["choices"][0]["message"]
             answers.append((msg.get("content") or "").strip())
+        tools = tool_answer(url)
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / f"answers-{name}.json").write_text(json.dumps(
-        {"gguf": gguf, "answers": answers}, ensure_ascii=False, indent=1))
+        {"gguf": gguf, "answers": answers, "tools": tools}, ensure_ascii=False, indent=1))
     print(f"답 {len(answers)}개 → {RESULTS / f'answers-{name}.json'}", flush=True)
 
 
@@ -163,9 +197,35 @@ def report() -> str:
         "\n\n대화 점수: 한국어·알맞음·짧음·이어 가기의 평균 (5점 만점, 선생 모델이 생각을 켜고 채점). "
         "틀린 사실·되풀이·같은 대답·기호·반말은 낮을수록 좋음. 같은 대답: 서로 다른 질문에 글자 그대로 "
         "같은 대답. 앞 말 되풀이 (글자): 앞 대화의 파이보 말과 3글자 덩어리가 절반 넘게 겹침.\n")
+    text += tool_report()
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "score.md").write_text(text)
     return text
+
+
+def tool_report() -> str:
+    """도구 정답률: 불러야 할 때 맞게 불렀나(이름과 인자), 부르면 안 될 때 안 불렀나."""
+    qs = tool_questions()
+    if not qs:
+        return ""
+    rows = ["", "| 모델 | 도구를 맞게 부름 | 부르면 안 될 때 안 부름 | 불빛 | 보기 | 움직이기 |",
+            "| --- | --- | --- | --- | --- | --- |"]
+    for f in sorted(RESULTS.glob("answers-*.json")):
+        got = json.loads(f.read_text()).get("tools")
+        if not got or len(got) != len(qs):
+            continue
+
+        def rate(idx, got=got):
+            ok = [got[i] == qs[i]["want"] for i in idx]
+            return f"{sum(ok) / len(ok):.0%} ({len(ok)})" if ok else "-"
+
+        call = [i for i, q in enumerate(qs) if q["want"]]
+        by = {k: [i for i in call if qs[i]["want"][0] == k] for k in ("light", "look", "move")}
+        rows.append(f"| {f.stem.removeprefix('answers-')} | {rate(call)} | "
+                    f"{rate([i for i, q in enumerate(qs) if not q['want']])} | {rate(by['light'])} | "
+                    f"{rate(by['look'])} | {rate(by['move'])} |")
+    return "\n".join(rows) + "\n\n도구: 학습에 안 쓴 도구 대화(heldout-tools)에 도구 목록을 함께 보내 첫 호출이 정답과 " \
+        "같은지 (이름과 인자 모두).\n"
 
 
 def main():

@@ -44,8 +44,14 @@ def steps():
         ("data-pibo", ["rewrite.py", "--data", "data/source.jsonl", "--out", "data/pibo.jsonl"], []),
         ("data-heldout", ["rewrite.py", "--data", "data/source-heldout.jsonl",
                           "--out", "data/heldout.jsonl"], []),
-        # 합치기: 같은 대답 줄이기, 기기 이름·소개·자기소개 (merge_data.py, devices.py)
-        ("data-themaker", ["merge_data.py", "--out", DATA, "data/pibo.jsonl"], ["data-pibo"]),
+        # 도구(불빛, 보기, 움직이기)를 부르는 대화: 정해 둔 말 모양으로 (선생 없이, 몇 초)
+        ("data-tools", ["tool_data.py", "--out", "data/tools.jsonl", "--n", "4000",
+                        "--chat", "data/pibo.jsonl"], ["data-pibo"]),
+        ("data-tools-heldout", ["tool_data.py", "--out", "data/heldout-tools.jsonl", "--n", "300",
+                                "--seed", "99", "--chat", "data/heldout.jsonl"], ["data-heldout"]),
+        # 합치기: 같은 대답 줄이기, 대화 30%에 도구 목록, 기기 이름·소개·자기소개
+        ("data-themaker", ["merge_data.py", "--out", DATA, "data/pibo.jsonl", "data/tools.jsonl"],
+         ["data-pibo", "data-tools"]),
         ("train", ["train.py", "--base", BASE, "--data", DATA, "--out", run, "--lr", "2e-5",
                    "--batch", "2", "--accum", "16"], ["data-themaker"]),
         # 어휘 24만 → 약 3만 (한글·학습 데이터에 나온 토큰은 그대로): Q4_K_M 505 → 약 323MiB
@@ -57,9 +63,9 @@ def steps():
         # 채점: 학습에 안 쓴 대화로 최종 모델과 예전 모델(baseline/before-Q4_K_M.gguf, 없으면
         # 건너뜀)을 같은 설정으로 묻고 선생이 매김
         ("score-before", ["score.py", "answer", "--gguf", BEFORE, "--name", "before"],
-         ["data-heldout"]),
+         ["data-heldout", "data-tools-heldout"]),
         ("score-themaker", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker"],
-         ["gguf", "data-heldout"]),
+         ["gguf", "data-heldout", "data-tools-heldout"]),
         ("score-judge", ["score.py", "judge"], ["score-before", "score-themaker"]),
     ]
 

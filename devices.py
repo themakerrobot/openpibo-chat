@@ -144,6 +144,9 @@ def vary(lines: list[str], n_identity: int = 3000, seed: int = 7) -> tuple[list[
     out, count = [], {"이름 바꿈": 0, "파이보 소개": 0, "자기소개": 0}
     for line in lines:
         ex = json.loads(line)
+        if ex.get("kind") == "tool":      # 도구 대화는 만들 때 이름과 시스템 글을 정했음
+            out.append(line)
+            continue
         rng = rng_for(line, "device")
         if rng.random() < RENAME_SHARE:
             ko, en = rng.choice(NAMES)

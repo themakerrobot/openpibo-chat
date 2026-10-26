@@ -1,8 +1,10 @@
 """파이보 학습 대화를 하나로 합칩니다 (최종 학습 데이터 data/train-themaker.jsonl).
 
-    python merge_data.py --out data/train-themaker.jsonl data/pibo.jsonl
+    python merge_data.py --out data/train-themaker.jsonl data/pibo.jsonl data/tools.jsonl
 
 - 똑같은 줄은 한 번만.
+- 도구 대화(tool_data.py)는 그대로. 대화의 TOOL_SHARE(30%)에는 도구 목록을 함께 보여 줘서, 도구가
+  있을 때도 이야기에는 도구를 부르지 않고 대화하게 합니다 (기기 앱은 늘 도구 목록을 보냄).
 - 똑같은 파이보 대답(띄어쓰기·문장부호 무시)은 REPEAT_MAX번까지만: 같은 대답이 많으면 모델이
   비슷한 말에 늘 같은 말을 합니다. 가장 흔한 첫 문장들을 찍어 사람이 볼 수 있게 합니다.
 - 여러 기기용 (devices.py): 일부 대화의 이름을 다른 이름(더메이커, 파이브레인 …)으로, 기기
@@ -12,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections import Counter
@@ -20,8 +23,15 @@ from pathlib import Path
 from devices import vary
 from prompts import same
 
-#: 똑같은 파이보 대답을 남기는 최대 횟수
+#: 똑같은 파이보 대답을 남기는 최대 횟수 (도구 대화는 빼고)
 REPEAT_MAX = 3
+#: 도구 목록을 함께 보여 줄 대화의 몫
+TOOL_SHARE = 0.3
+
+
+def gets_tools(line: str) -> bool:
+    """줄마다 늘 같은 결정 (다시 돌려도 같은 데이터)."""
+    return int(hashlib.md5(line.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF < TOOL_SHARE
 
 
 def first_sentence(text: str) -> str:
@@ -40,6 +50,13 @@ def merge(paths: list[str]) -> tuple[list[str], Counter, Counter]:
                 continue
             seen.add(line)
             ex = json.loads(line)
+            if ex.get("kind") == "tool":
+                kept["tools"] += 1
+                out.append(line)
+                continue
+            if gets_tools(line):
+                ex["tools"] = True
+                line = json.dumps(ex, ensure_ascii=False)
             mine = [same(m["content"]) for m in ex["messages"]
                     if m["role"] == "assistant" and m.get("content")]
             if any(replies[r] >= REPEAT_MAX for r in mine):

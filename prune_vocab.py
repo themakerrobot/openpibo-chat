@@ -107,8 +107,11 @@ def prune(model: Path, out: Path, data: list[str], ascii_merges: int = 20000) ->
     tok = AutoTokenizer.from_pretrained(model)
     tj = json.loads((model / "tokenizer.json").read_text())
 
-    def render(ex):
-        return tok.apply_chat_template(ex["messages"], tokenize=False, enable_thinking=False)
+    from train import tools_of
+
+    def render(ex):     # 도구 목록·호출 모양의 토큰도 남기게 학습 때와 같은 모양으로
+        return tok.apply_chat_template(ex["messages"], tools=tools_of(ex), tokenize=False,
+                                       enable_thinking=False)
 
     keep = keep_set(tj, used_tokens(tok, corpus(data), render), ascii_merges)
     vocab = tj["model"]["vocab"]
