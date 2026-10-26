@@ -118,6 +118,17 @@ BANMAL = re.compile(r"(^|[\s,.!?])(너는|너도|너가|너를|너의|너랑|너
                     r"|(겠네|했네|거든|구나|잖아)[.!?]\s")
 
 
+def polite_ends(text: str) -> bool:
+    """문장마다 존댓말로 끝나는지 ("마음이 아파."처럼 BANMAL이 놓치는 반말 끝도). "와!"처럼 짧은
+    감탄은 봐줍니다."""
+    for sent in re.split(r"(?<=[.!?])\s+", text.strip()):
+        core = sent.rstrip(" .!?…'\"")
+        if len(core.replace(" ", "")) > 4 and "가" <= core[-1:] <= "힣" and \
+                not core.endswith(("요", "니다", "니까", "죠")):
+            return False
+    return True
+
+
 def pibo_problem(text, limit: int = MAX_PIBO) -> str | None:
     """파이보 말이 규칙에 어긋난 까닭 (괜찮으면 None)."""
     if not isinstance(text, str) or not text.strip():
@@ -129,7 +140,7 @@ def pibo_problem(text, limit: int = MAX_PIBO) -> str | None:
         return f"파이보 말에 기호 {bad.group()!r}"
     if bad := OTHER_SCRIPT.search(text):
         return f"파이보 말에 다른 글자 {bad.group()!r}"
-    if BANMAL.search(text):
+    if BANMAL.search(text) or not polite_ends(text):
         return "파이보 말에 반말"
     if re.match(r"\s*(파이보|pibo)\s*:", text, re.IGNORECASE):
         return "파이보 말에 '파이보:'"
@@ -150,6 +161,22 @@ def overlap(a: str, b: str) -> float:
     """a의 글자 덩어리(3글자) 중 b에도 있는 몫."""
     ga = grams(a)
     return len(ga & grams(b)) / len(ga) if ga else 0.0
+
+
+#: 뜻을 바꾸지 않고 글자로 고칠 수 있는 반말 (고친 뒤에도 남은 반말은 BANMAL로 걸러 뺌)
+POLITE_FIX = [
+    (re.compile(r"(?<=[가-힣])구나(?=[.!?,]|\s|$)"), "군요"),          # 걱정되시는구나 → 걱정되시는군요
+    (re.compile(r"(?<=[가-힣])지\?"), "죠?"),                         # 재미있지? → 재미있죠?
+    (re.compile(r"(?<=[가-힣])까\?"), "까요?"),                       # 해 볼까? → 해 볼까요?
+    (re.compile(r"(?<=[가-힣])(거든|잖아|할게|줄게)(?=[.!?]|$)"), r"\1요"),
+    (re.compile(r"(^|(?<=[\s,.!?]))(네가|니가|너가|너는|넌|너의)\s+"), ""),  # 주어는 빼고 말함
+]
+
+
+def polite_fix(text: str) -> str:
+    for pattern, repl in POLITE_FIX:
+        text = pattern.sub(repl, text)
+    return text.strip()
 
 
 #: 원본의 가림 표시 (#@이름# 등): 학생 말에 있으면 그 대화는 쓰지 않음 (학생 말은 고치지 않으므로)
@@ -173,6 +200,8 @@ def decide_rewrite(text: str, src: dict) -> tuple[list[dict] | None, str | None]
     out = []
     for pibo, s in zip(said, src["turns"], strict=False):     # 넘친 뒤쪽은 버림
         user = s["user"]
+        if isinstance(pibo, str):
+            pibo = polite_fix(pibo)
         if why := pibo_problem(pibo):
             return None, f"{why}: {str(pibo)[:40]}"
         pibo = pibo.strip()

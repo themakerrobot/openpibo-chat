@@ -74,7 +74,7 @@ def test_rewritten_pibo_words_are_checked_letter_by_letter():
         "글": "선생의 답을 못 읽음",
         '{"ok": true, "pibo": []}': "파이보 말이 없음",
         rewritten((u1, "괜찮아요? 뻄ๆ 놀랐겠어요.")): "파이보 말에 다른 글자 'ๆ'",
-        rewritten((u1, "너의 강아지가 걱정돼요.")): "파이보 말에 반말",
+        rewritten((u1, "강아지가 걱정돼. 괜찮아?")): "파이보 말에 반말",
         rewritten((u1, "괜찮아요? 😀")): "파이보 말에 기호 '😀'",
         rewritten((u1, "가" * 121)): "파이보 말이 120자 넘음",
         rewritten((u1, "우리 강아지가 오늘 산책하다가 넘어졌군요.")): "학생 말을 되받아 읊음",
@@ -189,6 +189,11 @@ def test_banmal_left_in_pibos_words_is_found():
     rude = ["문어는 팔이 여덟 개예요. 재미있지?", "아 그런 일이 생겼구나. 힘들었겠네.",
             "안녕하세요! 네가 인사하면 반가워요.", "먹을 거예요. 넌 뭐야?", "같이 해 볼까?",
             "과학은 너의 미래를 도와줘요.", "내가 찾아볼게요."]
+    from prompts import pibo_problem, polite_fix
+
+    assert pibo_problem("차별받는 상황은 마음이 아파. 많이 힘들었겠어요.") == "파이보 말에 반말"
+    assert pibo_problem("와! 정말 멋진 생각이에요.") is None and pibo_problem("안녕하세요!") is None
+    assert polite_fix("걱정되시는구나. 네가 잘할 거예요. 재미있지?") == "걱정되시는군요. 잘할 거예요. 재미있죠?"
     polite = ["멋진 소리가 나는 거 좋아요.", "정말 잘했어요!", "제가 도와드릴게요.",
               "너무 재미있겠네요!", "같이 해 볼까요?", "그 마음 이해돼요."]
     assert all(BANMAL.search(s) for s in rude)

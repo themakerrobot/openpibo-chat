@@ -2,6 +2,8 @@
 
     python rewrite.py --data data/source.jsonl --out data/pibo.jsonl
     python rewrite.py --data data/source.jsonl --out data/try.jsonl --limit 200   # 먼저 조금 해 보기
+    python rewrite.py --data data/source.jsonl --limit 200 --dropped fit > samples/drop.txt
+                      # 빠진 대화를 까닭별로 읽어 보기 (기록에서 꺼냄, 선생을 부르지 않음)
 
 1. 바꿔 쓰기 (prompts.REWRITE, 생각 켬): 학생과 나눌 만한 대화가 아니면 선생이 뺍니다.
    선생은 파이보 말만 쓰고 학생 말은 원본 그대로 씁니다 (가림 표시가 있는 대화는 미리 뺌).
@@ -126,11 +128,38 @@ def results(sources: list[dict], done: dict) -> tuple[list[dict], Counter, Count
     return kept, by_source, why
 
 
+def dropped(sources: list[dict], done: dict, reason: str) -> str:
+    """까닭이 reason으로 시작하는 빠진 대화들을 사람이 읽을 글로 (바꿔 쓴 파이보 말이 있으면 그것도)."""
+    from prompts import first_json
+
+    lines = []
+    for s in sources:
+        r = done.get((s["id"], "rewrite")) or {}
+        c = done.get((s["id"], "check")) or {}
+        why = r.get("why") or c.get("why")
+        if not why or not why.startswith(reason):
+            continue
+        lines.append(f"--- {s['source']} [{s.get('topic') or ''}] {why}")
+        said = []
+        d = first_json(r.get("raw") or "")
+        if isinstance(d, dict):
+            said = d.get("pibo") or [t.get("pibo") for t in d.get("turns") or [] if isinstance(t, dict)]
+        for k, t in enumerate(s["turns"]):
+            lines.append(f"학생:   {t['user']}")
+            lines.append(f"원래:   {t['other']}")
+            if k < len(said):
+                lines.append(f"파이보: {said[k]}")
+        if c.get("marks"):
+            lines.append(f"점수: {json.dumps(c['marks'], ensure_ascii=False)}")
+    return "\n".join(lines) + f"\n\n{reason}: {sum(1 for x in lines if x.startswith('---'))}개\n"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True, help="원본 대화 (PC에만 있음)")
-    p.add_argument("--out", required=True)
+    p.add_argument("--out", help="남은 대화 (--dropped면 없어도 됨)")
     p.add_argument("--log", default="data/rewrite-log.jsonl")
+    p.add_argument("--dropped", metavar="까닭", help="이 까닭으로 빠진 대화를 보여 주고 끝 (예: fit)")
     p.add_argument("--limit", type=int, help="앞에서 이만큼만 (먼저 해 보기)")
     p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     args = p.parse_args()
@@ -142,6 +171,11 @@ def main():
     if args.limit:
         sources = sources[:args.limit]
     log_path = Path(args.log)
+    if args.dropped:
+        print(dropped(sources, load_log(log_path, sources), args.dropped))
+        return
+    if not args.out:
+        p.error("--out이 필요해요")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     llm, load_s = None, 0.0
 
