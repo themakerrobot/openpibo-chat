@@ -1,21 +1,20 @@
-"""학습한 모델을 GGUF로 바꾸고, llama-server로 대화와 도구 호출이 되는지 봅니다.
+"""학습한 모델을 GGUF로 바꾸고, llama-server로 대화가 되는지 봅니다.
 
-    python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b
-    python export.py --model runs/qwen3-0.6b/final --name pibo-qwen3-0.6b --quant Q8_0
-    python export.py --retemplate out/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf   # 템플릿만
+    python export.py --model runs/themaker-0.8b/small --name themaker-0.8b --quant Q4_K_M \
+        --imatrix data/train-themaker.jsonl
+    python export.py --retemplate out/themaker-0.8b-Q4_K_M.gguf   # 템플릿만 다시
 
-결과: out/<name>-<quant>.gguf (파이보로 복사할 파일)과 out/<name>-<quant>-check.json.
-llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (setup 단계가 해 둡니다).
+결과: out/<name>-<quant>.gguf (기기로 복사할 파일)과 out/<name>-<quant>-check.json.
+llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (llama-quantize, llama-server, llama-imatrix).
 
 바꾸기 전에 대화 템플릿을 '늘 생각 없이'로 고칩니다. 학습은 늘 빈 생각 칸
 (<think></think>) 뒤의 대답만 했는데, llama-server는 따로 말하지 않으면 생각하는
 쪽으로 템플릿을 펼쳐서 대답 전에 영어로 한참 생각합니다. 템플릿에 박아 두면
-파이보 앱이나 서버 설정을 따로 고치지 않아도 됩니다.
+앱이나 서버 설정을 따로 고치지 않아도 됩니다.
 
-시스템 글 없이 물으면(llama-server 웹 화면, 시스템 글을 안 보내는 앱) 학습 때와 같은 시스템
-글(tools.SYSTEM)을 넣도록 템플릿 앞에 한 줄을 더합니다: 모델은 늘 이 글과 함께 배워서, 없으면
-"파이썬으로 웹소설을 만들었어요" 같은 엉뚱한 말을 합니다. 앱이 시스템 글을 보내면 그걸 씁니다.
-이미 만든 GGUF는 --retemplate으로 템플릿만 바꿉니다 (다시 변환하지 않음).
+시스템 글 없이 물으면(llama-server 웹 화면, 시스템 글을 안 보내는 앱) 학습 때와 같은 모양의
+시스템 글(이름은 더메이커, tools.system_for)을 넣도록 템플릿 앞에 한 줄을 더합니다: 모델은 늘
+시스템 글과 함께 배워서, 없으면 엉뚱한 말을 합니다. 앱이 시스템 글을 보내면 그걸 씁니다.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from tools import SYSTEM, TOOLS
+from tools import ENGINE, SYSTEM, system_for
 
 LLAMA = Path(os.environ.get("LLAMA_CPP", "~/llama.cpp")).expanduser()
 OUT = Path("out")
@@ -72,17 +71,18 @@ def force_no_think(template: str) -> str:
 DEFAULT_MARK = "{#- pibo: 시스템 글이 없으면 학습 때의 시스템 글 #}"
 
 
-def default_system(template: str, system: str = SYSTEM) -> str:
+def default_system(template: str, system: str | None = None) -> str:
     """시스템 글로 시작하지 않는 대화에 학습 때의 시스템 글을 앞에 넣는 템플릿."""
     if DEFAULT_MARK in template:
         return template
+    system = system or system_for(ENGINE)
     return (DEFAULT_MARK + "\n{%- if not messages or messages[0].role != 'system' %}"
             "{%- set messages = [{'role': 'system', 'content': "
             + json.dumps(system, ensure_ascii=False) + "}] + messages %}{%- endif %}\n" + template)
 
 
 def pibo_template(template: str) -> str:
-    """파이보용 템플릿: 늘 생각 없이, 시스템 글이 없으면 학습 때의 것."""
+    """기기용 템플릿: 늘 생각 없이, 시스템 글이 없으면 더메이커로."""
     return default_system(force_no_think(template))
 
 
@@ -135,18 +135,16 @@ def convert(model: Path, f16: Path) -> None:
 
 
 def calibration(model: Path, data: str, out: Path, n: int = 400) -> Path:
-    """imatrix용 글: 학습 데이터 n개를 모델이 실제로 보는 모양(대화 템플릿, 도구 목록)으로."""
+    """imatrix용 글: 학습 데이터 n개를 모델이 실제로 보는 모양(대화 템플릿)으로."""
     import random
 
     from transformers import AutoTokenizer
 
-    from prompts import tools_for
-
     tok = AutoTokenizer.from_pretrained(model)
     lines = Path(data).read_text().splitlines()
     picked = random.Random(0).sample(lines, min(n, len(lines)))
-    text = "\n".join(tok.apply_chat_template(json.loads(x)["messages"], tools=tools_for(json.loads(x)),
-                                             tokenize=False, enable_thinking=False) for x in picked)
+    text = "\n".join(tok.apply_chat_template(json.loads(x)["messages"], tokenize=False,
+                                             enable_thinking=False) for x in picked)
     out.write_text(text)
     return out
 
@@ -177,7 +175,7 @@ def gguf_template(path: Path) -> str:
 
 
 def retemplate(path: Path) -> bool:
-    """GGUF를 다시 만들지 않고 대화 템플릿만 파이보용으로 바꿉니다. 바꿨으면 True."""
+    """GGUF를 다시 만들지 않고 대화 템플릿만 기기용으로 바꿉니다. 바꿨으면 True."""
     old = gguf_template(path)
     new = pibo_template(old)
     if new == old:
@@ -251,20 +249,25 @@ def server(gguf: Path, port: int, kv: str | None = None):
         proc.wait(timeout=30)
 
 
+#: 만든 파일을 바로 확인하는 질문: (이름, 시스템 글 (None이면 보내지 않음), 말)
+CHECKS = [("대화", SYSTEM, "학교에서 친구랑 싸웠어"),
+          ("이어 묻기", SYSTEM, "날씨가 춥네"),
+          ("영어", SYSTEM, "Hi! What did you do today?"),
+          ("시스템 글 없음", None, "너는 누구야?"),
+          ("다른 기기", system_for("파이브레인"), "너 이름이 뭐야?")]
+
+
 def check(gguf: Path) -> dict:
-    """그냥 대화 한 번, 도구를 불러야 하는 말 두 번.
-    파이보 앱처럼 생각 끄기를 따로 보내지 않고 묻습니다."""
+    """대화 몇 개를 llama-server로 물어봅니다 (생각 끄기를 따로 보내지 않고, 앱처럼)."""
     out = {}
     with server(gguf, 8399) as url:
-        for key, text in (("대화", "공룡은 왜 없어졌어?"), ("춤", "파이보야 춤춰 줘"),
-                          ("눈", "눈 빨갛게 해 봐")):
-            r = post(f"{url}/v1/chat/completions", {
-                "messages": [{"role": "system", "content": SYSTEM},
-                             {"role": "user", "content": text}],
-                "tools": TOOLS, "temperature": 0, "max_tokens": 150})
+        for key, system, text in CHECKS:
+            msgs = ([{"role": "system", "content": system}] if system else []) + \
+                [{"role": "user", "content": text}]
+            r = post(f"{url}/v1/chat/completions", {"messages": msgs, "temperature": 0,
+                                                    "max_tokens": 150})
             msg = r["choices"][0]["message"]
-            out[key] = {"말": text, "대답": msg.get("content"),
-                        "도구": [c["function"] for c in msg.get("tool_calls") or []]}
+            out[key] = {"말": text, "대답": msg.get("content")}
             if msg.get("reasoning_content"):
                 out[key]["생각"] = msg["reasoning_content"][:200]
     return out
@@ -278,12 +281,12 @@ def main():
     p.add_argument("--imatrix", metavar="DATA",
                    help="이 학습 데이터로 imatrix를 재서 양자화 (llama-imatrix)")
     p.add_argument("--retemplate", metavar="GGUF", nargs="+",
-                   help="이미 만든 GGUF의 대화 템플릿만 파이보용으로 (다시 변환하지 않음)")
+                   help="이미 만든 GGUF의 대화 템플릿만 기기용으로 (다시 변환하지 않음)")
     args = p.parse_args()
     if args.retemplate:
         for path in args.retemplate:
             if not retemplate(Path(path)):
-                print(f"{path}: 이미 파이보용 템플릿이에요", flush=True)
+                print(f"{path}: 이미 기기용 템플릿이에요", flush=True)
         return
     if not (args.model and args.name):
         p.error("--model과 --name이 필요해요")
@@ -307,9 +310,6 @@ def main():
     result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}
     (OUT / f"{q.stem}-check.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     print(json.dumps(result, ensure_ascii=False, indent=1))
-    calls = [c["name"] for k in ("춤", "눈") for c in result["check"][k]["도구"]]
-    if calls != ["set_motion", "eye_on"]:
-        print("주의: 도구 호출이 기대와 다릅니다 (위 결과를 보세요)", flush=True)
     if any("생각" in v for v in result["check"].values()):
         print("주의: 대답 전에 생각을 합니다 (파이보에서 아주 느려집니다)", flush=True)
 

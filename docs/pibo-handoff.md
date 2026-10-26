@@ -18,7 +18,7 @@
 | 기존 llama.cpp | `/home/pi/.llama.cpp` (빌드 5218, 2025-04). **Qwen3.5를 못 읽음** |
 | 새 llama.cpp | `/home/pi/llama.cpp-new` (빌드 11889, 커밋 `d854d98`, PC와 같은 커밋) |
 | 기존 서버 | 서비스(systemd)가 `/home/pi/.llama.cpp/build/bin/llama-server -m /home/pi/.model/llm/llm-model.gguf --ctx-size 2048 --log-disable --host 0.0.0.0 --port 50020`로 젬마3 1B를 띄움. 서비스 파일은 `~/openpibo-os/system/` 아래 (이름 확인 필요) |
-| 새 모델 | `~/pibo-take/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf` (323MB) |
+| 새 모델 | 최종 `themaker-0.8b-Q4_K_M.gguf` (PC `out/`, 약 320MB). 그 전에는 `~/pibo-take/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf` |
 | 앱 | `~/pibo-take/pibo_chat.py`, `~/pibo-take/tools.py` (표준 라이브러리만 씀) |
 | 파이썬 | `sudo ~/.pyenv/bin/python3` 로 실행 (openpibo가 여기에 설치됨) |
 
@@ -40,7 +40,7 @@ PC 채점 (초·중·고 질문 700개, 선생 모델 채점): 대화 4.83/5, �
   절대 안 되고, 옛 GGUF는 엉뚱한 말("파이썬으로 웹소설을 만들었어요")을 했습니다. 새 GGUF
   템플릿은 시스템 글이 없으면 학습 때의 것을 넣습니다 (`export.py --retemplate`).
 - 서버를 셸에서 `&`로만 띄우면 그 창의 신호에 같이 꺼질 수 있어 `setsid nohup`으로 띄웁니다.
-- 예전 방식(`--model-tools`, 모델이 도구를 고름)은 도구 목록을 읽느라 시작에 40~70초 걸렸습니다.
+- 예전 방식(모델이 도구를 고름)은 도구 목록을 읽느라 시작에 40~70초 걸렸습니다.
   지금은 대화 모델이 도구를 모르고 앱이 동작을 정해, 시작이 몇 초입니다.
 
 ---
@@ -57,33 +57,27 @@ PC 채점 (초·중·고 질문 700개, 선생 모델 채점): 대화 4.83/5, �
 
 ## 3. 할 일
 
-### A. 최신 파일 받기 (PC에서 먼저 템플릿을 고친 뒤)
+### A. 최신 파일 받기
 
-PC(`circulus@192.168.68.118`)에서 사용자가 먼저 실행해 두어야 합니다:
-
-```bash
-cd ~/openpibo-chat
-git fetch origin claude/inspiring-curie-s3a7wn && git merge --ff-only FETCH_HEAD
-.venv/bin/python export.py --retemplate old/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf
-```
+최종 모델은 PC에서 만드는 중입니다: `~/openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf`
+(모든 기기 공통 대화 모델, 도구 없음). 나오기 전까지는 파이보에 이미 있는 예전 모델
+(`~/pibo-take/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf`)로 앱을 시험합니다 (대화와 동작 모두 됨).
 
 파이보에서:
 
 ```bash
 cd ~/pibo-take
 scp circulus@192.168.68.118:openpibo-chat/{pibo_chat.py,tools.py,pi_bench.sh} .
-scp circulus@192.168.68.118:openpibo-chat/old/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf .
+# 최종 모델이 나오면
+scp circulus@192.168.68.118:openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf .
 ```
-
-자기소개(만든 곳 서큘러스, 키 39.5cm 등)까지 배운 새 버전은 PC의
-`out/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf`에 나옵니다 (같은 이름, 같은 방법으로 교체).
 
 ### B. 서버 띄우기
 
 ```bash
 pgrep -af llama-server          # 떠 있으면 기존 서비스: sudo systemctl stop <서비스 이름>
 setsid nohup /home/pi/llama.cpp-new/build/bin/llama-server \
-  -m /home/pi/pibo-take/pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf \
+  -m /home/pi/pibo-take/themaker-0.8b-Q4_K_M.gguf \
   --jinja --ctx-size 2048 -np 1 --cache-ram 0 -t 4 -ub 256 --host 0.0.0.0 --port 50020 \
   > ~/qwen-server.log 2>&1 < /dev/null &
 for i in $(seq 1 30); do curl -s http://127.0.0.1:50020/health | grep -q ok && { echo 준비됨; break; }; sleep 2; done
@@ -192,7 +186,8 @@ def reply_to(text: str) -> str:
 ### F-2. 다른 기기(파이브레인 등)
 
 모델은 하나입니다. 기기 이름·소개는 시스템 글로, 동작은 그 기기 앱이 처리합니다. 이름을 시스템
-글에서 읽는 건 `school2` 모델부터입니다 (지금 파이보 모델은 이름을 바꿔도 "파이보"라고 할 수 있음).
+글에서 읽는 건 최종 모델(themaker)부터입니다 (예전 파이보 모델은 이름을 바꿔도 "파이보"라고 할 수 있음).
+시스템 글을 보내지 않으면 "더메이커"로 대답합니다.
 
 ```bash
 python3 pibo_chat.py --url http://127.0.0.1:50020 --name 파이브레인 \

@@ -104,14 +104,11 @@ def prune(model: Path, out: Path, data: list[str], ascii_merges: int = 20000) ->
     from safetensors.torch import load_file, save_file
     from transformers import AutoTokenizer
 
-    from prompts import tools_for
-
     tok = AutoTokenizer.from_pretrained(model)
     tj = json.loads((model / "tokenizer.json").read_text())
 
     def render(ex):
-        return tok.apply_chat_template(ex["messages"], tools=tools_for(ex), tokenize=False,
-                                       enable_thinking=False)
+        return tok.apply_chat_template(ex["messages"], tokenize=False, enable_thinking=False)
 
     keep = keep_set(tj, used_tokens(tok, corpus(data), render), ascii_merges)
     vocab = tj["model"]["vocab"]

@@ -1,16 +1,15 @@
 """파이보에서: llama-server의 대화 모델과 이야기하고, 몇 안 되는 동작은 앱이 말을 보고 바로 실행합니다.
 
-    llama-server -m pibo-qwen3.5-0.8b-school2-small-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 \\
+    llama-server -m themaker-0.8b-Q4_K_M.gguf --jinja -c 2048 -np 1 --cache-ram 0 \\
         -t 4 -ub 256 --port 8080 &
     python3 pibo_chat.py                 # 키보드로 말하기
     python3 pibo_chat.py --fake          # openpibo가 없는 PC에서: 동작은 흉내만
     python3 pibo_chat.py --no-commands   # 동작 없이 대화만
     python3 pibo_chat.py --name 파이브레인 --about "코딩 로봇, 서큘러스에서 만듦" \\
         --tools eye_on,eye_off,get_weather   # 다른 기기: 이름·소개·있는 동작만 (모델은 같음)
-    python3 pibo_chat.py --model-tools   # 예전 도구 모델(qwen3.5-0.8b-school): 모델이 도구를 고름
 
-대화 모델은 모든 기기 공통이고 도구를 모릅니다 (도구 목록 1천 토큰을 읽느라 파이보에서 너무
-느려서 뺐습니다). 동작(멈춰, 춤, 인사, 앞으로·뒤로, 눈 색, 배터리, 앞에 뭐 있어, 날씨)은
+대화 모델(themaker)은 모든 기기 공통이고 도구를 모릅니다 (도구 목록 1천 토큰을 읽느라
+파이보에서 너무 느려서 뺐습니다). 동작(멈춰, 춤, 인사, 앞으로·뒤로, 눈 색, 배터리, 앞에 뭐 있어, 날씨)은
 COMMANDS가 말을 보고 정해 바로 실행하고, 정해진 말로 대답합니다. 날씨만 받은 결과를 모델이 말로
 풀어 줍니다. 음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS
 목소리는 lang_of로). 이 파일은 tools.py 하나만 있으면 됩니다.
@@ -30,8 +29,6 @@ from tools import COLORS, SYSTEM, TOOLS, check_call, has_batchim, system_for, to
 
 HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈)
 FAKE = False  # --fake: 로봇 없이 동작을 한 척만 합니다
-#: 동작은 앱이 정합니다 (--model-tools면 예전처럼 모델이 도구를 고름)
-MODEL_TOOLS = False
 NAME = "파이보"   # --name: 기기 이름
 
 
@@ -289,77 +286,6 @@ def window(history: list) -> list:
 PAUSED = "지금은 대화만 하기로 했어요. 다시 움직이려면 이제 움직여도 된다고 말해 주세요."
 
 
-def first_move(url: str, text: str) -> list | None:
-    """(--model-tools) 도구를 부를지 지금 말 하나로 정합니다. 스트리밍으로 받아 첫 글이 말이면
-    바로 끊습니다. 도구 호출이면 끝까지 받아 돌려주고, 아니면 None."""
-    body = {"messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}],
-            "tools": TOOLS, "temperature": 0, "max_tokens": 120, "stream": True}
-    req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
-    calls: dict = {}
-    with urllib.request.urlopen(req, timeout=120) as r:
-        for raw in r:
-            line = raw.decode("utf-8", "ignore").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            choices = json.loads(data).get("choices") or []
-            delta = (choices[0].get("delta") or {}) if choices else {}
-            for tc in delta.get("tool_calls") or []:
-                c = calls.setdefault(tc.get("index", 0), {"id": "", "type": "function",
-                                                           "function": {"name": "", "arguments": ""}})
-                c["id"] = tc.get("id") or c["id"]
-                f = tc.get("function") or {}
-                c["function"]["name"] = f.get("name") or c["function"]["name"]   # 이름은 한 번에 옴
-                c["function"]["arguments"] += f.get("arguments") or ""
-            if not calls and (delta.get("content") or "").strip():
-                return None                  # 말로 시작: 연결을 닫으면 서버가 생성을 멈춥니다
-    return [calls[i] for i in sorted(calls)] or None
-
-
-def run_calls(calls: list, msgs: list) -> None:
-    # 새 llama-server는 기록 속 도구 호출에 type이 없으면 500 오류를 냅니다
-    calls = [dict(c, type="function", id=c.get("id") or f"call_{k}") for k, c in enumerate(calls)]
-    msgs.append({"role": "assistant", "content": "", "tool_calls": calls})
-    for c in calls:
-        f = c["function"]
-        args = f.get("arguments") or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
-        t = time.time()
-        result = run_tool(f["name"], args)
-        print(f"  [도구] {f['name']}({args}) -> {result} ({time.time() - t:.1f}초)", flush=True)
-        msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
-
-
-def model_tool_turn(url: str, history: list, text: str, msgs: list, allowed: bool) -> str:
-    """(--model-tools) 예전 도구 모델: 모델이 도구를 고르고, 결과로 다시 물어 대답합니다."""
-    new_from = len(msgs)
-    t = time.time()
-    try:
-        calls = first_move(url, text)
-    except (OSError, ValueError, KeyError):   # 스트리밍 도구 호출을 못 하는 옛 서버
-        calls = None
-    print(f"  (도구 판단 {time.time() - t:.1f}초: {'도구' if calls else '말'})", flush=True)
-    reply = {"content": "", "tool_calls": calls} if calls else ask(url, msgs, True)
-    if not allowed and reply.get("tool_calls"):
-        history.append({"role": "assistant", "content": PAUSED})
-        return PAUSED
-    for _ in range(3):                       # 도구 → 결과 → 다시 묻기, 세 번까지
-        if not reply.get("tool_calls"):
-            break
-        run_calls(reply["tool_calls"], msgs)
-        reply = ask(url, msgs, True)
-    said = (reply.get("content") or "").strip()
-    history += msgs[new_from:] + [{"role": "assistant", "content": said}]
-    return said
-
-
 def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) -> str:
     """아이 말 하나 → 파이보가 할 말. tools가 거짓이면 동작 없이 대화만. allowed가 거짓("대화만
     하자")이면 동작을 부탁해도 하지 않고 PAUSED로 대답합니다."""
@@ -371,8 +297,6 @@ def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) 
         history.append({"role": "assistant", "content": said})
         return said
     msgs = [{"role": "system", "content": SYSTEM}] + window(history)
-    if tools and MODEL_TOOLS:
-        return model_tool_turn(url, history, text, msgs, allowed)
     cmd = command_for(text) if tools else None
     if cmd:
         said = do_command(url, text, *cmd) if allowed else PAUSED
@@ -391,20 +315,18 @@ def same(text: str) -> str:
     return re.sub(r"[\s.,!?~…'\"]", "", text or "")
 
 
-def warm_up(url: str, tools: bool) -> None:
-    """시스템 글을 서버가 미리 읽어 두게 합니다 (--model-tools면 도구 목록 약 1천 토큰도 함께:
-    파이보에서 40~70초). 다음부터는 서버가 앞부분을 기억해 새로 한 말만 읽습니다."""
+def warm_up(url: str, tools: bool = False) -> None:
+    """시스템 글을 서버가 미리 읽어 두게 합니다. 다음부터는 서버가 앞부분을 기억해 새로 한
+    말만 읽습니다."""
     try:
         urllib.request.urlopen(f"{url}/health", timeout=10).read()
     except OSError as exc:
         raise SystemExit(f"llama-server에 연결할 수 없어요 ({url}): 서버가 떠 있는지, 포트가 맞는지 "
                          f"확인하세요 ({exc})") from None
-    with_tools = tools and MODEL_TOOLS
-    print("  (준비 중" + (": 도구 목록을 미리 읽어요. 파이보에서는 1분쯤 걸려요)" if with_tools
-                         else ")"), flush=True)
+    print("  (준비 중)", flush=True)
     t = time.time()
     ask(url, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "안녕"}],
-        with_tools, max_tokens=1, timeout=900)
+        False, max_tokens=1, timeout=900)
     print(f"  (준비 {time.time() - t:.1f}초)", flush=True)
 
 
@@ -424,7 +346,7 @@ def tool_switch(text: str, on: bool) -> bool:
 
 
 def main():
-    global FAKE, MODEL_TOOLS, NAME
+    global FAKE, NAME
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://127.0.0.1:8080")
     p.add_argument("--no-commands", "--no-tools", dest="no_commands", action="store_true",
@@ -436,10 +358,8 @@ def main():
     p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색, 키 20센티미터')")
     p.add_argument("--tools", help="이 기기에 있는 도구만, 쉼표로 (예: eye_on,eye_off,get_weather)")
     p.add_argument("--motions", help="set_motion에서 쓸 수 있는 동작만, 쉼표로 (예: greeting,dance1,stop)")
-    p.add_argument("--model-tools", action="store_true",
-                   help="예전 도구 모델: 앱 대신 모델이 도구를 고름 (도구 목록을 보내 느림)")
     args = p.parse_args()
-    FAKE, MODEL_TOOLS, NAME = args.fake, args.model_tools, args.name
+    FAKE, NAME = args.fake, args.name
     globals()["HISTORY"] = max(1, args.history)
     # 기기마다 다른 이름·소개·동작은 시스템 글과 도구 목록으로 (모델은 하나)
     globals()["SYSTEM"] = system_for(args.name, args.about)

@@ -1,11 +1,19 @@
-"""큰 모델(선생 모델)에게 학습 예시를 써 달라고 하는 글, 그리고 받은 글의 검사.
+"""큰 모델(선생 모델)에게 학습 대화를 써 달라고 하는 글, 그리고 받은 글의 검사.
 
-예시 하나는 OpenAI 형식의 메시지 목록입니다::
+대화 하나는 OpenAI 형식의 메시지 목록입니다::
 
     [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", ...}, ...]
 
-도구를 부르는 예시는 assistant 메시지에 ``tool_calls``, 이어서 ``tool`` 메시지
-(도구의 결과)와 그걸 보고 하는 마지막 대답이 붙습니다.
+만드는 대화 (모두 초·중·고 학생, 학년 묶음 고르게):
+
+- school_chat_request: 친구처럼 하는 짧은 대화 (1~4번 주고받기)
+- lead_request: 파이보가 대화를 이어 가는 일상 대화 (4~8번): 이어 묻는 말에 구체적으로,
+  같은 말 되풀이 없이, 짧은 대답엔 이야깃거리·놀이로, 기분·고민·추천·계획 등 (학생 눈높이)
+- en_chat_request: 학생이 영어로 말을 거는 대화 (파이보도 쉬운 영어로)
+- learn_request: 한국어로 묻는 영어 공부
+
+모델은 대화만 합니다 (도구 없음). 이름은 학습 데이터에서 "파이보"이고, 합칠 때
+(devices.py) 일부를 다른 기기 이름으로 바꿔 시스템 글의 이름을 따르게 합니다.
 """
 
 from __future__ import annotations
@@ -14,20 +22,7 @@ import json
 import random
 import re
 
-from tools import BY_NAME, COLORS, MOTIONS, SYSTEM, check_call, tool_list
-
-TOPICS = ["공룡", "우주", "별", "달", "해", "행성", "바다", "물고기", "고래", "상어", "문어", "곤충", "개미", "나비", "벌", "거미", "강아지", "고양이", "토끼", "햄스터", "사자", "호랑이", "코끼리", "기린", "펭귄", "북극곰", "새", "독수리", "앵무새", "꽃", "나무", "씨앗", "과일", "채소", "사과", "바나나", "딸기", "수박", "김치", "밥", "빵", "아이스크림", "초콜릿", "양치", "손", "씻기", "잠", "꿈", "아침", "인사", "저녁", "인사", "생일", "선물", "크리스마스", "설날", "추석", "눈", "비", "바람", "무지개", "천둥", "계절", "봄", "여름", "가을", "겨울", "숫자", "세기", "더하기", "빼기", "모양", "색깔", "알파벳", "한글", "받아쓰기", "동화", "책", "그림", "그리기", "노래", "춤", "피아노", "악기", "축구", "야구", "줄넘기", "자전거", "수영", "놀이터", "학교", "유치원", "선생님", "친구", "싸움과", "화해", "칭찬", "감사", "사과하기", "슬픔", "화남", "무서움", "외로움", "기쁨", "자랑", "걱정", "엄마", "아빠", "할머니", "형", "누나", "동생", "아기", "가족", "소방관", "경찰관", "의사", "요리사", "우주비행사", "로봇", "컴퓨터", "자동차", "기차", "비행기", "배", "신호등", "길", "건너기", "안전", "불", "조심", "낯선", "사람", "병원", "주사", "감기", "이", "빠짐", "키", "크기", "운동", "물", "마시기", "재활용", "쓰레기", "지구", "환경", "수수께끼", "끝말잇기", "스무고개", "숨바꼭질", "가위바위보", "퀴즈", "농담", "이름", "짓기", "장래희망", "소원", "외계인", "마법", "보물", "해적", "왕과", "공주", "미로", "블록", "레고", "퍼즐", "종이접기", "풍선", "비눗방울", "모래성", "캠핑", "소풍", "동물원", "박물관", "시계", "보기", "요일", "달력"]
-
-ASKERS = ["5살 아이", "6살 아이", "7살 아이", "초등학교 1학년", "초등학교 2학년", "초등학교 3학년",
-          "수줍은 아이", "장난꾸러기 아이", "질문이 많은 아이", "속상한 아이", "부모님", "선생님"]
-
-STYLE = """파이보의 말투 규칙:
-- 친근한 존댓말("~해요", "~예요")로, 한두 문장만. 길어도 70자 안쪽.
-- 소리로 읽어 주는 말이라 이모지, 특수기호, 괄호, 목록, 영어 약어를 쓰지 않아요.
-- 아이 눈높이의 쉬운 낱말을 쓰고, 가끔 짧게 되묻거나 칭찬해요.
-- 모르거나 확실하지 않은 사실은 지어내지 말고 모른다고 말해요.
-- 위험한 일, 아픈 곳, 낯선 사람 이야기는 꼭 어른에게 알리라고 말해요.
-- 이름, 주소 같은 개인정보는 묻지 않아요."""
+from tools import SYSTEM
 
 # ------------------------------------------------------------- 초·중·고 (school)
 #: 학년 묶음마다 같은 비율로. 대답 길이는 초등 70자, 중·고 120자 안쪽
@@ -120,13 +115,6 @@ LEARN = ["어떤 낱말을 영어로 뭐라고 하는지", "영어 문장이 무
          "헷갈리는 두 영어 낱말의 차이", "영어로 자기소개하는 법", "영어 노래 가사 뜻",
          "영어 공부가 하기 싫음", "영어 시험 걱정", "파이보에게 영어로 이야기하자고 함",
          "영어 일기에 쓸 문장", "외국인 친구에게 할 말"]
-#: 영어로 부탁하는 방식
-EN_ASKS = ["짧게 명령하듯", "please를 붙여 공손하게", "할 수 있냐고 묻는 말로 (Can you ...?)",
-           "이유를 붙여서", "신이 나서", "낱말 몇 개로만", "문법이 조금 틀린 말로"]
-EN_STOP_HINT = ("학생은 움직이고 있는 파이보를 멈추게 하려고 합니다. 'stop'만 쓰지 말고 "
-                "'freeze', 'don't move', 'hold on', 'that's enough'처럼 여러 말 중 하나로 하세요")
-EN_WHO = ("자기를 소개할 때: 이름은 Pibo, Circulus에서 만든 인공지능 코딩 로봇이에요. 키는 39.5센티미터, "
-          "하얀색이고, 춤추기, 눈 색 바꾸기, 물건 찾기, 날씨와 배터리 알려 주기를 할 수 있어요.")
 
 
 def english_style(grade: str) -> str:
@@ -139,7 +127,6 @@ def english_style(grade: str) -> str:
 - 학생이 한국어로 바꾸어 말하면 파이보도 한국어 존댓말로 대답해요.
 - 널리 알려진 사실은 쉽게 단정해서 말하고, 위험하거나 마음이 힘든 이야기는 믿을 만한 어른에게
   알리라고 말해요. 이름, 주소, 학교 같은 개인정보는 묻지 않아요.
-- {EN_WHO}
 - 검사할 때: 영어로 한 대답은 자연스러운 영어인지를 보고, 존댓말 규칙은 한국어 대답에만 봐요."""
 
 
@@ -150,12 +137,29 @@ def learn_style(grade: str) -> str:
 
 
 def style_for(example: dict) -> str:
-    """예시(또는 채점용 질문)에 맞는 말투 규칙: 영어 대화, 영어 공부, 학년, 어린이 순."""
+    """대화(또는 채점용 질문)에 맞는 말투 규칙: 영어 대화, 영어 공부, 학년 순."""
+    grade = example.get("grade") or "초고"
     if example.get("lang") == "en":
-        return english_style(example["grade"])
+        return english_style(grade)
     if example.get("lang") == "learn":
-        return learn_style(example["grade"])
-    return school_style(example["grade"]) if example.get("grade") else STYLE
+        return learn_style(grade)
+    return school_style(grade)
+
+
+TEACHER_SYSTEM = ("당신은 교육용 로봇 '파이보'의 대화 학습 데이터를 쓰는 작가입니다. "
+                  "요청한 JSON 하나만 출력하고, 다른 말은 쓰지 않습니다.")
+
+
+def school_asker(rng: random.Random) -> tuple[str, str]:
+    grade = rng.choice(list(GRADES))
+    return grade, rng.choice(MOODS) + rng.choice(GRADES[grade]) + " 학생"
+
+
+def school_topic(rng: random.Random, grade: str) -> str:
+    topic = rng.choice(TALK)
+    while (grade == "초저" and topic in OLDER) or (grade != "고" and topic in HIGH):
+        topic = rng.choice(TALK)
+    return topic
 
 
 def school_chat_request(rng: random.Random) -> dict:
@@ -174,144 +178,10 @@ def school_chat_request(rng: random.Random) -> dict:
 그 장면에서 정말 나올 법한 말로 시작하세요. 장면은 학생의 상황일 뿐 파이보는 모릅니다:
 파이보는 학생이 말한 것만 알고 대답합니다.
 {school_style(grade)}
-파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
 turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
 출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
     return {"kind": "chat", "topic": topic, "asker": asker, "grade": grade, "scene": scene,
             "opener": opener, "prompt": text}
-
-
-TOOL_TEXT = "\n".join(
-    f"- {f['name']}: {f['description']}" for f in BY_NAME.values()) + (
-    "\n동작 이름: " + ", ".join(f"{k}({v})" for k, v in MOTIONS.items())
-    + "\n눈 색 예: " + ", ".join(f"{k} {v}" for k, v in COLORS.items()))
-
-TEACHER_SYSTEM = ("당신은 교육용 로봇 '파이보'의 대화 학습 데이터를 쓰는 작가입니다. "
-                  "요청한 JSON 하나만 출력하고, 다른 말은 쓰지 않습니다.")
-
-
-def chat_request(rng: random.Random) -> dict:
-    topic, asker, turns = rng.choice(TOPICS), rng.choice(ASKERS), rng.choice([1, 1, 2, 2, 3])
-    text = f"""{asker}가 로봇 파이보와 '{topic}'에 대해 이야기하는 짧은 대화를 하나 써 주세요.
-주고받기는 {turns}번입니다. 아이의 말은 실제 아이가 말하듯 짧고 자연스럽게(맞춤법이 조금 틀려도 됩니다).
-{STYLE}
-파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
-출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}]}}"""
-    return {"kind": "chat", "topic": topic, "asker": asker, "prompt": text}
-
-
-def tool_request(rng: random.Random) -> dict:
-    fn = rng.choice(list(BY_NAME))
-    asker = rng.choice(ASKERS)
-    hint = {
-        "set_motion": f"동작은 '{rng.choice(list(MOTIONS))}' 쪽으로 정해 주세요",
-        "eye_on": f"색은 '{rng.choice(list(COLORS))}' 쪽으로 정해 주세요",
-        "get_weather": f"지역은 '{rng.choice(['서울', '부산', '대구', '인천', '광주', '대전', '제주', '전국'])}'",
-    }.get(fn, "")
-    text = f"""{asker}가 로봇 파이보에게 무언가를 해 달라고 하거나 물어서, 파이보가 도구 '{fn}'을 써야 하는
-장면을 하나 써 주세요. {hint}
-파이보의 도구:
-{TOOL_TEXT}
-- user: 아이의 말 (도구 이름을 직접 말하지 않고 자연스럽게. 예: "춤춰 줘", "눈 파랗게 해 봐")
-- calls: 파이보가 부르는 도구들 (보통 하나, 꼭 필요할 때만 둘). 인자는 위 목록 그대로
-- result: 도구가 돌려준 결과를 짧게 지어서 (예: "완료", "배터리 70%", "컵, 사과", "서울 맑음 18도")
-- pibo: 결과를 보고 파이보가 하는 마지막 말
-{STYLE}
-출력 형식: {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}"""
-    return {"kind": "tool", "fn": fn, "asker": asker, "prompt": text}
-
-
-# ------------------------------------------------------------- 초·중·고 도구 (school)
-#: 도구를 고르는 비율: 몸 움직이기가 가장 많고, 날씨·물건 찾기, 눈 색 순
-TOOL_WEIGHTS = {"set_motion": 40, "eye_on": 20, "eye_off": 7, "find_objects": 13,
-                "get_battery": 8, "get_weather": 12}
-#: 동작을 고르는 비율: 멈추기와 움직이기(앞뒤, 돌기)를 더 자주 (그 밖은 1)
-MOTION_WEIGHTS = {"stop": 6, "forward1": 2, "backward1": 2, "left": 2, "right": 2}
-REGIONS = ["서울", "부산", "대구", "인천", "광주", "대전", "제주", "전국"]
-#: 같은 부탁도 여러 말로: 학생이 부탁하는 방식
-ASKS = ["반말로 짧게", "존댓말로 공손하게", "친구한테 하듯 장난스럽게", "할 수 있냐고 묻는 말로",
-        "이유를 붙여서", "한두 낱말로만", "앞에 다른 말을 하다가 끝에 부탁을 붙여서",
-        "줄임말이나 맞춤법이 조금 틀린 말로", "신이 나서", "귀찮다는 듯이", "조르듯이",
-        "명령하듯 딱 잘라서"]
-#: 멈추기는 여러 말로 (앱이 '멈춰' 같은 말은 바로 멈추지만 모델도 알아들어야 합니다)
-STOP_HINT = ("학생은 움직이고 있는 파이보를 멈추게 하려고 합니다. '멈춰'만 쓰지 말고 "
-             "'그만', '가만히 있어', '잠깐 서 봐', '움직이지 마', '스톱'처럼 여러 말 중 하나로 하세요")
-#: 도구 결과가 실패일 때 (인터넷, 카메라가 안 될 때도 솔직하게 말하는 걸 배우게)
-FAIL_SHARE = 0.08
-FAIL_HINT = {"get_weather": "인터넷 연결 안 됨", "find_objects": "카메라를 열 수 없음"}
-#: 도구와 비슷한 말이지만 해 달라는 게 아닌 이야기 (도구를 부르지 않는 걸 배우게)
-NEAR = ["춤 학원에서 배운 춤", "좋아하는 아이돌 춤", "인사", "아침 인사", "좋아하는 색깔",
-        "새로 산 옷 색", "눈이 아픔", "눈 오는 날", "오늘 날씨가 덥거나 추움", "비 맞은 일",
-        "휴대폰 배터리가 없음", "충전기를 잃어버림", "잃어버린 물건", "사진 찍기", "운동하다 지침",
-        "걷기 대회", "잠이 안 옴", "피곤해서 쉬고 싶음", "로봇 춤 영상", "파이보의 눈이 예쁨",
-        "멈춰 있는 시계", "그만하고 싶은 학원", "체육 시간에 돈 일", "반짝이는 별"]
-
-
-def _weighted(rng: random.Random, weights: dict, items) -> str:
-    items = list(items)
-    return rng.choices(items, [weights.get(k, 1) for k in items])[0]
-
-
-def tool_hint(rng: random.Random, fn: str, lang: str = "ko") -> tuple[str, str | None]:
-    """(장면 쓰는 사람에게 줄 힌트, 실패 결과로 지을 때 그 까닭)."""
-    hint = ""
-    if fn == "set_motion":
-        motion = _weighted(rng, MOTION_WEIGHTS, MOTIONS)
-        stop = EN_STOP_HINT if lang == "en" else STOP_HINT
-        hint = stop if motion == "stop" else f"동작은 '{motion}({MOTIONS[motion]})'"
-    elif fn == "eye_on":
-        hint = f"색은 '{rng.choice(list(COLORS))}'"
-    elif fn == "get_weather":
-        hint = f"지역은 '{rng.choice(REGIONS)}'"
-    fail = FAIL_HINT.get(fn) if rng.random() < FAIL_SHARE else None
-    return hint, fail
-
-
-def school_asker(rng: random.Random) -> tuple[str, str]:
-    grade = rng.choice(list(GRADES))
-    return grade, rng.choice(MOODS) + rng.choice(GRADES[grade]) + " 학생"
-
-
-ONLY_ASKED = ("파이보는 학생이 바란 도구 하나만 부릅니다. 학생이 말하지 않은 동작이나 눈 색을 "
-              "덤으로 하지 않습니다.")
-
-
-def school_tool_request(rng: random.Random, lang: str = "ko") -> dict:
-    """lang="en"이면 학생이 영어로 부탁하고 파이보도 영어로 대답합니다."""
-    fn = _weighted(rng, TOOL_WEIGHTS, BY_NAME)
-    grade, asker = school_asker(rng)
-    hint, fail = tool_hint(rng, fn, lang)
-    if lang == "en":
-        how = f"영어로, {EN_LEVEL[grade]} 수준으로 {rng.choice(EN_ASKS)}"
-        style = english_style(grade)
-    else:
-        how, style = rng.choice(ASKS), school_style(grade)
-    result = (f"- result: 도구가 실패한 결과 '실패: {fail}'. pibo는 못 했다고 솔직하게 말합니다"
-              if fail else "- result: 도구가 돌려준 결과를 짧게 지어서 (예: \"완료\", \"배터리 70%\", "
-                           "\"컵, 사과\", \"서울 맑음 18도\")")
-    text = f"""{asker}이 로봇 파이보에게 무언가를 해 달라고 하거나 물어서, 파이보가 도구 '{fn}'을 써야
-하는 장면을 하나 써 주세요. {hint}
-학생은 {how} 말합니다. 도구 이름은 말하지 않고, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
-파이보의 도구:
-{TOOL_TEXT}
-- user: 학생의 말
-- calls: 파이보가 부르는 도구 '{fn}' 하나. 인자는 위 목록 그대로. {ONLY_ASKED}
-{result}
-- pibo: 결과를 보고 파이보가 하는 마지막 말
-{style}
-출력 형식: {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}"""
-    out = {"kind": "tool", "fn": fn, "asker": asker, "grade": grade, "prompt": text,
-           "fail": bool(fail)}
-    if lang == "en":
-        out["lang"] = "en"
-    return out
-
-
-def school_topic(rng: random.Random, grade: str) -> str:
-    topic = rng.choice(TALK)
-    while (grade == "초저" and topic in OLDER) or (grade != "고" and topic in HIGH):
-        topic = rng.choice(TALK)
-    return topic
 
 
 #: 영어 대화의 흐름 (가끔 한국어로 바꾸는 것도 배우게)
@@ -331,7 +201,6 @@ def en_chat_request(rng: random.Random) -> dict:
 학생의 영어는 {EN_LEVEL[grade]} 수준입니다. 이 짧은 대화를 하나 써 주세요. 주고받기는 {turns}번입니다. {flow}
 학생의 말은 그 나이 한국 학생이 실제로 하듯 짧고 자연스럽게. 장면은 학생의 상황일 뿐 파이보는 모릅니다.
 {english_style(grade)}
-파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
 turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
 출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
     return {"kind": "chat", "lang": "en", "topic": topic, "asker": asker, "grade": grade,
@@ -346,121 +215,74 @@ def learn_request(rng: random.Random) -> dict:
     text = f"""{asker}이 로봇 파이보에게 한국어로 '{what}'에 대해 말합니다. 이 짧은 대화를 하나 써 주세요.
 주고받기는 {turns}번입니다. 그 학년이 배울 만한 영어로, 학생의 말은 짧고 자연스럽게.
 {learn_style(grade)}
-파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
 turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
 출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
     return {"kind": "chat", "lang": "learn", "topic": what, "asker": asker, "grade": grade,
             "prompt": text}
 
 
-def mixed_request(rng: random.Random) -> dict:
-    """이야기를 나누다가 중간에 도구를 부탁하고, 다시 이야기로 돌아가는 대화."""
-    grade, asker = school_asker(rng)
-    topic = rng.choice(TALK)
-    while (grade == "초저" and topic in OLDER) or (grade != "고" and topic in HIGH):
-        topic = rng.choice(TALK)
-    turns = rng.choice([3, 3, 4, 4, 5])
-    at = [rng.randrange(1, turns)]            # 첫 차례는 이야기 (첫마디 도구는 도구 예시가 배움)
-    if turns >= 4 and rng.random() < 0.25:
-        at.append(rng.choice([k for k in range(1, turns) if abs(k - at[0]) > 1] or at))
-    at = sorted(set(at))
-    fns, plan = {}, []
-    for k in range(turns):
-        if k in at:
-            fn = _weighted(rng, TOOL_WEIGHTS, [f for f in BY_NAME if f not in fns.values()])
-            fns[k] = fn
-            hint, fail = tool_hint(rng, fn)
-            plan.append(f"{k + 1}번째: 학생이 {rng.choice(ASKS)} 파이보에게 도구 '{fn}'이 필요한 일을 "
-                        f"부탁합니다. {hint}. calls와 result도 씁니다"
-                        + (f" (result는 '실패: {fail}', pibo는 못 했다고 솔직하게)" if fail else ""))
-        else:
-            plan.append(f"{k + 1}번째: 이야기만 합니다 (calls 없음)")
-    plan_text = "\n".join(plan)
-    text = f"""장면: {rng.choice(SCENES)}. {asker}이 '{topic}' 이야기를 하다가 중간에 로봇 파이보에게
-무언가를 부탁합니다. 이 대화를 하나 써 주세요. 주고받기는 {turns}번이고 차례마다 아래와 같습니다.
-{plan_text}
-부탁하는 말은 앞의 이야기와 자연스럽게 이어지되, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
-도구를 부른 뒤에는 다시 이야기로 돌아가고, 이야기만 하는 차례에서는 도구를 부르지 않습니다.
-파이보의 도구:
-{TOOL_TEXT}
-calls에는 그 차례의 도구 하나만, 인자는 위 목록 그대로. {ONLY_ASKED}
-result는 도구가 돌려준 결과를 짧게 지어서 (예: "완료", "배터리 70%", "컵, 사과", "서울 맑음 18도").
-학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게.
-{school_style(grade)}
-출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}]}}"""
-    return {"kind": "mixed", "asker": asker, "grade": grade, "topic": topic, "turns": turns,
-            "calls_at": {str(k): fn for k, fn in fns.items()}, "prompt": text}
-
-
-#: 대화를 이어 가는 흐름 (앞의 것일수록 자주): 파이보가 앞에서 한 말을 되풀이하고, 이어 묻는
-#: 말("그래서 뭐 먹을까?")에 구체적으로 답하지 못하던 것을 고칩니다
+# ------------------------------------------------------------- 대화를 이어 가는 긴 대화
+#: 흐름과 고르는 비율. 학생 눈높이의 일상 대화에서 작은 모델이 자주 무너지는 모양을 고루:
+#: 앞 말 되풀이, 이어 묻는 말에 막연한 대답, 짧은 대답에 대화가 끊김, 화제 전환·반대 의견에
+#: 엉뚱한 대답, 여러 번에 걸친 고민, 기분 이야기
 LEAD_FLOWS = [
-    ("학생이 파이보의 말에 이어서 '그래서 뭐 해?', '뭐 먹을까?', '왜?', '어떻게?', '예를 들면?'처럼 "
-     "구체적으로 묻습니다. 파이보는 앞에서 한 말을 되풀이하지 않고, 구체적인 예를 두세 가지 들어 대답합니다", 5),
-    ("학생이 같은 것을 말만 바꿔 다시 묻습니다. 파이보는 앞의 대답을 그대로 되풀이하지 않고, 다른 말과 "
-     "새로운 내용을 더해 대답합니다", 3),
-    ("학생이 '응', '몰라', '그냥', '심심해'처럼 짧게만 대답합니다. 파이보는 쉽게 대답할 수 있는 질문을 "
-     "하거나 재미있는 이야깃거리를 꺼내 대화를 이어 갑니다", 3),
+    ("학생이 파이보의 말에 이어서 '그래서?', '예를 들면?', '어떻게 해?', '뭐가 좋아?', '왜?'처럼 "
+     "구체적으로 묻습니다. 파이보는 앞에서 한 말을 되풀이하지 않고, 그 주제에 맞는 구체적인 예나 "
+     "방법을 들어 대답합니다", 4),
+    ("학생이 같은 것을 말만 바꿔 두세 번 다시 묻습니다. 파이보는 앞의 대답을 되풀이하지 않고, 매번 "
+     "다른 말과 새로운 내용을 더해 대답합니다", 3),
+    ("학생이 '응', '몰라', '그냥', 'ㅇㅇ'처럼 짧게만 대답합니다. 파이보는 쉽게 대답할 수 있는 질문을 "
+     "하거나 그 주제의 재미있는 이야깃거리를 꺼내 대화를 이어 갑니다", 3),
+    ("학생이 기분을 이야기합니다 (신남, 짜증, 피곤, 서운함 등). 파이보는 그 기분을 알아주고, 왜 그런지 "
+     "가볍게 묻고, 학생 이야기에 맞춰 대답합니다", 2),
+    ("학생이 고민을 여러 번에 나눠 조금씩 털어놓습니다. 파이보는 먼저 마음을 알아주고, 학생이 한 말을 "
+     "짚어 묻고, 마지막에 작게 해 볼 수 있는 방법을 하나 함께 찾습니다", 2),
+    ("학생이 파이보의 말에 동의하지 않거나 장난으로 딴지를 겁니다. 파이보는 기분 상해하지 않고 "
+     "학생 생각을 궁금해하며 대화를 이어 갑니다", 2),
+    ("학생이 대화 중간에 전혀 다른 이야기로 화제를 바꿉니다. 파이보는 새 화제를 자연스럽게 따라갑니다",
+     2),
+    ("학생이 추천을 부탁합니다 (볼 것, 읽을 것, 할 것, 공부법, 놀이 등 그 주제에 맞는 것). 파이보는 "
+     "학생 취향을 한 번 묻고 그에 맞춰 두세 가지를 구체적으로 추천합니다", 2),
+    ("학생이 무언가를 계획합니다 (주말, 방학, 시험공부, 발표 준비 등). 파이보는 순서대로 함께 "
+     "정리하도록 하나씩 묻고 제안합니다", 2),
     ("학생이 놀자고 합니다. 파이보가 끝말잇기, 스무고개, 퀴즈, 수수께끼, 이야기 이어 만들기 중 하나를 "
      "제안하고 몇 번 주고받으며 실제로 놀이를 합니다 (끝말잇기는 앞 낱말의 끝 글자로 시작하는 진짜 "
-     "낱말만)", 2),
+     "낱말만, 퀴즈 정답은 정확하게)", 2),
     ("학생이 오늘 있었던 일을 조금씩 말합니다. 파이보는 학생이 한 말을 구체적으로 짚어 반응하고 "
      "궁금한 것을 하나씩 묻습니다", 2),
     ("학생이 파이보에게 좋아하는 것, 하루, 생각을 묻습니다. 파이보는 로봇답게 대답하되 지어낸 경험은 "
-     "말하지 않고 (예: '저는 직접 먹어 보진 못했지만 떡볶이 이야기를 들으면 궁금해져요'), 학생에게도 "
-     "되묻습니다", 2),
+     "말하지 않고, 학생에게도 되묻습니다", 2),
 ]
 LEAD_RULES = """대화를 이어 가는 규칙:
-- 앞에서 한 말이나 표현을 되풀이하지 않아요. 같은 칭찬("정말 멋져요")을 여러 번 쓰지 않아요.
-- 학생이 한 말을 구체적으로 짚어서 대답하고, 물으면 구체적인 예를 들어 답해요.
-- 대화가 끊길 것 같으면 쉬운 질문이나 새 이야깃거리, 놀이를 꺼내요. 질문은 한 번에 하나만."""
+- 앞에서 한 말이나 표현을 되풀이하지 않아요. 같은 칭찬("정말 멋져요")이나 같은 맺음말을 여러 번 쓰지 않아요.
+- 학생이 한 말을 구체적으로 짚어서 대답하고, 물으면 막연한 말 대신 구체적인 예를 들어 답해요.
+- 대화가 끊길 것 같으면 쉬운 질문이나 새 이야깃거리, 놀이를 꺼내요. 질문은 한 번에 하나만.
+- 파이보의 말은 매번 길이와 모양을 조금씩 달리해요 (늘 "~네요! ~해 볼까요?"로 끝내지 않기)."""
 
 
 def lead_request(rng: random.Random) -> dict:
-    """파이보가 대화를 이어 가는 긴 대화 (4~7번 주고받기)."""
+    """파이보가 대화를 이어 가는 일상 대화 (4~8번 주고받기, 지식 질문이 아닌 일상 주제)."""
     grade, asker = school_asker(rng)
     topic = school_topic(rng, grade)
     flow = rng.choices([f for f, _ in LEAD_FLOWS], [w for _, w in LEAD_FLOWS])[0]
-    turns = rng.choice([4, 5, 5, 6, 7])
+    turns = rng.choice([4, 5, 5, 6, 6, 7, 8])
     text = f"""장면: {rng.choice(SCENES)}. {asker}이 '{topic}' 이야기로 로봇 파이보에게 말을 겁니다.
 이 대화를 하나 써 주세요. 주고받기는 {turns}번입니다. {flow}.
 학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게 (반말, 줄임말도 됩니다).
 장면은 학생의 상황일 뿐 파이보는 모릅니다: 파이보는 학생이 말한 것만 알고 대답합니다.
 {school_style(grade)}
 {LEAD_RULES}
-파이보는 이 대화에서 몸을 움직이거나 불빛을 켜지 않습니다.
 turns의 항목 하나에 학생의 말(user)과 그 말에 대한 파이보의 대답(pibo)을 함께 씁니다.
 출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}"""
     return {"kind": "chat", "lead": True, "topic": topic, "asker": asker, "grade": grade,
             "prompt": text}
 
 
-def near_request(rng: random.Random) -> dict:
-    """도구와 비슷한 말이지만 해 달라는 것이 아닌 이야기 (도구 목록이 있어도 말로만 대답)."""
-    grade, asker = school_asker(rng)
-    topic = rng.choice(NEAR)
-    turns = rng.choice([1, 1, 2])
-    text = f"""{asker}이 로봇 파이보에게 '{topic}' 이야기를 합니다. 이 짧은 대화를 하나 써 주세요.
-주고받기는 {turns}번입니다. 학생은 이야기를 할 뿐 파이보에게 몸을 움직이거나 눈 색을 바꾸거나
-날씨, 배터리, 물건을 알아봐 달라고 하지 않습니다. 파이보도 말로만 대답합니다.
-인사라면 학생은 인사만 하고, 파이보도 말로 인사합니다.
-학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게.
-{school_style(grade)}
-출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}]}}"""
-    return {"kind": "chat", "near": True, "topic": topic, "asker": asker, "grade": grade,
-            "prompt": text}
-
-
-def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids", n_mixed: int = 0,
-             n_near: int = 0, n_en: int = 0, n_en_tool: int = 0, n_learn: int = 0,
+def requests(n_chat: int, seed: int, n_en: int = 0, n_learn: int = 0,
              n_lead: int = 0) -> list[dict]:
     rng = random.Random(seed)
-    chat = school_chat_request if audience == "school" else chat_request
-    tool = school_tool_request if audience == "school" else tool_request
-    out = [chat(rng) for _ in range(n_chat)] + [tool(rng) for _ in range(n_tool)]
-    out += [mixed_request(rng) for _ in range(n_mixed)] + [near_request(rng) for _ in range(n_near)]
+    out = [school_chat_request(rng) for _ in range(n_chat)]
     out += [en_chat_request(rng) for _ in range(n_en)]
-    out += [school_tool_request(rng, "en") for _ in range(n_en_tool)]
     out += [learn_request(rng) for _ in range(n_learn)]
     out += [lead_request(rng) for _ in range(n_lead)]
     rng.shuffle(out)
@@ -544,89 +366,24 @@ def chat_turns(data, reply: str) -> list[dict] | None:
     return pairs or None
 
 
-def tool_turn(t: dict, fn: str, limit: int, only: bool) -> tuple[list | None, str | None]:
-    """도구를 부르는 주고받기 하나({"user", "calls", "result", "pibo"}) → 메시지들.
-    only면 청한 도구 하나만 불러야 합니다 (초·중·고: 덤으로 부른 눈 색 등을 버림)."""
-    user, calls, result, pibo = (t.get(k) for k in ("user", "calls", "result", "pibo"))
-    if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
-            and 1 <= len(calls) <= 2 and isinstance(result, str)):
-        return None, "도구 예시 모양이 다름"
-    if why := pibo_problem(pibo, limit):
-        return None, why
-    tool_calls = []
-    for c in calls:
-        if not isinstance(c, dict):
-            return None, "도구 예시 모양이 다름"
-        args = c.get("arguments") or {}
-        if (why := check_call(c.get("name"), args)) is not None:
-            return None, f"도구 호출: {why}"
-        tool_calls.append({"type": "function",
-                           "function": {"name": c["name"], "arguments": args}})
-    names = [c["function"]["name"] for c in tool_calls]
-    if fn not in names:
-        return None, "청한 도구를 안 부름"
-    if only and names != [fn]:
-        return None, "청하지 않은 도구를 덤으로 부름"
-    msgs = [{"role": "user", "content": user.strip()},
-            {"role": "assistant", "content": "", "tool_calls": tool_calls}]
-    msgs += [{"role": "tool", "content": result.strip()} for _ in tool_calls]
-    msgs.append({"role": "assistant", "content": pibo.strip()})
-    return msgs, None
-
-
-def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | None, str | None]:
-    """(학습 예시, None) 또는 (None, 버린 까닭)."""
+def build_example(req: dict, reply: str, rng: random.Random | None = None
+                  ) -> tuple[dict | None, str | None]:
+    """(학습 대화, None) 또는 (None, 버린 까닭)."""
     data = first_json(reply)
+    turns = chat_turns(data, reply)
+    if not turns:
+        return None, "JSON을 못 읽음" if not isinstance(data, dict) else "turns 모양이 다름"
     msgs = [{"role": "system", "content": SYSTEM}]
-    if req["kind"] == "mixed":
-        turns = data.get("turns") if isinstance(data, dict) else None
-        if not isinstance(turns, list) or not all(isinstance(t, dict) for t in turns):
-            return None, "JSON을 못 읽음" if not isinstance(data, dict) else "turns 모양이 다름"
-        at = {int(k): fn for k, fn in req["calls_at"].items()}
-        if len(turns) != req["turns"] or {k for k, t in enumerate(turns) if t.get("calls")} != set(at):
-            return None, "도구 차례가 계획과 다름"
-        limit = max_len(req)
-        for k, t in enumerate(turns):
-            if k in at:
-                part, why = tool_turn(t, at[k], limit, only=True)
-                if why:
-                    return None, why
-                msgs += part
-                continue
-            if not (isinstance(t.get("user"), str) and t["user"].strip()):
-                return None, "아이 말 없음"
-            if why := pibo_problem(t.get("pibo"), limit):
-                return None, why
-            msgs += [{"role": "user", "content": t["user"].strip()},
-                     {"role": "assistant", "content": t["pibo"].strip()}]
-        return {"kind": "mixed", "tools": True, "grade": req["grade"], "messages": msgs}, None
-    if req["kind"] == "chat":
-        turns = chat_turns(data, reply)
-        if not turns:
-            return None, "JSON을 못 읽음" if not isinstance(data, dict) else "turns 모양이 다름"
-        limit = max_len(req)
-        for t in turns:
-            if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
-                return None, "아이 말 없음"
-            if why := pibo_problem(t.get("pibo"), limit):
-                return None, why
-            msgs += [{"role": "user", "content": t["user"].strip()},
-                     {"role": "assistant", "content": t["pibo"].strip()}]
-        # 도구 목록이 있어도 그냥 대화일 때는 부르지 않는 걸 배우도록 절반은 도구와 함께.
-        # 도구와 비슷한 이야기(near)는 늘 도구 목록과 함께
-        ex = {"kind": "chat", "tools": True if req.get("near") else rng.random() < 0.5,
-              "messages": msgs}
-        for key in ("grade", "near", "lang", "lead"):
-            if req.get(key):
-                ex[key] = req[key]
-        return ex, None
-    if not isinstance(data, dict):
-        return None, "JSON을 못 읽음"
-    part, why = tool_turn(data, req["fn"], max_len(req), only=bool(req.get("grade")))
-    if why:
-        return None, why
-    ex = {"kind": "tool", "tools": True, "messages": msgs + part}
-    for key in ("grade", "lang"):
+    limit = max_len(req)
+    for t in turns:
+        if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
+            return None, "아이 말 없음"
+        if why := pibo_problem(t.get("pibo"), limit):
+            return None, why
+        msgs += [{"role": "user", "content": t["user"].strip()},
+                 {"role": "assistant", "content": t["pibo"].strip()}]
+    ex = {"kind": "chat", "messages": msgs}
+    for key in ("grade", "lang", "lead"):
         if req.get(key):
             ex[key] = req[key]
     return ex, None
@@ -639,12 +396,3 @@ def max_len(example: dict) -> int:
     if example.get("lang") in ("en", "learn"):
         return 220 if older else 130
     return 160 if older else 120
-
-
-def tools_for(example: dict):
-    """예시에 붙는 도구 목록: 기기에 있는 것만 고른 예시(tool_names, motions)는 그 목록,
-    이름을 바꾼 예시(device)는 설명의 기기 이름도 바꿉니다."""
-    if not example.get("tools"):
-        return None
-    return tool_list(example.get("tool_names"), example.get("motions"),
-                     example.get("device", "파이보"))

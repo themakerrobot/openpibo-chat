@@ -1,12 +1,10 @@
-"""선생 모델로 학습 예시를 만듭니다 (vLLM, GPU 하나).
+"""선생 모델로 학습 대화를 만듭니다 (vLLM, GPU 하나). 모두 초·중·고 학생과의 대화입니다.
 
-    python make_data.py --out data/train.jsonl --chat 24000 --tool 8000 --seed 0
-    python make_data.py --out data/heldout.jsonl --chat 300 --tool 300 --seed 999 \\
-        --avoid data/train.jsonl
-    python make_data.py --audience school --out data/school-tools.jsonl --chat 0 \\
-        --tool 8000 --mixed 8000 --near 3000 --seed 2      # 초·중·고 도구 예시
-    python make_data.py --audience school --out data/english.jsonl --chat 0 --tool 0 \\
-        --english 6000 --english-tool 2000 --learn 3000 --seed 3   # 영어
+    python make_data.py --out data/school.jsonl --chat 60000 --seed 1          # 친구 대화
+    python make_data.py --out data/heldout-school.jsonl --chat 400 --seed 998 \\
+        --avoid data/school.jsonl                                              # 채점용 질문
+    python make_data.py --out data/english.jsonl --english 6000 --learn 3000 --seed 3
+    python make_data.py --out data/lead.jsonl --lead 12000 --seed 4            # 대화 이어 가기
 
 이미 쓴 줄은 두고 모자란 만큼만 더 만들어 붙입니다 (중간에 끊겨도 이어서).
 """
@@ -93,45 +91,29 @@ def first_user(ex: dict) -> str:
 
 
 def slot(ex: dict) -> str:
-    """예시를 셀 칸: chat, tool, mixed(대화 중 도구), near(도구와 비슷한 이야기),
-    en(영어 대화), entool(영어 도구 부탁), learn(한국어로 묻는 영어 공부)."""
-    if ex.get("near"):
-        return "near"
+    """대화를 셀 칸: chat(친구 대화), lead(대화 이어 가기), en(영어 대화), learn(영어 공부)."""
     if ex.get("lead"):
         return "lead"
-    if ex.get("lang") == "learn":
-        return "learn"
-    if ex.get("lang") == "en":
-        return "en" if ex["kind"] == "chat" else "entool"
-    return ex["kind"]
+    if ex.get("lang") in ("en", "learn"):
+        return ex["lang"]
+    return "chat"
 
 
 #: 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다 (칸마다 버려지는 비율이 달라서)
-ASK_MORE = {"chat": 1.4, "tool": 1.6, "mixed": 2.0, "near": 1.4, "en": 1.4, "entool": 1.6,
-            "learn": 1.4, "lead": 1.6}
+ASK_MORE = {"chat": 1.4, "en": 1.4, "learn": 1.4, "lead": 1.6}
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
-    p.add_argument("--chat", type=int, required=True)
-    p.add_argument("--tool", type=int, required=True)
-    p.add_argument("--mixed", type=int, default=0,
-                   help="이야기하다가 중간에 도구를 부탁하는 대화 (--audience school)")
-    p.add_argument("--near", type=int, default=0,
-                   help="도구와 비슷한 말이지만 부탁은 아닌 이야기 (--audience school)")
-    p.add_argument("--english", type=int, default=0, help="영어 대화 (--audience school)")
-    p.add_argument("--english-tool", type=int, default=0, help="영어 도구 부탁 (--audience school)")
-    p.add_argument("--lead", type=int, default=0,
-                   help="파이보가 대화를 이어 가는 긴 대화 (--audience school)")
-    p.add_argument("--learn", type=int, default=0,
-                   help="한국어로 묻는 영어 공부 (--audience school)")
+    p.add_argument("--chat", type=int, default=0, help="친구처럼 하는 짧은 대화")
+    p.add_argument("--english", type=int, default=0, help="학생이 영어로 말을 거는 대화")
+    p.add_argument("--learn", type=int, default=0, help="한국어로 묻는 영어 공부")
+    p.add_argument("--lead", type=int, default=0, help="파이보가 대화를 이어 가는 긴 대화")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     p.add_argument("--avoid", help="이 파일에 있는 아이 말은 빼고 (채점용 데이터)")
     p.add_argument("--batch", type=int, default=4000)
-    p.add_argument("--audience", choices=["kids", "school"], default="kids",
-                   help="kids: 미취학~초저(처음 데이터), school: 초·중·고 학년 고르게")
     args = p.parse_args()
 
     out = Path(args.out)
@@ -143,13 +125,8 @@ def main():
     if args.avoid and Path(args.avoid).exists():
         seen |= {first_user(json.loads(line))
                  for line in Path(args.avoid).read_text().splitlines()}
-    want = {"chat": args.chat, "tool": args.tool, "mixed": args.mixed, "near": args.near,
-            "en": args.english, "entool": args.english_tool, "learn": args.learn,
-            "lead": args.lead}
+    want = {"chat": args.chat, "en": args.english, "learn": args.learn, "lead": args.lead}
     count = {k: sum(slot(e) == k for e in have) for k in want}
-    if any(want[k] for k in ("mixed", "near", "en", "entool", "learn", "lead")) \
-            and args.audience != "school":
-        raise SystemExit("--mixed, --near, --english, --english-tool, --learn은 --audience school에서만")
     print(f"이미 {count}, 목표 {want}", flush=True)
     if all(count[k] >= want[k] for k in want):
         return
@@ -157,8 +134,8 @@ def main():
     from vllm import SamplingParams
 
     llm = load_teacher(args.teacher)
-    # 중·고 일곱 번 주고받기도 들어가게
-    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1800)
+    # 여덟 번 주고받기도 들어가게
+    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=2000)
     rng = random.Random(args.seed)
     for rnd in range(50):
         need = {k: max(0, want[k] - count[k]) for k in want}
@@ -167,10 +144,8 @@ def main():
         n = {k: min(args.batch, int(need[k] * ASK_MORE[k]) + 8) if need[k] else 0
              for k in want}
         # 이어서 만들 때 처음과 같은 요청을 다시 청하지 않게 이미 쓴 수만큼 건너뜁니다
-        reqs = requests(n["chat"], n["tool"], seed=args.seed * 1000 + rnd + len(have) * 7919,
-                        audience=args.audience, n_mixed=n["mixed"], n_near=n["near"],
-                        n_en=n["en"], n_en_tool=n["entool"], n_learn=n["learn"],
-                        n_lead=n["lead"])
+        reqs = requests(n["chat"], seed=args.seed * 1000 + rnd + len(have) * 7919,
+                        n_en=n["en"], n_learn=n["learn"], n_lead=n["lead"])
         convs = [[{"role": "system", "content": TEACHER_SYSTEM},
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},

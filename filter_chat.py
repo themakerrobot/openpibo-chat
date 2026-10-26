@@ -1,21 +1,18 @@
-"""대화 예시 사실 검사: 선생 모델이 생각을 켜고 파이보의 말을 하나하나 다시 봅니다.
+"""대화 사실·존댓말 검사: 선생 모델이 생각을 켜고 파이보의 말을 하나하나 다시 봅니다.
 
-    python filter_chat.py --data data/school.jsonl --tools-from data/train-clean.jsonl \\
-        --out data/train-school.jsonl
+    python filter_chat.py --data data/school.jsonl --out data/train-school.jsonl
+    python filter_chat.py --data data/lead.jsonl --out data/lead-clean.jsonl \\
+        --log data/chat-check-lead.jsonl
 
 선생이 생각을 끄고 쓴 대화에 틀린 사실("공룡은 수천 년 전에 살았어요"), 정설을
 얼버무린 말("공룡이 왜 사라졌는지는 아직 몰라요"), 어색한 한국어가 섞였고, 학생
 모델이 그대로 배웠습니다.
 
 - 문제가 없으면 그대로, 있으면 선생이 고쳐 쓴 말로 바꿉니다. 고친 말이 규칙
-  (pibo_ok)에 어긋나거나 선생의 답을 못 읽으면(생각이 길어 잘림 등) 그 예시를 뺍니다.
-  빼기만 하면 공룡처럼 아이들이 자주 묻는 주제가 데이터에서 사라지므로 고쳐 씁니다.
-- 도구 예시는 그대로 둡니다 (filter_tools.py가 이미 봄). --tools-from을 주면 그 파일의
-  도구 예시를 붙이고 시스템 글을 지금 것(tools.SYSTEM)으로 맞춥니다: 초·중·고 대화
-  데이터는 대화만 만들고 도구 예시는 거른 어린이 데이터의 것을 다시 씁니다.
-- 학년이 적힌 예시(초·중·고)는 그 학년의 말투 규칙과 길이로 봅니다.
-- 이야기하다가 중간에 도구를 부탁하는 대화(mixed)도 파이보의 말을 봅니다: 도구를 부른
-  차례는 그 도구와 결과를 함께 보여 줘 아는 척으로 보지 않게 하고, 도구 호출은 그대로 둡니다.
+  (pibo_ok)에 어긋나거나 선생의 답을 못 읽으면(생각이 길어 잘림 등) 그 대화를 뺍니다.
+  빼기만 하면 공룡처럼 학생들이 자주 묻는 주제가 데이터에서 사라지므로 고쳐 씁니다.
+- 그다음 반말이 남은 대화는 존댓말로만 고칩니다 (BANMAL, 못 고치면 뺌).
+- 학년이 적힌 대화는 그 학년의 말투 규칙과 길이로, 영어 대화는 영어 규칙으로 봅니다.
 - 판단은 data/chat-check.jsonl(--log)에 하나씩 남기고 (사람이 훑어보기용), 중간에 끊기면
   거기서 이어 갑니다.
 """
@@ -29,7 +26,6 @@ from pathlib import Path
 
 from make_data import load_teacher, thinking_params
 from prompts import after_think, first_json, max_len, pibo_ok, style_for
-from tools import SYSTEM
 
 CHECK = """교육용 로봇 '파이보'의 대화 학습 데이터를 검사합니다.
 학생들은 파이보의 말을 그대로 믿고 배우므로 사실이 정확해야 합니다.
@@ -76,51 +72,25 @@ POLITE = """교육용 로봇 '파이보'의 대답을 다듬습니다. 파이보
 JSON 하나로만 답하세요. 출력 형식: {{"fixed": ["...", "..."]}}"""
 
 
-#: 파이보의 말을 검사하는 예시: 대화, 대화 중 도구 (도구 예시는 filter_tools.py가 봄)
-CHECKED = ("chat", "mixed")
-
-
 def said(m: dict) -> bool:
-    """파이보가 소리 내 하는 말인지 (도구만 부른 차례는 아님)."""
-    return m["role"] == "assistant" and not m.get("tool_calls")
+    """파이보가 소리 내 하는 말인지."""
+    return m["role"] == "assistant" and bool(m.get("content"))
 
 
 def chat_examples(lines: list[str]):
-    """(줄 번호, 예시, 아이 말들, 파이보 말들) — 대화와 대화 중 도구 예시."""
+    """(줄 번호, 대화, 학생 말들, 파이보 말들)."""
     for i, line in enumerate(lines):
         ex = json.loads(line)
-        if ex["kind"] not in CHECKED:
+        if ex.get("kind", "chat") != "chat":
             continue
         msgs = ex["messages"]
         yield (i, ex, [m["content"] for m in msgs if m["role"] == "user"],
                [m["content"] for m in msgs if said(m)])
 
 
-def tool_notes(ex: dict) -> list[str]:
-    """주고받기마다 파이보가 쓴 도구와 결과 ("" = 도구 없음)."""
-    notes = []
-    for m in ex["messages"]:
-        if m["role"] == "user":
-            notes.append("")
-        elif m["role"] == "assistant" and m.get("tool_calls"):
-            names = ", ".join(c["function"]["name"] for c in m["tool_calls"])
-            notes[-1] = f"(파이보가 도구 {names}을 쓰고 받은 결과: " + "{result})"
-        elif m["role"] == "tool" and "{result}" in notes[-1]:
-            notes[-1] = notes[-1].replace("{result}", m["content"])
-    return notes
-
-
-TOOL_NOTE = ("괄호 안은 파이보가 실제로 쓴 도구와 그 결과입니다. 결과에 나온 것을 말하는 건 "
-             "아는 척이 아닙니다.\n")
-
-
 def prompt(ex: dict, users: list[str], pibos: list[str]) -> str:
-    who = "학생" if ex.get("grade") else "아이"
-    notes = tool_notes(ex)
-    dialog = "\n".join(f"{who}: {u}\n" + (f"{n}\n" if n else "") + f"파이보 {k}: {p}"
-                       for k, (u, p, n) in enumerate(zip(users, pibos, notes, strict=True), 1))
-    if any(notes):
-        dialog = TOOL_NOTE + dialog
+    dialog = "\n".join(f"학생: {u}\n파이보 {k}: {p}"
+                       for k, (u, p) in enumerate(zip(users, pibos, strict=True), 1))
     return CHECK.format(style=style_for(ex), dialog=dialog, n=len(pibos))
 
 
@@ -140,36 +110,24 @@ def decide(text: str, pibos: list[str], limit: int = 120) -> dict:
     return {"verdict": "fixed" if fixed != pibos else "ok", "after": fixed, "problem": problem}
 
 
-def with_system(line: str) -> str:
-    """예시의 시스템 글을 지금 것으로."""
-    ex = json.loads(line)
-    for m in ex["messages"]:
-        if m["role"] == "system":
-            m["content"] = SYSTEM
-    return json.dumps(ex, ensure_ascii=False)
-
-
-def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = (),
-            repeat: int = 1) -> list[str]:
-    """검사 결과대로 고치거나 뺀 줄들 (+ tools_from의 도구 예시). 검사하지 않은 대화
-    줄은 없어야 합니다."""
+def rewrite(lines: list[str], checked: dict[int, dict]) -> list[str]:
+    """검사 결과대로 고치거나 뺀 줄들. 검사하지 않은 대화 줄은 없어야 합니다."""
     out = []
     for i, line in enumerate(lines):
-        ex = json.loads(line)
-        if ex["kind"] not in CHECKED:
+        if i not in checked:
             out.append(line)
             continue
         c = checked[i]
         if c["verdict"] == "drop":
             continue
         if c["verdict"] == "fixed":
+            ex = json.loads(line)
             after = iter(c["after"])
             for m in ex["messages"]:
                 if said(m):
                     m["content"] = next(after)
             line = json.dumps(ex, ensure_ascii=False)
         out.append(line)
-    out += [with_system(line) for line in tools_from if json.loads(line)["kind"] == "tool"] * repeat
     return out
 
 
@@ -216,9 +174,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--tools-from", help="이 파일의 도구 예시를 붙임 (시스템 글은 지금 것으로)")
-    p.add_argument("--tools-repeat", type=int, default=1,
-                   help="붙인 도구 예시를 몇 번씩 넣을지: 대화가 많을 때 도구 비율을 지키려고")
     p.add_argument("--log", help="판단 기록 (기본: --out 옆의 chat-check.jsonl)")
     args = p.parse_args()
 
@@ -243,7 +198,7 @@ def main():
             print(f"기록 {len(rows)}줄 중 이 데이터와 안 맞는 {other}줄을 버림", flush=True)
             log_path.write_text("".join(row + "\n" for row in kept_rows))
     left = [it for it in items if it[0] not in checked]
-    print(f"대화 예시 {len(items)}개 중 {len(items) - len(left)}개는 이미 검사함", flush=True)
+    print(f"대화 {len(items)}개 중 {len(items) - len(left)}개는 이미 검사함", flush=True)
     llm = None
     if left:
         llm = llm or load_teacher()
@@ -271,12 +226,11 @@ def main():
         part = rude[start:start + CHUNK * 4]
         n = polite(llm, part, checked, log_path, max_len)
         print(f"존댓말로 고침 {start + len(part)}/{len(rude)} (이번에 고친 것 {n})", flush=True)
-    tools = Path(args.tools_from).read_text().splitlines() if args.tools_from else []
-    kept = rewrite(lines, checked, tools, args.tools_repeat)
+    kept = rewrite(lines, checked)
     Path(args.out).write_text("\n".join(kept) + "\n")
     count = {v: sum(checked[i]["verdict"] == v for i, _, _, _ in items)
              for v in ("ok", "fixed", "drop")}
-    print(f"대화 예시 {len(items)}개: 그대로 {count['ok']}, 고침 {count['fixed']}, "
+    print(f"대화 {len(items)}개: 그대로 {count['ok']}, 고침 {count['fixed']}, "
           f"뺌 {count['drop']} → {args.out} ({len(kept)}줄)", flush=True)
 
 

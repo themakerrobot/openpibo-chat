@@ -1,9 +1,9 @@
-"""파이보가 부를 수 있는 도구(함수) 목록과 그 검사.
+"""파이보 앱이 실행하는 동작 목록과 그 검사, 그리고 대화 모델의 시스템 글.
 
-학습 데이터, 채점, 파이보에서의 실행이 모두 이 목록 하나를 씁니다.
-이름과 인자는 openpibo의 함수에 그대로 대응합니다
-(Motion.set_motion, Device.eye_on, Device.eye_off, Device.get_battery,
-Weather.search, 카메라 물체 찾기).
+대화 모델(themaker)은 도구를 모릅니다: 동작은 앱(pibo_chat.COMMANDS)이 말을 보고 정해
+openpibo로 실행합니다. 이름과 인자는 openpibo의 함수에 그대로 대응합니다
+(Motion.set_motion, Device.eye_on, Device.eye_off, Device.get_battery, Weather.search,
+카메라 물체 찾기). 기기마다 있는 것만 쓰려면 tool_list로 고릅니다.
 """
 
 from __future__ import annotations
@@ -89,6 +89,19 @@ TOOLS = [
 
 BY_NAME = {t["function"]["name"]: t["function"] for t in TOOLS}
 
+#: 대화 모델의 이름 (모든 기기 공통). 기기 이름을 주지 않으면(웹 화면 등) 이 이름으로 대답합니다
+ENGINE = "더메이커"
+ENGINE_EN = "TheMaker"
+SYSTEM = ("너는 초등학생부터 고등학생까지와 이야기하는 교육용 로봇 파이보야. "
+          "친구처럼 친근한 존댓말로 짧게 말해. 이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.")
+#: 학습하지 않은 원본 모델에 줄 자세한 규칙 (원본 + 시스템 글만으로 되는지 비교용)
+PROMPTED_RULES = (" 꼭 지킬 것: 존댓말(~해요, ~예요)만 쓰고 반말은 쓰지 마. 초등학생에게는 한두 문장 70자 "
+                  "안쪽, 중고등학생에게는 두세 문장 120자 안쪽으로 말해. 소리로 읽어 주는 말이라 이모지, "
+                  "특수기호, 괄호, 목록, 굵은 글씨를 쓰지 마. 학생이 한 말을 구체적으로 짚어서 대답하고, 앞에서 "
+                  "한 말을 되풀이하지 마. 물으면 구체적인 예를 들어 답해. 학생이 영어로 말하면 쉬운 영어로 "
+                  "대답해. 위험하거나 마음이 힘든 이야기는 부모님이나 선생님께 알리라고 해. 이름, 주소 같은 "
+                  "개인정보는 묻지 마. 너는 서큘러스에서 만들었어.")
+
 
 def tool_list(names=None, motions=None, device: str = "파이보") -> list:
     """기기에 있는 도구만 고른 목록. names: 도구 이름들 (None이면 모두), motions: set_motion에서
@@ -124,12 +137,6 @@ def system_for(name: str = "파이보", about: str | None = None) -> str:
     if about:
         text += f" {name}에 대해: {about}"
     return text
-
-SYSTEM = ("너는 초등학생부터 고등학생까지와 이야기하는 교육용 로봇 파이보야. "
-          "친구처럼 친근한 존댓말로 짧게 말해. 이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.")
-#: 처음 만든 어린이(미취학~초저) 데이터에 들어 있는 시스템 글 (그 데이터와 채점용 질문에 그대로 남음)
-SYSTEM_KIDS = ("너는 어린이와 이야기하는 교육용 로봇 파이보야. 친근한 존댓말로 한두 문장만 말해. "
-               "이모지나 기호는 쓰지 말고, 모르는 건 모른다고 해.")
 
 
 def check_call(name: str, args) -> str | None:
