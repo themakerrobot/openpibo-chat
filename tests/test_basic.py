@@ -666,12 +666,14 @@ def test_tool_calls_stay_in_the_remembered_conversation(monkeypatch):
     sent = []
     monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs)) or next(replies))
     monkeypatch.setattr(pibo_chat, "run_tool", lambda n, a: "완료")
+    monkeypatch.setattr(pibo_chat, "HISTORY", 3)       # --history 3
     history = []
     pibo_chat.turn("x", history, "앞으로 가", True)
     pibo_chat.turn("x", history, "뒤로 가", True)
     roles = [m["role"] for m in sent[2]]
     assert roles == ["system", "user", "assistant", "tool", "assistant", "user"]
     assert sent[2][2]["tool_calls"][0]["function"]["name"] == "set_motion"
+    assert sent[2][2]["tool_calls"][0]["type"] == "function"   # 없으면 새 llama-server가 500
     for text in ("셋", "넷"):
         pibo_chat.turn("x", history, text, True)
     assert [m["role"] for m in sent[-1]][:2] == ["system", "user"]     # 짝이 안 잘림
@@ -717,7 +719,8 @@ def test_tool_decision_reads_streamed_tool_calls_and_stops_early_on_words(monkey
                 {"tool_calls": [{"index": 0, "function": {"arguments": '"forward1"}'}}]})
     monkeypatch.setattr(pibo_chat.urllib.request, "urlopen", lambda req, timeout: calls)
     got = pibo_chat.first_move("http://x", "앞으로 가")
-    assert got == [{"id": "a", "function": {"name": "set_motion", "arguments": '{"name": "forward1"}'}}]
+    assert got == [{"id": "a", "type": "function",
+                    "function": {"name": "set_motion", "arguments": '{"name": "forward1"}'}}]
     words = sse({"content": "공룡"}, {"content": "은"})
     monkeypatch.setattr(pibo_chat.urllib.request, "urlopen", lambda req, timeout: words)
     assert pibo_chat.first_move("http://x", "공룡 얘기") is None
@@ -1134,3 +1137,32 @@ def test_gguf_template_adds_the_training_system_prompt_only_when_missing():
     ours = t.render(messages=[{"role": "system", "content": SYSTEM},
                               {"role": "user", "content": "안녕"}], add_generation_prompt=True)
     assert ours.count(SYSTEM) == 1
+
+
+def test_history_can_be_cut_to_the_current_words_and_server_errors_do_not_kill_the_app(
+        monkeypatch, capsys):
+    import io
+    import urllib.error
+
+    import pibo_chat
+
+    sent = []
+    monkeypatch.setattr(pibo_chat, "ask", lambda url, msgs, tools: sent.append(list(msgs))
+                        or {"content": "네."})
+    monkeypatch.setattr(pibo_chat, "HISTORY", 1)       # --history 1: 지금 말만
+    history = []
+    for text in ("하나", "둘"):
+        pibo_chat.turn("x", history, text, False)
+    assert [[m["role"] for m in msgs] for msgs in sent] == [["system", "user"]] * 2
+    said = iter(["안녕", "그만"])
+    monkeypatch.setattr(pibo_chat, "listen", lambda: next(said))
+    monkeypatch.setattr(pibo_chat, "warm_up", lambda url, tools: None)
+
+    def broken(*a, **k):
+        raise urllib.error.HTTPError("x", 500, "Internal", {}, io.BytesIO(b"Missing tool call type"))
+
+    monkeypatch.setattr(pibo_chat, "turn", broken)
+    monkeypatch.setattr(sys, "argv", ["pibo_chat.py"])
+    pibo_chat.main()
+    out = capsys.readouterr().out
+    assert "Missing tool call type" in out and "다시 말해 줄래요" in out

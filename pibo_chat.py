@@ -21,7 +21,10 @@ import urllib.request
 
 from tools import SYSTEM, TOOLS, check_call
 
-HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함): 길수록 파이보에서 느려집니다
+#: 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈). 서버는 앞 요청과 같은 앞부분
+#: (시스템 글과 도구 목록)을 다시 쓰고 새로 붙은 말만 읽습니다 (재 보니 지난 대화 세 번을 붙여도
+#: 새로 읽는 건 수십 토큰). 대화마다 찍히는 '읽기 N토큰'이 1천 가까이 나오면 다시 쓰지 못한 것
+HISTORY = 3
 FAKE = False  # --fake: 로봇 없이 도구를 부른 척만 합니다
 
 
@@ -38,8 +41,11 @@ def speak(text: str) -> None:
 def listen() -> str:
     # 원격 터미널에서 한글을 지우고 다시 쓰면 글자 조각(깨진 UTF-8)이 들어올 때가 있어,
     # 멈추지 않고 깨진 부분만 버립니다
-    if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(errors="ignore")
+    if hasattr(sys.stdin, "reconfigure") and getattr(sys.stdin, "errors", "") != "ignore":
+        try:
+            sys.stdin.reconfigure(errors="ignore")
+        except (OSError, ValueError):        # 이미 읽기 시작한 입력(파이프 등)은 못 바꿈
+            pass
     return input("나: ").strip()
 
 
@@ -145,7 +151,13 @@ def ask(url: str, messages: list, tools: bool, max_tokens: int = 150, timeout: i
     req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())["choices"][0]["message"]
+        data = json.loads(r.read())
+    t = data.get("timings") or {}
+    if t:   # 서버가 다시 읽은 토큰 수: 앞 요청을 못 쓰면 여기가 1천 넘게 나옵니다
+        print(f"  (읽기 {t.get('prompt_n', 0)}토큰 {t.get('prompt_ms', 0) / 1000:.1f}초, "
+              f"말하기 {t.get('predicted_n', 0)}토큰 {t.get('predicted_ms', 0) / 1000:.1f}초)",
+              flush=True)
+    return data["choices"][0]["message"]
 
 
 def window(history: list) -> list:
@@ -182,8 +194,8 @@ def first_move(url: str, text: str) -> list | None:
             choices = json.loads(data).get("choices") or []
             delta = (choices[0].get("delta") or {}) if choices else {}
             for tc in delta.get("tool_calls") or []:
-                c = calls.setdefault(tc.get("index", 0),
-                                     {"id": "", "function": {"name": "", "arguments": ""}})
+                c = calls.setdefault(tc.get("index", 0), {"id": "", "type": "function",
+                                                           "function": {"name": "", "arguments": ""}})
                 c["id"] = tc.get("id") or c["id"]
                 f = tc.get("function") or {}
                 c["function"]["name"] = f.get("name") or c["function"]["name"]   # 이름은 한 번에 옴
@@ -194,6 +206,8 @@ def first_move(url: str, text: str) -> list | None:
 
 
 def run_calls(calls: list, msgs: list) -> None:
+    # 새 llama-server는 기록 속 도구 호출에 type이 없으면 500 오류를 냅니다
+    calls = [dict(c, type="function", id=c.get("id") or f"call_{k}") for k, c in enumerate(calls)]
     msgs.append({"role": "assistant", "content": "", "tool_calls": calls})
     for c in calls:
         f = c["function"]
@@ -203,8 +217,9 @@ def run_calls(calls: list, msgs: list) -> None:
                 args = json.loads(args)
             except json.JSONDecodeError:
                 args = {}
+        t = time.time()
         result = run_tool(f["name"], args)
-        print(f"  [도구] {f['name']}({args}) -> {result}", flush=True)
+        print(f"  [도구] {f['name']}({args}) -> {result} ({time.time() - t:.1f}초)", flush=True)
         msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
 
 
@@ -221,10 +236,12 @@ def turn(url: str, history: list, text: str, tools: bool, allowed: bool = True) 
     new_from = len(msgs)
     calls = None
     if tools:
+        t = time.time()
         try:
             calls = first_move(url, text)
         except (OSError, ValueError, KeyError):   # 스트리밍 도구 호출을 못 하는 옛 서버
             calls = None
+        print(f"  (도구 판단 {time.time() - t:.1f}초: {'도구' if calls else '말'})", flush=True)
     reply = {"content": "", "tool_calls": calls} if calls else ask(url, msgs, tools)
     if not allowed and reply.get("tool_calls"):
         history.append({"role": "assistant", "content": PAUSED})
@@ -279,8 +296,11 @@ def main():
     p.add_argument("--url", default="http://127.0.0.1:8080")
     p.add_argument("--no-tools", action="store_true")
     p.add_argument("--fake", action="store_true", help="openpibo 없이 도구를 부른 척만")
+    p.add_argument("--history", type=int, default=HISTORY,
+                   help="기억하는 주고받기 수 (지금 말 포함, 늘리면 파이보에서 많이 느려질 수 있음)")
     args = p.parse_args()
     FAKE = args.fake
+    globals()["HISTORY"] = max(1, args.history)
     warm_up(args.url, not args.no_tools)
     history: list = []
     use_tools = not args.no_tools
@@ -303,8 +323,14 @@ def main():
                 speak(SWITCH_REPLY[use_tools])
                 continue
         t = time.time()
-        speak(turn(args.url, history, text, not args.no_tools, use_tools))
-        print(f"  ({time.time() - t:.1f}초)", flush=True)
+        try:
+            speak(turn(args.url, history, text, not args.no_tools, use_tools))
+        except OSError as exc:               # 서버 오류(HTTPError 포함)·연결 끊김: 앱은 계속
+            body = exc.read().decode("utf-8", "ignore")[:300] if hasattr(exc, "read") else ""
+            print(f"  (서버 오류: {exc} {body})", flush=True)
+            history.clear()
+            speak("잠깐 문제가 생겼어요. 한 번만 다시 말해 줄래요?")
+        print(f"  (모두 {time.time() - t:.1f}초)", flush=True)
 
 
 if __name__ == "__main__":
