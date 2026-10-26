@@ -14,7 +14,9 @@
   도구 예시를 붙이고 시스템 글을 지금 것(tools.SYSTEM)으로 맞춥니다: 초·중·고 대화
   데이터는 대화만 만들고 도구 예시는 거른 어린이 데이터의 것을 다시 씁니다.
 - 학년이 적힌 예시(초·중·고)는 그 학년의 말투 규칙과 길이로 봅니다.
-- 판단은 data/chat-check.jsonl에 하나씩 남기고 (사람이 훑어보기용), 중간에 끊기면
+- 이야기하다가 중간에 도구를 부탁하는 대화(mixed)도 파이보의 말을 봅니다: 도구를 부른
+  차례는 그 도구와 결과를 함께 보여 줘 아는 척으로 보지 않게 하고, 도구 호출은 그대로 둡니다.
+- 판단은 data/chat-check.jsonl(--log)에 하나씩 남기고 (사람이 훑어보기용), 중간에 끊기면
   거기서 이어 갑니다.
 """
 
@@ -74,21 +76,51 @@ POLITE = """교육용 로봇 '파이보'의 대답을 다듬습니다. 파이보
 JSON 하나로만 답하세요. 출력 형식: {{"fixed": ["...", "..."]}}"""
 
 
+#: 파이보의 말을 검사하는 예시: 대화, 대화 중 도구 (도구 예시는 filter_tools.py가 봄)
+CHECKED = ("chat", "mixed")
+
+
+def said(m: dict) -> bool:
+    """파이보가 소리 내 하는 말인지 (도구만 부른 차례는 아님)."""
+    return m["role"] == "assistant" and not m.get("tool_calls")
+
+
 def chat_examples(lines: list[str]):
-    """(줄 번호, 예시, 아이 말들, 파이보 말들) — 대화 예시만."""
+    """(줄 번호, 예시, 아이 말들, 파이보 말들) — 대화와 대화 중 도구 예시."""
     for i, line in enumerate(lines):
         ex = json.loads(line)
-        if ex["kind"] != "chat":
+        if ex["kind"] not in CHECKED:
             continue
         msgs = ex["messages"]
         yield (i, ex, [m["content"] for m in msgs if m["role"] == "user"],
-               [m["content"] for m in msgs if m["role"] == "assistant"])
+               [m["content"] for m in msgs if said(m)])
+
+
+def tool_notes(ex: dict) -> list[str]:
+    """주고받기마다 파이보가 쓴 도구와 결과 ("" = 도구 없음)."""
+    notes = []
+    for m in ex["messages"]:
+        if m["role"] == "user":
+            notes.append("")
+        elif m["role"] == "assistant" and m.get("tool_calls"):
+            names = ", ".join(c["function"]["name"] for c in m["tool_calls"])
+            notes[-1] = f"(파이보가 도구 {names}을 쓰고 받은 결과: " + "{result})"
+        elif m["role"] == "tool" and "{result}" in notes[-1]:
+            notes[-1] = notes[-1].replace("{result}", m["content"])
+    return notes
+
+
+TOOL_NOTE = ("괄호 안은 파이보가 실제로 쓴 도구와 그 결과입니다. 결과에 나온 것을 말하는 건 "
+             "아는 척이 아닙니다.\n")
 
 
 def prompt(ex: dict, users: list[str], pibos: list[str]) -> str:
     who = "학생" if ex.get("grade") else "아이"
-    dialog = "\n".join(f"{who}: {u}\n파이보 {k}: {p}"
-                       for k, (u, p) in enumerate(zip(users, pibos, strict=True), 1))
+    notes = tool_notes(ex)
+    dialog = "\n".join(f"{who}: {u}\n" + (f"{n}\n" if n else "") + f"파이보 {k}: {p}"
+                       for k, (u, p, n) in enumerate(zip(users, pibos, notes, strict=True), 1))
+    if any(notes):
+        dialog = TOOL_NOTE + dialog
     return CHECK.format(style=style_for(ex), dialog=dialog, n=len(pibos))
 
 
@@ -124,17 +156,17 @@ def rewrite(lines: list[str], checked: dict[int, dict], tools_from: list[str] = 
     out = []
     for i, line in enumerate(lines):
         ex = json.loads(line)
-        if ex["kind"] != "chat":
+        if ex["kind"] not in CHECKED:
             out.append(line)
             continue
         c = checked[i]
         if c["verdict"] == "drop":
             continue
         if c["verdict"] == "fixed":
-            said = iter(c["after"])
+            after = iter(c["after"])
             for m in ex["messages"]:
-                if m["role"] == "assistant":
-                    m["content"] = next(said)
+                if said(m):
+                    m["content"] = next(after)
             line = json.dumps(ex, ensure_ascii=False)
         out.append(line)
     out += [with_system(line) for line in tools_from if json.loads(line)["kind"] == "tool"] * repeat
@@ -187,11 +219,12 @@ def main():
     p.add_argument("--tools-from", help="이 파일의 도구 예시를 붙임 (시스템 글은 지금 것으로)")
     p.add_argument("--tools-repeat", type=int, default=1,
                    help="붙인 도구 예시를 몇 번씩 넣을지: 대화가 많을 때 도구 비율을 지키려고")
+    p.add_argument("--log", help="판단 기록 (기본: --out 옆의 chat-check.jsonl)")
     args = p.parse_args()
 
     lines = Path(args.data).read_text().splitlines()
     items = list(chat_examples(lines))
-    log_path = Path(args.out).with_name("chat-check.jsonl")
+    log_path = Path(args.log) if args.log else Path(args.out).with_name("chat-check.jsonl")
     by_line = {i: (users, pibos) for i, _, users, pibos in items}
     checked: dict[int, dict] = {}
     if log_path.exists():
@@ -231,8 +264,8 @@ def main():
     rude = [it for it in items if checked[it[0]]["verdict"] != "drop"
             and not checked[it[0]].get("polite")
             and any(BANMAL.search(s) for s in checked[it[0]]["after"])]
-    said = sum(len(checked[i]["after"]) for i, _, _, _ in items if checked[i]["verdict"] != "drop")
-    print(f"반말이 남은 대화 {len(rude)}개 (파이보 말 {said}개 중)", flush=True)
+    n_said = sum(len(checked[i]["after"]) for i, _, _, _ in items if checked[i]["verdict"] != "drop")
+    print(f"반말이 남은 대화 {len(rude)}개 (파이보 말 {n_said}개 중)", flush=True)
     for start in range(0, len(rude), CHUNK * 4):
         llm = llm or load_teacher()
         part = rude[start:start + CHUNK * 4]

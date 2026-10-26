@@ -11,7 +11,9 @@
 - 채점용 데이터: 파일은 그대로 두고(이미 모은 답의 순서가 바뀌지 않게) 번호만
   --marks에 적습니다. bad: 채점에서 뺄 억지 문제, names_only: 동작·색·지역이 아이
   말로 정해지지 않아("춤춰 줘") 도구 이름만 볼 문제.
-- 판단 하나하나는 data/tool-check.jsonl에 남깁니다 (사람이 훑어보기용).
+- 판단 하나하나는 data/tool-check.jsonl(--log)에 남깁니다 (사람이 훑어보기용).
+- 이야기하다가 중간에 도구를 부탁하는 대화(mixed)는 도구를 부른 차례마다 봅니다:
+  하나라도 억지면 그 대화를 빼고(채점용이면 bad), 인자가 말로 안 정해지면 names_only.
 """
 
 from __future__ import annotations
@@ -41,14 +43,15 @@ CHECK = """어린이용 교육 로봇 '파이보'의 학습 데이터를 검사�
 
 
 def tool_examples(lines: list[str]):
-    """(줄 번호, 아이 말, 부른 도구들) — 도구 예시만."""
+    """(줄 번호, 아이 말, 부른 도구들) — 도구 예시와, 대화 중 도구를 부른 차례마다."""
     for i, line in enumerate(lines):
         ex = json.loads(line)
-        if ex["kind"] != "tool":
+        if ex["kind"] not in ("tool", "mixed"):
             continue
         msgs = ex["messages"]
-        at = next(j for j, m in enumerate(msgs) if m["role"] == "user")
-        yield i, msgs[at]["content"], [c["function"] for c in msgs[at + 1]["tool_calls"]]
+        for j, m in enumerate(msgs):
+            if m["role"] == "assistant" and m.get("tool_calls"):
+                yield i, msgs[j - 1]["content"], [c["function"] for c in m["tool_calls"]]
 
 
 def prompt(user: str, calls: list[dict]) -> str:
@@ -70,6 +73,7 @@ def main():
     p.add_argument("--heldout", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--marks", required=True)
+    p.add_argument("--log", help="판단 기록 (기본: --out 옆의 tool-check.jsonl)")
     args = p.parse_args()
 
     from vllm import SamplingParams
@@ -82,8 +86,8 @@ def main():
     outs = llm.chat([[{"role": "user", "content": prompt(u, c)}] for _, _, u, c in items],
                     SamplingParams(temperature=0.0, max_tokens=40),
                     chat_template_kwargs={"enable_thinking": False}, use_tqdm=False)
-    drop, bad, names_only, unread = set(), [], [], 0
-    with open(Path(args.out).with_name("tool-check.jsonl"), "w") as log:
+    drop, bad, names_only, unread = set(), set(), set(), 0
+    with open(args.log or Path(args.out).with_name("tool-check.jsonl"), "w") as log:
         for (name, i, user, calls), o in zip(items, outs, strict=True):
             v = verdict(o.outputs[0].text)
             unread += v["natural"] is None
@@ -92,18 +96,20 @@ def main():
             if v["natural"] is False and name == "train":   # 못 읽은 답은 두고 갑니다
                 drop.add(i)
             elif v["natural"] is False:
-                bad.append(i)
+                bad.add(i)
             elif name == "heldout" and v["args_from_words"] is False:
-                names_only.append(i)
+                names_only.add(i)
+    names_only -= bad
+    bad, names_only = sorted(bad), sorted(names_only)
     kept = [line for i, line in enumerate(sets["train"]) if i not in drop]
     Path(args.out).write_text("\n".join(kept) + "\n")
     n_train = sum(n == "train" for n, *_ in items)
-    n_held = len(items) - n_train
+    n_held = len({i for n, i, *_ in items if n == "heldout"})
     Path(args.marks).write_text(json.dumps(
         {"bad": bad, "names_only": names_only, "checked": n_held}, ensure_ascii=False))
     print(f"학습용 도구 예시 {n_train}개 중 {len(drop)}개 뺌 → {args.out} ({len(kept)}줄)",
           flush=True)
-    print(f"채점용 도구 문제 {n_held}개 중 억지 {len(bad)}개, 이름만 볼 것 {len(names_only)}개",
+    print(f"채점용 도구 문제(줄) {n_held}개 중 억지 {len(bad)}개, 이름만 볼 것 {len(names_only)}개",
           flush=True)
     if unread:
         print(f"선생의 답을 못 읽어 그대로 둔 것 {unread}개", flush=True)

@@ -3,6 +3,8 @@
     python make_data.py --out data/train.jsonl --chat 24000 --tool 8000 --seed 0
     python make_data.py --out data/heldout.jsonl --chat 300 --tool 300 --seed 999 \\
         --avoid data/train.jsonl
+    python make_data.py --audience school --out data/school-tools.jsonl --chat 0 \\
+        --tool 8000 --mixed 8000 --near 3000 --seed 2      # 초·중·고 도구 예시
 
 이미 쓴 줄은 두고 모자란 만큼만 더 만들어 붙입니다 (중간에 끊겨도 이어서).
 """
@@ -88,11 +90,24 @@ def first_user(ex: dict) -> str:
     return next(m["content"] for m in ex["messages"] if m["role"] == "user")
 
 
+def slot(ex: dict) -> str:
+    """예시를 셀 칸: chat, tool, mixed(대화 중 도구), near(도구와 비슷한 이야기)."""
+    return "near" if ex.get("near") else ex["kind"]
+
+
+#: 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다 (칸마다 버려지는 비율이 달라서)
+ASK_MORE = {"chat": 1.4, "tool": 1.6, "mixed": 2.0, "near": 1.4}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("--chat", type=int, required=True)
     p.add_argument("--tool", type=int, required=True)
+    p.add_argument("--mixed", type=int, default=0,
+                   help="이야기하다가 중간에 도구를 부탁하는 대화 (--audience school)")
+    p.add_argument("--near", type=int, default=0,
+                   help="도구와 비슷한 말이지만 부탁은 아닌 이야기 (--audience school)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--teacher", help="정해서 쓸 선생 모델 (없으면 목록에서 뜨는 것)")
     p.add_argument("--avoid", help="이 파일에 있는 아이 말은 빼고 (채점용 데이터)")
@@ -110,9 +125,10 @@ def main():
     if args.avoid and Path(args.avoid).exists():
         seen |= {first_user(json.loads(line))
                  for line in Path(args.avoid).read_text().splitlines()}
-    count = {"chat": sum(e["kind"] == "chat" for e in have),
-             "tool": sum(e["kind"] == "tool" for e in have)}
-    want = {"chat": args.chat, "tool": args.tool}
+    want = {"chat": args.chat, "tool": args.tool, "mixed": args.mixed, "near": args.near}
+    count = {k: sum(slot(e) == k for e in have) for k in want}
+    if (args.mixed or args.near) and args.audience != "school":
+        raise SystemExit("--mixed, --near는 --audience school에서만")
     print(f"이미 {count}, 목표 {want}", flush=True)
     if all(count[k] >= want[k] for k in want):
         return
@@ -120,18 +136,18 @@ def main():
     from vllm import SamplingParams
 
     llm = load_teacher(args.teacher)
-    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1000)  # 중·고 3번 주고받기도 들어가게
+    # 중·고 다섯 번 주고받기(도구 호출 포함)도 들어가게
+    params = SamplingParams(temperature=0.9, top_p=0.95, max_tokens=1400)
     rng = random.Random(args.seed)
     for rnd in range(50):
         need = {k: max(0, want[k] - count[k]) for k in want}
         if not any(need.values()):
             break
-        # 버려지는 답이 있으니 모자란 것보다 넉넉히 청합니다
-        n_chat = min(args.batch, int(need["chat"] * 1.4) + 8) if need["chat"] else 0
-        n_tool = min(args.batch, int(need["tool"] * 1.6) + 8) if need["tool"] else 0
+        n = {k: min(args.batch, int(need[k] * ASK_MORE[k]) + 8) if need[k] else 0
+             for k in want}
         # 이어서 만들 때 처음과 같은 요청을 다시 청하지 않게 이미 쓴 수만큼 건너뜁니다
-        reqs = requests(n_chat, n_tool, seed=args.seed * 1000 + rnd + len(have) * 7919,
-                        audience=args.audience)
+        reqs = requests(n["chat"], n["tool"], seed=args.seed * 1000 + rnd + len(have) * 7919,
+                        audience=args.audience, n_mixed=n["mixed"], n_near=n["near"])
         convs = [[{"role": "system", "content": TEACHER_SYSTEM},
                   {"role": "user", "content": r["prompt"]}] for r in reqs]
         outs = llm.chat(convs, params, chat_template_kwargs={"enable_thinking": False},
@@ -139,7 +155,7 @@ def main():
         kept, why, shown = 0, Counter(), Counter()
         with out.open("a") as f, rejected.open("a") as rej:
             for r, o in zip(reqs, outs, strict=True):
-                if count[r["kind"]] >= want[r["kind"]]:
+                if count[slot(r)] >= want[slot(r)]:
                     continue
                 ex, reason = build_example(r, o.outputs[0].text, rng)
                 if reason is None and first_user(ex) in seen:
@@ -155,7 +171,7 @@ def main():
                                              ensure_ascii=False) + "\n")
                     continue
                 seen.add(first_user(ex))
-                count[ex["kind"]] += 1
+                count[slot(ex)] += 1
                 kept += 1
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
         print(f"라운드 {rnd}: {len(reqs)}개 청해서 {kept}개 남김, 지금 {count}", flush=True)

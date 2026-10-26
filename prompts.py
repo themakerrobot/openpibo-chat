@@ -174,10 +174,144 @@ def tool_request(rng: random.Random) -> dict:
     return {"kind": "tool", "fn": fn, "asker": asker, "prompt": text}
 
 
-def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids") -> list[dict]:
+# ------------------------------------------------------------- 초·중·고 도구 (school)
+#: 도구를 고르는 비율: 몸 움직이기가 가장 많고, 날씨·물건 찾기, 눈 색 순
+TOOL_WEIGHTS = {"set_motion": 40, "eye_on": 20, "eye_off": 7, "find_objects": 13,
+                "get_battery": 8, "get_weather": 12}
+#: 동작을 고르는 비율: 멈추기와 움직이기(앞뒤, 돌기)를 더 자주 (그 밖은 1)
+MOTION_WEIGHTS = {"stop": 6, "forward1": 2, "backward1": 2, "left": 2, "right": 2}
+REGIONS = ["서울", "부산", "대구", "인천", "광주", "대전", "제주", "전국"]
+#: 같은 부탁도 여러 말로: 학생이 부탁하는 방식
+ASKS = ["반말로 짧게", "존댓말로 공손하게", "친구한테 하듯 장난스럽게", "할 수 있냐고 묻는 말로",
+        "이유를 붙여서", "한두 낱말로만", "앞에 다른 말을 하다가 끝에 부탁을 붙여서",
+        "줄임말이나 맞춤법이 조금 틀린 말로", "신이 나서", "귀찮다는 듯이", "조르듯이",
+        "명령하듯 딱 잘라서"]
+#: 멈추기는 여러 말로 (앱이 '멈춰' 같은 말은 바로 멈추지만 모델도 알아들어야 합니다)
+STOP_HINT = ("학생은 움직이고 있는 파이보를 멈추게 하려고 합니다. '멈춰'만 쓰지 말고 "
+             "'그만', '가만히 있어', '잠깐 서 봐', '움직이지 마', '스톱'처럼 여러 말 중 하나로 하세요")
+#: 도구 결과가 실패일 때 (인터넷, 카메라가 안 될 때도 솔직하게 말하는 걸 배우게)
+FAIL_SHARE = 0.08
+FAIL_HINT = {"get_weather": "인터넷 연결 안 됨", "find_objects": "카메라를 열 수 없음"}
+#: 도구와 비슷한 말이지만 해 달라는 게 아닌 이야기 (도구를 부르지 않는 걸 배우게)
+NEAR = ["춤 학원에서 배운 춤", "좋아하는 아이돌 춤", "인사", "아침 인사", "좋아하는 색깔",
+        "새로 산 옷 색", "눈이 아픔", "눈 오는 날", "오늘 날씨가 덥거나 추움", "비 맞은 일",
+        "휴대폰 배터리가 없음", "충전기를 잃어버림", "잃어버린 물건", "사진 찍기", "운동하다 지침",
+        "걷기 대회", "잠이 안 옴", "피곤해서 쉬고 싶음", "로봇 춤 영상", "파이보의 눈이 예쁨",
+        "멈춰 있는 시계", "그만하고 싶은 학원", "체육 시간에 돈 일", "반짝이는 별"]
+
+
+def _weighted(rng: random.Random, weights: dict, items) -> str:
+    items = list(items)
+    return rng.choices(items, [weights.get(k, 1) for k in items])[0]
+
+
+def tool_hint(rng: random.Random, fn: str) -> tuple[str, str | None]:
+    """(장면 쓰는 사람에게 줄 힌트, 실패 결과로 지을 때 그 까닭)."""
+    hint = ""
+    if fn == "set_motion":
+        motion = _weighted(rng, MOTION_WEIGHTS, MOTIONS)
+        hint = STOP_HINT if motion == "stop" else f"동작은 '{motion}({MOTIONS[motion]})'"
+    elif fn == "eye_on":
+        hint = f"색은 '{rng.choice(list(COLORS))}'"
+    elif fn == "get_weather":
+        hint = f"지역은 '{rng.choice(REGIONS)}'"
+    fail = FAIL_HINT.get(fn) if rng.random() < FAIL_SHARE else None
+    return hint, fail
+
+
+def school_asker(rng: random.Random) -> tuple[str, str]:
+    grade = rng.choice(list(GRADES))
+    return grade, rng.choice(MOODS) + rng.choice(GRADES[grade]) + " 학생"
+
+
+ONLY_ASKED = ("파이보는 학생이 바란 도구 하나만 부릅니다. 학생이 말하지 않은 동작이나 눈 색을 "
+              "덤으로 하지 않습니다.")
+
+
+def school_tool_request(rng: random.Random) -> dict:
+    fn = _weighted(rng, TOOL_WEIGHTS, BY_NAME)
+    grade, asker = school_asker(rng)
+    hint, fail = tool_hint(rng, fn)
+    result = (f"- result: 도구가 실패한 결과 '실패: {fail}'. pibo는 못 했다고 솔직하게 말합니다"
+              if fail else "- result: 도구가 돌려준 결과를 짧게 지어서 (예: \"완료\", \"배터리 70%\", "
+                           "\"컵, 사과\", \"서울 맑음 18도\")")
+    text = f"""{asker}이 로봇 파이보에게 무언가를 해 달라고 하거나 물어서, 파이보가 도구 '{fn}'을 써야
+하는 장면을 하나 써 주세요. {hint}
+학생은 {rng.choice(ASKS)} 말합니다. 도구 이름은 말하지 않고, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
+파이보의 도구:
+{TOOL_TEXT}
+- user: 학생의 말
+- calls: 파이보가 부르는 도구 '{fn}' 하나. 인자는 위 목록 그대로. {ONLY_ASKED}
+{result}
+- pibo: 결과를 보고 파이보가 하는 마지막 말
+{school_style(grade)}
+출력 형식: {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}"""
+    return {"kind": "tool", "fn": fn, "asker": asker, "grade": grade, "prompt": text,
+            "fail": bool(fail)}
+
+
+def mixed_request(rng: random.Random) -> dict:
+    """이야기를 나누다가 중간에 도구를 부탁하고, 다시 이야기로 돌아가는 대화."""
+    grade, asker = school_asker(rng)
+    topic = rng.choice(TALK)
+    while (grade == "초저" and topic in OLDER) or (grade != "고" and topic in HIGH):
+        topic = rng.choice(TALK)
+    turns = rng.choice([3, 3, 4, 4, 5])
+    at = [rng.randrange(1, turns)]            # 첫 차례는 이야기 (첫마디 도구는 도구 예시가 배움)
+    if turns >= 4 and rng.random() < 0.25:
+        at.append(rng.choice([k for k in range(1, turns) if abs(k - at[0]) > 1] or at))
+    at = sorted(set(at))
+    fns, plan = {}, []
+    for k in range(turns):
+        if k in at:
+            fn = _weighted(rng, TOOL_WEIGHTS, [f for f in BY_NAME if f not in fns.values()])
+            fns[k] = fn
+            hint, fail = tool_hint(rng, fn)
+            plan.append(f"{k + 1}번째: 학생이 {rng.choice(ASKS)} 파이보에게 도구 '{fn}'이 필요한 일을 "
+                        f"부탁합니다. {hint}. calls와 result도 씁니다"
+                        + (f" (result는 '실패: {fail}', pibo는 못 했다고 솔직하게)" if fail else ""))
+        else:
+            plan.append(f"{k + 1}번째: 이야기만 합니다 (calls 없음)")
+    plan_text = "\n".join(plan)
+    text = f"""장면: {rng.choice(SCENES)}. {asker}이 '{topic}' 이야기를 하다가 중간에 로봇 파이보에게
+무언가를 부탁합니다. 이 대화를 하나 써 주세요. 주고받기는 {turns}번이고 차례마다 아래와 같습니다.
+{plan_text}
+부탁하는 말은 앞의 이야기와 자연스럽게 이어지되, 그 말만 들어도 무엇을 해 달라는지 알 수 있게.
+도구를 부른 뒤에는 다시 이야기로 돌아가고, 이야기만 하는 차례에서는 도구를 부르지 않습니다.
+파이보의 도구:
+{TOOL_TEXT}
+calls에는 그 차례의 도구 하나만, 인자는 위 목록 그대로. {ONLY_ASKED}
+result는 도구가 돌려준 결과를 짧게 지어서 (예: "완료", "배터리 70%", "컵, 사과", "서울 맑음 18도").
+학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게.
+{school_style(grade)}
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "calls": [{{"name": "...", "arguments": {{...}}}}], "result": "...", "pibo": "..."}}]}}"""
+    return {"kind": "mixed", "asker": asker, "grade": grade, "topic": topic, "turns": turns,
+            "calls_at": {str(k): fn for k, fn in fns.items()}, "prompt": text}
+
+
+def near_request(rng: random.Random) -> dict:
+    """도구와 비슷한 말이지만 해 달라는 것이 아닌 이야기 (도구 목록이 있어도 말로만 대답)."""
+    grade, asker = school_asker(rng)
+    topic = rng.choice(NEAR)
+    turns = rng.choice([1, 1, 2])
+    text = f"""{asker}이 로봇 파이보에게 '{topic}' 이야기를 합니다. 이 짧은 대화를 하나 써 주세요.
+주고받기는 {turns}번입니다. 학생은 이야기를 할 뿐 파이보에게 몸을 움직이거나 눈 색을 바꾸거나
+날씨, 배터리, 물건을 알아봐 달라고 하지 않습니다. 파이보도 말로만 대답합니다.
+인사라면 학생은 인사만 하고, 파이보도 말로 인사합니다.
+학생의 말은 그 나이 학생이 실제로 말하듯 짧고 자연스럽게.
+{school_style(grade)}
+출력 형식: {{"turns": [{{"user": "...", "pibo": "..."}}]}}"""
+    return {"kind": "chat", "near": True, "topic": topic, "asker": asker, "grade": grade,
+            "prompt": text}
+
+
+def requests(n_chat: int, n_tool: int, seed: int, audience: str = "kids", n_mixed: int = 0,
+             n_near: int = 0) -> list[dict]:
     rng = random.Random(seed)
     chat = school_chat_request if audience == "school" else chat_request
-    out = [chat(rng) for _ in range(n_chat)] + [tool_request(rng) for _ in range(n_tool)]
+    tool = school_tool_request if audience == "school" else tool_request
+    out = [chat(rng) for _ in range(n_chat)] + [tool(rng) for _ in range(n_tool)]
+    out += [mixed_request(rng) for _ in range(n_mixed)] + [near_request(rng) for _ in range(n_near)]
     rng.shuffle(out)
     return out
 
@@ -259,10 +393,62 @@ def chat_turns(data, reply: str) -> list[dict] | None:
     return pairs or None
 
 
+def tool_turn(t: dict, fn: str, limit: int, only: bool) -> tuple[list | None, str | None]:
+    """도구를 부르는 주고받기 하나({"user", "calls", "result", "pibo"}) → 메시지들.
+    only면 청한 도구 하나만 불러야 합니다 (초·중·고: 덤으로 부른 눈 색 등을 버림)."""
+    user, calls, result, pibo = (t.get(k) for k in ("user", "calls", "result", "pibo"))
+    if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
+            and 1 <= len(calls) <= 2 and isinstance(result, str)):
+        return None, "도구 예시 모양이 다름"
+    if why := pibo_problem(pibo, limit):
+        return None, why
+    tool_calls = []
+    for c in calls:
+        if not isinstance(c, dict):
+            return None, "도구 예시 모양이 다름"
+        args = c.get("arguments") or {}
+        if (why := check_call(c.get("name"), args)) is not None:
+            return None, f"도구 호출: {why}"
+        tool_calls.append({"type": "function",
+                           "function": {"name": c["name"], "arguments": args}})
+    names = [c["function"]["name"] for c in tool_calls]
+    if fn not in names:
+        return None, "청한 도구를 안 부름"
+    if only and names != [fn]:
+        return None, "청하지 않은 도구를 덤으로 부름"
+    msgs = [{"role": "user", "content": user.strip()},
+            {"role": "assistant", "content": "", "tool_calls": tool_calls}]
+    msgs += [{"role": "tool", "content": result.strip()} for _ in tool_calls]
+    msgs.append({"role": "assistant", "content": pibo.strip()})
+    return msgs, None
+
+
 def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | None, str | None]:
     """(학습 예시, None) 또는 (None, 버린 까닭)."""
     data = first_json(reply)
     msgs = [{"role": "system", "content": SYSTEM}]
+    if req["kind"] == "mixed":
+        turns = data.get("turns") if isinstance(data, dict) else None
+        if not isinstance(turns, list) or not all(isinstance(t, dict) for t in turns):
+            return None, "JSON을 못 읽음" if not isinstance(data, dict) else "turns 모양이 다름"
+        at = {int(k): fn for k, fn in req["calls_at"].items()}
+        if len(turns) != req["turns"] or {k for k, t in enumerate(turns) if t.get("calls")} != set(at):
+            return None, "도구 차례가 계획과 다름"
+        limit = max_len(req)
+        for k, t in enumerate(turns):
+            if k in at:
+                part, why = tool_turn(t, at[k], limit, only=True)
+                if why:
+                    return None, why
+                msgs += part
+                continue
+            if not (isinstance(t.get("user"), str) and t["user"].strip()):
+                return None, "아이 말 없음"
+            if why := pibo_problem(t.get("pibo"), limit):
+                return None, why
+            msgs += [{"role": "user", "content": t["user"].strip()},
+                     {"role": "assistant", "content": t["pibo"].strip()}]
+        return {"kind": "mixed", "tools": True, "grade": req["grade"], "messages": msgs}, None
     if req["kind"] == "chat":
         turns = chat_turns(data, reply)
         if not turns:
@@ -275,35 +461,24 @@ def build_example(req: dict, reply: str, rng: random.Random) -> tuple[dict | Non
                 return None, why
             msgs += [{"role": "user", "content": t["user"].strip()},
                      {"role": "assistant", "content": t["pibo"].strip()}]
-        # 도구 목록이 있어도 그냥 대화일 때는 부르지 않는 걸 배우도록 절반은 도구와 함께
-        ex = {"kind": "chat", "tools": rng.random() < 0.5, "messages": msgs}
+        # 도구 목록이 있어도 그냥 대화일 때는 부르지 않는 걸 배우도록 절반은 도구와 함께.
+        # 도구와 비슷한 이야기(near)는 늘 도구 목록과 함께
+        ex = {"kind": "chat", "tools": True if req.get("near") else rng.random() < 0.5,
+              "messages": msgs}
         if req.get("grade"):
             ex["grade"] = req["grade"]
+        if req.get("near"):
+            ex["near"] = True
         return ex, None
     if not isinstance(data, dict):
         return None, "JSON을 못 읽음"
-    user, calls, result, pibo = (data.get(k) for k in ("user", "calls", "result", "pibo"))
-    if not (isinstance(user, str) and user.strip() and isinstance(calls, list)
-            and 1 <= len(calls) <= 2 and isinstance(result, str)):
-        return None, "도구 예시 모양이 다름"
-    if why := pibo_problem(pibo):
+    part, why = tool_turn(data, req["fn"], max_len(req), only=bool(req.get("grade")))
+    if why:
         return None, why
-    tool_calls = []
-    for c in calls:
-        if not isinstance(c, dict):
-            return None, "도구 예시 모양이 다름"
-        args = c.get("arguments") or {}
-        if (why := check_call(c.get("name"), args)) is not None:
-            return None, f"도구 호출: {why}"
-        tool_calls.append({"type": "function",
-                           "function": {"name": c["name"], "arguments": args}})
-    if req["fn"] not in [c["function"]["name"] for c in tool_calls]:
-        return None, "청한 도구를 안 부름"
-    msgs += [{"role": "user", "content": user.strip()},
-             {"role": "assistant", "content": "", "tool_calls": tool_calls}]
-    msgs += [{"role": "tool", "content": result.strip()} for _ in tool_calls]
-    msgs.append({"role": "assistant", "content": pibo.strip()})
-    return {"kind": "tool", "tools": True, "messages": msgs}, None
+    ex = {"kind": "tool", "tools": True, "messages": msgs + part}
+    if req.get("grade"):
+        ex["grade"] = req["grade"]
+    return ex, None
 
 
 def max_len(example: dict) -> int:

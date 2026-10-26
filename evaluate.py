@@ -5,12 +5,15 @@
     python evaluate.py judge          # 답이 모인 모델 전부 채점
     python evaluate.py report         # results/eval.md
     python evaluate.py ... --set school   # 초·중·고 질문으로 (results-school/)
+    python evaluate.py ... --set tools    # 초·중·고 도구 질문으로 (results-tools/, 채점 없이 셈)
 
 대화: 아이의 첫마디에 대한 대답을 선생 모델이 네 가지로 1~5점 채점합니다. 따로
 선생이 생각을 켜고 틀린 사실과 정설을 얼버무린 대답을 찾습니다 (생각을 끈 채점은
 선생 자신이 데이터에 넣은 것과 같은 실수를 못 잡았습니다).
 도구: 불러야 할 도구와 인자를 맞혔는지(정답률), 그냥 대화인데 도구를 부른 비율
 (잘못 부름)을 셉니다.
+tools 묶음은 초·중·고 학생 말로 첫마디 도구, 이야기하다가 중간에 부탁한 도구, 도구를
+부른 뒤 이어지는 이야기(부르면 안 됨), 도구와 비슷한 말(부르면 안 됨)을 따로 셉니다.
 """
 
 from __future__ import annotations
@@ -33,8 +36,16 @@ MARKS = Path("data/heldout-marks.json")
 #: school은 어린이 채점용 질문의 대화 질문을 같은 자리에서 초·중·고 대화로 바꾸고 (도구
 #: 문제와 그 표시는 그대로), 시스템 글은 지금 것(tools.SYSTEM)으로 묻습니다.
 SETS = {"kids": (Path("results"), None),
-        "school": (Path("results-school"), Path("data/heldout-school.jsonl"))}
+        "school": (Path("results-school"), Path("data/heldout-school.jsonl")),
+        "tools": (Path("results-tools"), None)}
 SCHOOL_CHAT: Path | None = None
+#: tools 묶음의 질문 (make_data.py --tool --mixed --near)과 filter_tools.py가 적은 표시
+TOOL_HELD = Path("data/heldout-school-tools.jsonl")
+TOOL_MARKS = Path("data/heldout-school-tools-marks.json")
+TOOL_SET = False
+#: tools 묶음의 질문 종류
+TOOL_KINDS = {"first": "첫마디 도구 정답률", "mid": "대화 중 도구 정답률",
+              "after": "도구 뒤 잘못 부름", "near": "비슷한 말에 잘못 부름"}
 CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 #: Qwen3.5의 도구 호출: <function=이름> 안에 <parameter=인자>값</parameter>
 FUNC = re.compile(r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL)
@@ -42,11 +53,41 @@ PARAM = re.compile(r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
 
 
 def use_set(name: str) -> None:
-    global RESULTS, SCHOOL_CHAT
+    global RESULTS, SCHOOL_CHAT, TOOL_SET
     RESULTS, SCHOOL_CHAT = SETS[name]
+    TOOL_SET = name == "tools"
+
+
+def tool_questions():
+    """tools 묶음: 파이보가 말하는 차례마다 그때까지의 대화를 묻습니다. kind는 first(도구 예시의
+    첫마디), mid(대화 중 도구를 부탁한 차례), after(도구를 부른 뒤의 이야기 차례),
+    near(도구와 비슷한 이야기). 선생이 억지라고 본 줄은 빼고, 인자가 말로 안 정해지는 줄은
+    도구 이름만 봅니다."""
+    marks = json.loads(TOOL_MARKS.read_text()) if TOOL_MARKS.exists() else {}
+    bad, loose = set(marks.get("bad", [])), set(marks.get("names_only", []))
+    out = []
+    for n, line in enumerate(TOOL_HELD.read_text().splitlines()):
+        if n in bad:
+            continue
+        ex = json.loads(line)
+        msgs, called = ex["messages"], False
+        for j, m in enumerate(msgs):
+            if m["role"] != "assistant" or msgs[j - 1]["role"] != "user":
+                continue
+            calls = [c["function"] for c in m.get("tool_calls") or []]
+            kind = (("first" if ex["kind"] == "tool" else "mid") if calls else
+                    "near" if ex.get("near") else "after" if called else None)
+            if kind:
+                out.append({"kind": kind, "tools": True, "messages": msgs[:j], "calls": calls,
+                            "names_only": n in loose, "reference": m.get("content", ""),
+                            "grade": ex.get("grade")})
+            called = called or bool(calls)
+    return out
 
 
 def questions():
+    if TOOL_SET:
+        return tool_questions()
     school = iter(SCHOOL_CHAT.read_text().splitlines()) if SCHOOL_CHAT else None
     out = []
     for line in HELDOUT.read_text().splitlines():
@@ -110,6 +151,24 @@ def tool_match(got: list[dict], want: list[dict], names_only: bool = False):
     return ok, ok and extra
 
 
+def openai_messages(messages: list[dict]) -> list[dict]:
+    """학습 데이터의 메시지 → OpenAI 형식 (도구 인자는 JSON 글, 호출마다 id): llama-server는
+    인자가 글이 아니면 받지 않습니다. vLLM도 같은 형식을 받아 템플릿에 맞게 되돌립니다."""
+    out, ids = [], []
+    for m in messages:
+        m = dict(m)
+        if m.get("tool_calls"):
+            ids = [f"call_{len(out)}_{k}" for k in range(len(m["tool_calls"]))]
+            m["tool_calls"] = [{"id": i, "type": "function", "function": {
+                "name": c["function"]["name"],
+                "arguments": json.dumps(c["function"].get("arguments") or {}, ensure_ascii=False)}}
+                for i, c in zip(ids, m["tool_calls"], strict=True)]
+        elif m["role"] == "tool" and ids:
+            m["tool_call_id"] = ids.pop(0)
+        out.append(m)
+    return out
+
+
 def say(text: str) -> str:
     """도구 호출과 생각 표시를 뺀, 소리로 나갈 말."""
     text = CALL.sub("", text)
@@ -128,7 +187,7 @@ def gen(model: str, name: str, no_tools: bool):
         if not idx:
             continue
         # 도구 형식이 없는 모델(젬마3)은 도구 없이 묻습니다
-        outs = llm.chat([qs[i]["messages"] for i in idx], params,
+        outs = llm.chat([openai_messages(qs[i]["messages"]) for i in idx], params,
                         tools=TOOLS if with_tools and not no_tools else None,
                         chat_template_kwargs={"enable_thinking": False}, use_tqdm=False)
         for i, o in zip(idx, outs, strict=True):
@@ -155,7 +214,8 @@ def gen_gguf(gguf: str, name: str, kv: str | None = None):
         for n, i in enumerate(order, 1):
             if n % 100 == 0:
                 print(f"{n}/{len(qs)}", flush=True)
-            body = {"messages": qs[i]["messages"], "temperature": 0, "max_tokens": 200}
+            body = {"messages": openai_messages(qs[i]["messages"]), "temperature": 0,
+                    "max_tokens": 200}
             if qs[i]["tools"]:
                 body["tools"] = TOOLS
             try:
@@ -263,7 +323,43 @@ def judge():
             print(f"사실 검사: {f.name}", flush=True)
 
 
+def tool_report() -> str:
+    """tools 묶음의 표: 종류마다 맞힌 비율 (after, near는 도구를 부른 비율이라 낮을수록 좋음)."""
+    qs = questions()
+    head = ["모델", *TOOL_KINDS.values(), "덤으로 더 부름", "도구 형식 오류"]
+    rows = ["| " + " | ".join(head) + " |", "|" + " --- |" * len(head)]
+    for f in sorted(RESULTS.glob("answers-*.json")):
+        answers = json.loads(f.read_text())["answers"]
+        if len(answers) != len(qs):          # 질문이 바뀐 뒤의 옛 답
+            continue
+        got = [parse_calls(a or "") for a in answers]
+
+        def rate(kinds, test, got=got):
+            idx = [i for i, q in enumerate(qs) if q["kind"] in kinds]
+            return f"{sum(test(i) for i in idx) / len(idx):.0%}" if idx else "-"
+
+        def right(i, got=got):
+            return tool_match(got[i], qs[i]["calls"], qs[i]["names_only"])[0]
+
+        cells = [rate({k}, right if k in ("first", "mid") else (lambda i, got=got: bool(got[i])))
+                 for k in TOOL_KINDS]
+        cells.append(rate({"first", "mid"}, lambda i, got=got: len(got[i]) > len(qs[i]["calls"])))
+        cells.append(rate({"first", "mid"}, lambda i, got=got: not got[i] or any(
+            check_call(c["name"], c["arguments"]) for c in got[i])))
+        rows.append(f"| {f.stem.removeprefix('answers-')} | " + " | ".join(cells) + " |")
+    count = {k: sum(q["kind"] == k for q in qs) for k in TOOL_KINDS}
+    text = "\n".join(rows) + "\n\n" + ", ".join(
+        f"{TOOL_KINDS[k]}: 질문 {v}개" for k, v in count.items()) + (
+        ". 도구 뒤·비슷한 말은 도구를 부른 비율이라 낮을수록 좋음. 덤으로 더 부름: 청한 것보다 많이"
+        " 부른 비율 (춤에 덤으로 부른 눈 색은 정답률에서는 빼고 봄).\n")
+    RESULTS.mkdir(exist_ok=True)
+    (RESULTS / "eval.md").write_text(text)
+    return text
+
+
 def report() -> str:
+    if TOOL_SET:
+        return tool_report()
     qs = questions()
     marked = json.loads(MARKS.read_text()) if MARKS.exists() else {}
     bad, loose = set(marked.get("bad", [])), set(marked.get("names_only", []))

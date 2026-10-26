@@ -732,3 +732,229 @@ def test_stop_is_run_without_asking_the_model(monkeypatch):
     monkeypatch.setattr(pibo_chat, "first_move", lambda *a, **k: pytest.fail("모델에 묻지 않아야 함"))
     assert pibo_chat.turn("x", [], "멈춰!", True) == "네, 멈출게요."
     assert ran == [("set_motion", {"name": "stop"})]
+
+
+# ------------------------------------------------------------- 초·중·고 도구 보강
+
+def mixed_reply(req: dict, **change) -> str:
+    """계획(calls_at)대로 쓴 대화 중 도구 답."""
+    calls = {"set_motion": {"name": "stop"}, "eye_on": {"r": 0, "g": 0, "b": 255},
+             "get_weather": {"region": "서울"}}
+    turns = []
+    for k in range(req["turns"]):
+        fn = req["calls_at"].get(str(k))
+        if fn:
+            turns.append({"user": f"부탁 {k}", "calls": [{"name": fn, "arguments": calls.get(fn, {})}],
+                          "result": "완료", "pibo": f"했어요 {k}."})
+        else:
+            turns.append({"user": f"이야기 {k}", "pibo": f"그렇군요 {k}."})
+    for k, v in change.items():
+        turns[int(k[1:])].update(v)
+    return json.dumps({"turns": turns}, ensure_ascii=False)
+
+
+def test_school_tool_requests_are_weighted_varied_and_ask_for_one_tool():
+    import prompts
+
+    reqs = prompts.requests(0, 3000, seed=5, audience="school")
+    fns = [r["fn"] for r in reqs]
+    assert fns.count("set_motion") > fns.count("eye_on") > fns.count("get_battery")
+    assert all(f in fns for f in prompts.BY_NAME)
+    assert all(r["grade"] in prompts.GRADES and "학생" in r["asker"] for r in reqs)
+    assert sum(prompts.STOP_HINT in r["prompt"] for r in reqs) > 100   # 멈추기를 여러 말로
+    assert len({a for r in reqs for a in prompts.ASKS if a in r["prompt"]}) == len(prompts.ASKS)
+    assert all(prompts.ONLY_ASKED in r["prompt"] for r in reqs)
+    # 실패 결과는 날씨·물건 찾기에서만, 8% 안팎
+    assert {r["fn"] for r in reqs if r["fail"]} == {"get_weather", "find_objects"}
+    assert 30 < sum(r["fail"] for r in reqs) < 100
+    r = next(r for r in reqs if r["fn"] == "set_motion")
+    one = json.dumps({"user": "그만 좀 움직여", "calls": [{"name": "set_motion", "arguments":
+                      {"name": "stop"}}], "result": "완료", "pibo": "네, 멈췄어요."}, ensure_ascii=False)
+    ex, why = prompts.build_example(r, one, random.Random(0))
+    assert why is None and ex["grade"] == r["grade"] and ex["kind"] == "tool"
+    extra = json.loads(one)
+    extra["calls"].append({"name": "eye_on", "arguments": {"r": 255, "g": 0, "b": 0}})
+    assert prompts.build_example(r, json.dumps(extra), random.Random(0)) == \
+        (None, "청하지 않은 도구를 덤으로 부름")
+    # 어린이 도구 예시는 예전처럼 둘까지
+    kid = prompts.build_example({"kind": "tool", "fn": "set_motion"}, json.dumps(extra),
+                                random.Random(0))[0]
+    assert kid is not None and "grade" not in kid
+
+
+def test_mixed_conversations_call_a_tool_in_the_middle_and_are_learned():
+    import prompts
+    from train import targets
+
+    reqs = prompts.requests(0, 0, seed=6, audience="school", n_mixed=500)
+    assert all(r["kind"] == "mixed" and "0" not in r["calls_at"] for r in reqs)  # 첫 차례는 이야기
+    assert any(len(r["calls_at"]) == 2 for r in reqs)
+    assert all(len(set(r["calls_at"].values())) == len(r["calls_at"]) for r in reqs)
+    r = next(r for r in reqs if len(r["calls_at"]) == 1 and r["turns"] == 4
+             and r["calls_at"].get("1") in ("set_motion", "eye_on", "get_weather"))
+    ex, why = prompts.build_example(r, mixed_reply(r), random.Random(0))
+    assert why is None and ex["kind"] == "mixed" and ex["tools"] and ex["grade"] == r["grade"]
+    roles = [m["role"] for m in ex["messages"]]
+    assert roles == ["system", "user", "assistant", "user", "assistant", "tool", "assistant",
+                     "user", "assistant", "user", "assistant"]
+    assert ex["messages"][4]["tool_calls"][0]["function"]["name"] == r["calls_at"]["1"]
+    # 계획과 다르면 버림: 도구 차례가 바뀜, 이야기 차례에 도구, 덤으로 눈 색
+    assert prompts.build_example(r, mixed_reply(r, t1={"calls": None}), random.Random(0)) == \
+        (None, "도구 차례가 계획과 다름")
+    assert prompts.build_example(r, mixed_reply(r, t2={"calls": [
+        {"name": "eye_off", "arguments": {}}], "result": "완료"}), random.Random(0))[0] is None
+    if r["calls_at"]["1"] != "eye_on":
+        two = json.loads(mixed_reply(r))
+        two["turns"][1]["calls"].append({"name": "eye_on", "arguments": {"r": 1, "g": 2, "b": 3}})
+        assert prompts.build_example(r, json.dumps(two), random.Random(0))[1] == \
+            "청하지 않은 도구를 덤으로 부름"
+    # 파이보의 차례마다 (도구 호출 차례도) 배움
+    got = list(targets(FakeTok(), ex, 4096))
+    assert None not in got and len(got) == 5
+
+
+def test_near_examples_are_talk_with_the_tool_list():
+    import make_data
+    import prompts
+
+    reqs = prompts.requests(0, 0, seed=7, audience="school", n_near=200)
+    assert all(r["kind"] == "chat" and r.get("near") for r in reqs)
+    assert len({r["topic"] for r in reqs}) == len(prompts.NEAR)
+    reply = json.dumps({"turns": [{"user": "안녕 파이보!", "pibo": "안녕하세요, 반가워요!"}]},
+                       ensure_ascii=False)
+    for seed in range(5):
+        ex = prompts.to_example(reqs[0], reply, random.Random(seed))
+        assert ex["tools"] and ex["near"] and make_data.slot(ex) == "near"
+    assert make_data.slot({"kind": "mixed"}) == "mixed"
+
+
+def test_tool_check_and_fact_check_see_the_tool_turns_of_mixed_talk():
+    import prompts
+    from filter_chat import chat_examples, prompt, rewrite
+    from filter_tools import tool_examples
+
+    r = next(r for r in prompts.requests(0, 0, seed=6, audience="school", n_mixed=200)
+             if r["turns"] == 3 and r["calls_at"] == {"1": "get_weather"})
+    line = json.dumps(prompts.build_example(r, mixed_reply(r, t1={"result": "서울 비 12도"}),
+                                            random.Random(0))[0], ensure_ascii=False)
+    got = list(tool_examples([line]))
+    assert got == [(0, "부탁 1", [{"name": "get_weather", "arguments": {"region": "서울"}}])]
+    [(i, ex, users, pibos)] = list(chat_examples([line]))
+    assert users == ["이야기 0", "부탁 1", "이야기 2"] and pibos == ["그렇군요 0.", "했어요 1.", "그렇군요 2."]
+    text = prompt(ex, users, pibos)
+    assert "(파이보가 도구 get_weather을 쓰고 받은 결과: 서울 비 12도)\n파이보 2: 했어요 1." in text
+    assert "괄호 안은" in text
+    chat = prompts.to_example({"kind": "chat", "grade": "중"}, json.dumps(
+        {"turns": [{"user": "안녕", "pibo": "안녕하세요."}]}, ensure_ascii=False), random.Random(0))
+    plain = prompt(chat, ["안녕"], ["안녕하세요."])
+    assert "괄호 안은" not in plain and "학생: 안녕\n파이보 1: 안녕하세요." in plain
+    out = rewrite([line], {0: {"verdict": "fixed", "after": ["가", "나", "다"]}})
+    msgs = json.loads(out[0])["messages"]
+    assert [m["content"] for m in msgs if m["role"] == "assistant"] == ["가", "", "나", "다"]
+    assert msgs[4]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_merging_drops_greeting_tools_extra_eye_colour_and_repeats(tmp_path):
+    from merge_data import merge
+    from prompts import to_example
+
+    rng = random.Random(0)
+
+    def tool(user, *calls):
+        return json.dumps(to_example({"kind": "tool", "fn": calls[0]["name"]}, json.dumps(
+            {"user": user, "calls": list(calls), "result": "완료", "pibo": "했어요."},
+            ensure_ascii=False), rng), ensure_ascii=False)
+
+    greet = {"name": "set_motion", "arguments": {"name": "greeting"}}
+    eye = {"name": "eye_on", "arguments": {"r": 0, "g": 0, "b": 255}}
+    dance = {"name": "set_motion", "arguments": {"name": "dance1"}}
+    good = [tool("인사해 줘", greet), tool("눈 파랗게 해 줘", eye), tool("파이보 안녕! 손 흔들어 줘", greet)]
+    bad = [tool("파이보야 안녕~", greet), tool("안녕하세요!", greet, eye), tool("춤춰 줘", dance, eye)]
+    chat = json.dumps(to_example({"kind": "chat"}, json.dumps({"turns": [
+        {"user": "안녕", "pibo": "안녕하세요."}]}, ensure_ascii=False), rng), ensure_ascii=False)
+    (tmp_path / "a.jsonl").write_text("\n".join([chat, *good, good[0], *bad]) + "\n")
+    (tmp_path / "b.jsonl").write_text(good[1] + "\n")
+    lines, kept, why = merge([str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")])
+    assert lines == [chat, *good]
+    assert kept == {"chat": 1, "tool": 3}
+    assert why == {"같은 줄이 또 나옴": 2, "인사만 했는데 도구를 부름": 2,
+                   "눈 이야기가 없는데 눈 색을 바꿈": 1}
+
+
+def test_school_tool_questions_are_counted_by_kind(tmp_path, monkeypatch):
+    import evaluate
+    import prompts
+
+    rng = random.Random(0)
+    tool = prompts.build_example({"kind": "tool", "fn": "eye_off", "grade": "중"}, json.dumps(
+        {"user": "눈 꺼", "calls": [{"name": "eye_off", "arguments": {}}], "result": "완료",
+         "pibo": "껐어요."}, ensure_ascii=False), rng)[0]
+    r = next(r for r in prompts.requests(0, 0, seed=6, audience="school", n_mixed=200)
+             if r["turns"] == 3 and r["calls_at"] == {"1": "set_motion"})
+    mixed = prompts.build_example(r, mixed_reply(r), rng)[0]
+    near = prompts.to_example(prompts.requests(0, 0, seed=7, audience="school", n_near=1)[0],
+                              json.dumps({"turns": [{"user": "어제 춤 학원 감", "pibo": "재밌었겠어요."}]},
+                                         ensure_ascii=False), rng)
+    lines = [json.dumps(e, ensure_ascii=False) for e in (tool, mixed, near, tool)]
+    (tmp_path / "held.jsonl").write_text("\n".join(lines) + "\n")
+    (tmp_path / "marks.json").write_text(json.dumps({"bad": [3], "names_only": []}))
+    monkeypatch.setattr(evaluate, "TOOL_HELD", tmp_path / "held.jsonl")
+    monkeypatch.setattr(evaluate, "TOOL_MARKS", tmp_path / "marks.json")
+    monkeypatch.setitem(evaluate.SETS, "tools", (tmp_path / "rt", None))
+    evaluate.use_set("tools")
+    try:
+        qs = evaluate.questions()
+        assert [q["kind"] for q in qs] == ["first", "mid", "after", "near"]   # 억지(3번 줄)는 뺌
+        assert qs[1]["messages"][-1]["content"] == "부탁 1" and len(qs[2]["messages"]) == 8
+        assert qs[1]["calls"] == [{"name": "set_motion", "arguments": {"name": "stop"}}]
+        sent = evaluate.openai_messages(qs[2]["messages"])
+        call = sent[4]["tool_calls"][0]
+        assert call["function"]["arguments"] == '{"name": "stop"}' and call["id"]
+        assert sent[5]["tool_call_id"] == call["id"]
+        assert isinstance(qs[2]["messages"][4]["tool_calls"][0]["function"]["arguments"], dict)
+
+        def calls(*names):
+            return "".join(f'<tool_call>\n{{"name": "{n}", "arguments": {a}}}\n</tool_call>'
+                           for n, a in names)
+
+        stop = ("set_motion", '{"name": "stop"}')
+        (tmp_path / "rt").mkdir()
+        (tmp_path / "rt" / "answers-m.json").write_text(json.dumps({"answers": [
+            calls(("eye_off", "{}")), calls(stop, ("eye_on", '{"r": 1, "g": 1, "b": 1}')),
+            calls(stop), "재밌었겠어요."]}))
+        (tmp_path / "rt" / "answers-old.json").write_text(json.dumps({"answers": ["x"]}))
+        text = evaluate.report()
+    finally:
+        evaluate.use_set("kids")
+    row = next(r for r in text.splitlines() if r.startswith("| m |"))
+    assert row == "| m | 100% | 100% | 100% | 0% | 50% | 0% |"
+    assert "| old |" not in text and "첫마디 도구 정답률: 질문 1개" in text
+    assert (tmp_path / "rt" / "eval.md").exists()
+
+
+def test_school2_student_learns_merged_data_and_school_students_get_tool_questions(tmp_path,
+                                                                                   monkeypatch):
+    import run_all
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    names = [n for n, _, _ in run_all.steps()]
+    steps = {n: (cmd, needs) for n, cmd, needs in run_all.steps()}
+    assert len(names) == len(steps)
+    cmd, needs = steps["data-school-tools"]
+    assert cmd[cmd.index("--mixed") + 1] == "8000" and cmd[cmd.index("--chat") + 1] == "0"
+    assert "--avoid" in steps["data-school-tools-heldout"][0]
+    assert steps["data-school-tools-clean"][1] == ["data-school-tools-check"]
+    assert "--log" in steps["data-school-tools-clean"][0]    # 학교 대화 검사 기록을 덮지 않게
+    assert "--log" in steps["data-school-tools-check"][0]
+    cmd, needs = steps["data-school2"]
+    assert cmd[0] == "merge_data.py" and set(needs) == {"data-school-clean", "data-school-tools-clean"}
+    cmd, needs = steps["train-qwen3.5-0.8b-school2"]
+    assert needs == ["data-school2"] and "data/train-school2.jsonl" in cmd and "Qwen/Qwen3.5-0.8B" in cmd
+    assert names.index("data-school2") < names.index("train-qwen3.5-0.8b-school2") \
+        < names.index("train-qwen3-0.6b-school")
+    for st in ("qwen3.5-0.8b-school2", "qwen3.5-0.8b-school", "qwen3-0.6b-school"):
+        cmd, needs = steps[f"eval-tools-{st}-small-Q4_K_M"]
+        assert cmd[-2:] == ["--set", "tools"] and "data-school-tools-check" in needs
+        assert f"out/pibo-{st}-small-Q4_K_M.gguf" in cmd
+    assert "eval-tools-qwen3-0.6b-small-Q4_K_M" not in steps   # 어린이 학생은 아님
+    assert not any(n.startswith("judge") and "tools" in n for n in names)
