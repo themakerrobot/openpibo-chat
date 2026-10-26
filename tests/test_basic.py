@@ -958,3 +958,50 @@ def test_school2_student_learns_merged_data_and_school_students_get_tool_questio
         assert f"out/pibo-{st}-small-Q4_K_M.gguf" in cmd
     assert "eval-tools-qwen3-0.6b-small-Q4_K_M" not in steps   # 어린이 학생은 아님
     assert not any(n.startswith("judge") and "tools" in n for n in names)
+
+
+def test_resume_skips_a_checkpoint_cut_off_while_saving(tmp_path):
+    from train import last_checkpoint
+
+    assert last_checkpoint(tmp_path) is None
+    for n, whole in ((500, True), (1000, True), (1500, False)):
+        c = tmp_path / f"checkpoint-{n}"
+        c.mkdir()
+        (c / "model.safetensors").touch()
+        if whole:
+            (c / "optimizer.pt").touch()
+            (c / "trainer_state.json").touch()
+    assert last_checkpoint(tmp_path) == str(tmp_path / "checkpoint-1000")
+
+
+def test_steps_picked_with_first_run_first_and_late_answers_are_judged(tmp_path, monkeypatch):
+    import run_all
+
+    ran = []
+    plan = [("data", [], []), ("train-new", [], ["data"]), ("train-old", [], []),
+            ("eval-old", [], ["train-old"]), ("eval-new", [], ["train-new"]),
+            ("judge-school", [], [])]
+    results = tmp_path / "results-school"
+    results.mkdir()
+
+    def run_step(name, cmd, stall):
+        ran.append(name)
+        who = name.removeprefix("eval-")
+        if name.startswith("eval-"):
+            (results / f"answers-{who}.json").write_text("{}")
+        if name == "judge-school":
+            for f in results.glob("answers-*.json"):
+                for k in ("scores-", "facts-"):
+                    f.with_name(f.name.replace("answers-", k)).write_text("{}")
+        return True
+
+    monkeypatch.setattr(run_all, "HERE", tmp_path)
+    monkeypatch.setattr(run_all, "steps", lambda: plan)
+    monkeypatch.setattr(run_all, "run_step", run_step)
+    monkeypatch.setattr(run_all, "report", lambda: (tmp_path / "REPORT.md").write_text(""))
+    monkeypatch.setattr(run_all.time, "sleep", lambda s: pytest.fail("기다리면 안 됨"))
+    monkeypatch.setattr(sys, "argv", ["run_all.py", "--first", "old|judge"])
+    run_all.main()
+    assert ran == ["train-old", "eval-old", "judge-school", "data", "train-new", "eval-new",
+                   "judge-school"]
+    assert not run_all.unscored(str(results))

@@ -2,6 +2,7 @@
 
     python run_all.py            # 다시 돌리면 끝난 단계는 건너뛰고 이어서
     python run_all.py --status
+    python run_all.py --first 'qwen3\.5-0\.8b-school(-|$)|judge-school'   # 이 단계들부터
 
 단계마다 로그는 logs/<단계>.log, 끝나면 state/<단계>.done. 로그가
 --stall 초 동안 멈추면 그 단계를 멈추고 다시 합니다 (세 번까지). 실패한
@@ -392,6 +393,8 @@ def main():
     p.add_argument("--status", action="store_true")
     p.add_argument("--stall", type=int, default=2 * 3600)
     p.add_argument("--tries", type=int, default=4)
+    p.add_argument("--first", metavar="REGEX",
+                   help="이름이 맞는 단계를 먼저 (재부팅 등으로 끊긴 학습을 새 단계보다 먼저 끝낼 때)")
     args = p.parse_args()
     if args.status:
         report()
@@ -404,8 +407,20 @@ def main():
         raise SystemExit("이미 돌고 있어요") from None
     state = HERE / "state"
     state.mkdir(exist_ok=True)
+    def ordered():
+        s = steps()
+        if not args.first:
+            return s
+        pick = re.compile(args.first)
+        return [x for x in s if pick.search(x[0])] + [x for x in s if not pick.search(x[0])]
+
+    def left() -> list[str]:
+        """아직 끝나지 않은 단계 (채점 안 한 답이 남은 채점 단계도)."""
+        return [n for n, _, _ in steps() if not (state / f"{n}.done").exists()
+                or (n in JUDGES and unscored(JUDGES[n]))]
+
     for rnd in range(2):
-        for name, cmd, needs in steps():
+        for name, cmd, needs in ordered():
             done, failed = state / f"{name}.done", state / f"{name}.failed"
             if name in JUDGES and unscored(JUDGES[name]):
                 done.unlink(missing_ok=True)
@@ -425,11 +440,15 @@ def main():
                 failed.touch()
                 print(f"{name}: {args.tries}번 실패, 다음으로", flush=True)
             report()
-        if all((state / f"{n}.done").exists() for n, _, _ in steps()):
+        if not left():
             break
+        # 실패한 단계가 있으면 30분 뒤, 순서 때문에 못 한 단계(--first로 앞당긴 단계가 기다린
+        # 단계, 나중에 생긴 답의 채점)만 남았으면 바로 한 번 더
         if rnd == 0:
-            print("실패한 단계를 30분 뒤 한 번 더", flush=True)
-            time.sleep(1800)
+            failed_any = any((state / f"{n}.failed").exists() for n in left())
+            print("남은 단계를 " + ("30분 뒤 " if failed_any else "") + "한 번 더", flush=True)
+            if failed_any:
+                time.sleep(1800)
     report()
     print((HERE / "REPORT.md").read_text())
 

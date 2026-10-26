@@ -136,6 +136,14 @@ def kd_loss(logits, labels, kd_ids, kd_lp, weight: float):
     return tok.sum(), mask.sum()
 
 
+def last_checkpoint(out: Path) -> str | None:
+    """끝까지 저장된 마지막 체크포인트: 저장하던 중에 꺼졌으면(재부팅 등) 그 앞의 것."""
+    whole = [c for c in out.glob("checkpoint-*")
+             if c.name.split("-")[-1].isdigit() and (c / "trainer_state.json").exists()
+             and (c / "optimizer.pt").exists() and any(c.glob("*.safetensors"))]
+    return str(max(whole, key=lambda c: int(c.name.split("-")[-1]))) if whole else None
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True)
@@ -148,6 +156,7 @@ def main():
     p.add_argument("--max-len", type=int, default=1536)
     p.add_argument("--kd", help="distill.py가 만든 선생 확률 폴더 (증류)")
     p.add_argument("--kd-weight", type=float, default=0.5)
+    p.add_argument("--allow-cpu", action="store_true", help="GPU 없이 (시험용, 아주 느림)")
     args = p.parse_args()
 
     import torch
@@ -157,6 +166,10 @@ def main():
     if (out / "final" / "config.json").exists():
         print(f"{out / 'final'}: 이미 끝남", flush=True)
         return
+    if not torch.cuda.is_available() and not args.allow_cpu:
+        # 드라이버 업데이트 뒤 재부팅 전후로 GPU가 안 보일 때 CPU로 몇십 배 느리게 돌지 않게
+        raise SystemExit("GPU가 안 보여요: nvidia-smi를 확인하세요 (드라이버 업데이트 뒤면 "
+                         "재부팅이나 드라이버 재설치가 필요할 수 있어요)")
     tok = AutoTokenizer.from_pretrained(args.base)
     rows = build_rows(tok, args.data, args.max_len)
 
@@ -236,10 +249,12 @@ def main():
             seed=0, remove_unused_columns=False)
         trainer = (KDTrainer if kd_k else Trainer)(model=model, args=targs, train_dataset=rows,
                                                    data_collator=collate)
-        resume = any(out.glob("checkpoint-*"))
+        resume = last_checkpoint(out)
+        if resume:
+            print(f"{resume}에서 이어서", flush=True)
         print(f"배치 {batch} × 누적 {accum} (한 걸음에 {batch * accum}개)", flush=True)
         try:
-            trainer.train(resume_from_checkpoint=resume or None)
+            trainer.train(resume_from_checkpoint=resume)
             break
         except torch.OutOfMemoryError:
             if batch == 1:
