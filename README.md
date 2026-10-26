@@ -10,23 +10,23 @@
 
 ## 데이터와 학습
 
-모든 데이터는 5090 PC의 선생 모델 Qwen3-32B-AWQ(Apache-2.0, 안 뜨면 14B-AWQ, 8B)가 쓰고, 같은
-선생이 생각을 켜고 사실·한국어·존댓말을 다시 봅니다. 학년 묶음(초저·초고·중·고)을 고르게,
-대답은 초등 70자·중고 120자 안쪽입니다.
+원본 대화(`data/source.jsonl`, 채점용 `data/source-heldout.jsonl`)는 PC에만 두고 git에 올리지 않습니다.
+한 줄에 `{"id", "source", "topic", "turns": [{"user": 학생 말, "other": 상대 말}]}`입니다.
+학생 말은 거의 그대로 두고, 상대의 말만 선생 모델(5090 PC의 Qwen3-32B-AWQ, Apache-2.0)이 파이보
+말투로 바꿔 씁니다.
 
 | 단계 | 파일 | 내용 |
 | --- | --- | --- |
-| 친구 대화 6만 | `make_data.py --chat`, `prompts.py` | 학생 주제 200여 개 × 장면 22 × 말 꺼내는 방식 14 × 흐름. 1~4번 주고받기 |
-| 대화 이어 가기 1만 2천 | `make_data.py --lead` | 일상 주제로 4~8번 주고받기. 이어 묻는 말에 구체적으로, 같은 질문을 바꿔 물으면 다른 말로, 짧은 대답엔 쉬운 질문·이야깃거리·놀이로, 기분·고민·반대 의견·화제 전환·추천·계획 |
-| 영어 9천 | `make_data.py --english --learn` | 학생이 영어로 말하면 쉬운 영어로 (틀린 영어는 맞는 표현으로 다시 말해 줌), 한국어로 묻는 영어 공부는 한국어로 설명 |
-| 사실·존댓말 검사 | `filter_chat.py` | 틀린 사실, 정설을 얼버무린 말, 어색한 한국어, 되풀이, 반말을 고쳐 쓰거나 뺌 |
-| 합치기 | `merge_data.py`, `devices.py` | 똑같은 파이보 대답은 3번까지만. 25%는 이름을 다른 이름(더메이커, 파이브레인 …)으로 바꾸고(조사도 받침에 맞게) 일부는 기기 소개를 시스템 글에. 시스템 글의 이름·소개를 보고 하는 자기소개 3천 |
+| 파이보 말로 바꿔 쓰기 | `rewrite.py`, `prompts.py` | 선생이 생각을 켜고 상대 말을 열네 살 친구 같은 짧은 존댓말로. 학생과 나눌 만하지 않은 대화는 선생이 뺌. 기호, 다른 나라 글자, 반말, 학생 말 되받아 읊기는 글자로 걸러 뺌 |
+| 검사 | `rewrite.py` | 선생이 다시 읽고 자연스러움·알맞음·친구 말투 4점 미만, 저급한 말, 지어낸 사람 경험, 틀린 사실, 안전 문제가 있으면 뺌 (고치지 않음) |
+| 합치기 | `merge_data.py`, `devices.py` | 똑같은 파이보 대답은 3번까지만. 25%는 이름을 다른 이름(더메이커, 파이브레인 …)으로, 일부는 기기 소개를 시스템 글에. 자기소개 3천 |
 | 직접 쓴 대화 | `data/extra.txt` | 꼭 이렇게 말했으면 하는 대화(이름, 만든 곳 등). 학습 때 세 번씩 더 봄 |
 | 학습 | `train.py` | Qwen3.5-0.8B 전체 미세조정, 파이보의 대답에만 손실. 끊기면 체크포인트부터 이어서 |
-| 어휘 줄이기 | `prune_vocab.py` | 24만 → 약 3만 토큰. 한글 토큰은 모두, 그 밖에는 학습 데이터에 나온 토큰과 흔한 영어 조각만 |
+| 어휘 줄이기 | `prune_vocab.py` | 24만 → 약 3만 토큰 |
 | GGUF | `export.py` | 학습 데이터로 imatrix를 재서 Q4_K_M. 템플릿은 늘 생각 없이, 시스템 글이 없으면 더메이커로 |
+| 채점 | `score.py` | 학습에 안 쓴 대화로 최종 모델과 예전 모델을 같은 설정으로 묻고 선생이 매김 (`results/score.md`) |
 
-## 5090 PC에서 한 번에
+## 5090 PC에서
 
 ```bash
 git clone https://github.com/themakerrobot/openpibo-chat ~/openpibo-chat && cd ~/openpibo-chat
@@ -34,13 +34,14 @@ python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 git clone --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp
 pip install ~/llama.cpp/gguf-py && cmake -S ~/llama.cpp -B ~/llama.cpp/build -DGGML_NATIVE=ON \
   && cmake --build ~/llama.cpp/build -j --target llama-quantize llama-server llama-imatrix
-nohup flock ~/longrun/.lock .venv/bin/python run_all.py >> driver.log 2>&1 &   # 끊겨도 다시 돌리면 이어서
-.venv/bin/python run_all.py --status   # 진행 상황 (REPORT.md)
-.venv/bin/python show.py 20 lead data/lead-clean.jsonl   # 만든 데이터 훑어보기
+# data/source.jsonl, data/source-heldout.jsonl을 둔 뒤
+.venv/bin/python rewrite.py --data data/source.jsonl --out data/try.jsonl --limit 200   # 먼저 200개
+mkdir -p samples && .venv/bin/python show.py 200 all data/try.jsonl > samples/try.txt  # 사람이 읽어 보기
+nohup flock ~/longrun/.lock .venv/bin/python run_all.py >> driver.log 2>&1 &             # 괜찮으면 전체
+.venv/bin/python run_all.py --status
 ```
 
-로그는 `logs/<단계>.log`, 기기로 보낼 파일은 `out/themaker-0.8b-Q4_K_M.gguf`,
-그 파일로 몇 가지 물어본 대답은 `out/themaker-0.8b-Q4_K_M-check.json`.
+로그는 `logs/<단계>.log`, 기기로 보낼 파일은 `out/themaker-0.8b-Q4_K_M.gguf`, 채점은 `results/score.md`.
 
 ## 기기에서 (파이보, 라즈베리파이 4B 2GB)
 

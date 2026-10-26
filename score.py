@@ -5,9 +5,10 @@
     python score.py judge      # 모은 답을 선생 모델이 채점, 표를 씀
     python score.py report     # 표만 다시
 
-질문 (학습에 쓰지 않은 것):
-- 첫마디: data/heldout-school.jsonl의 학생 첫마디 400개
-- 이어지는 대화: data/heldout-lead.jsonl의 대화 200개를 중간에서 끊고, 앞 대화를 붙여 물음
+질문 (학습에 쓰지 않은 것): data/heldout.jsonl (채점용 원본 data/source-heldout.jsonl을 학습 데이터와
+같은 방법으로 바꿔 쓴 것, rewrite.py)
+- 첫마디: 대화마다 학생의 첫마디
+- 이어지는 대화: 학생 말이 세 번 이상인 대화를 중간에서 끊고, 앞 대화를 붙여 물음
 
 GGUF를 PC의 llama-server로, 파이보 앱과 같은 대답 설정(pibo_chat.SAMPLING, seed 고정)으로
 묻습니다. 선생 모델이 생각을 켜고 대답마다 매깁니다: 한국어·존댓말, 알맞음(말뜻과 흐름에
@@ -19,17 +20,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import statistics
 from collections import Counter
 from pathlib import Path
 
-from filter_chat import BANMAL
-from prompts import after_think, first_json, pibo_problem, style_for
+from prompts import PIBO_STYLE, grams, pibo_problem, same
+from teacher import after_think, first_json
 
 RESULTS = Path("results")
-SCHOOL = Path("data/heldout-school.jsonl")
-LEAD = Path("data/heldout-lead.jsonl")
+HELDOUT = Path("data/heldout.jsonl")
 
 JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마지막 파이보의 대답을 채점합니다.
 {style}
@@ -38,7 +37,7 @@ JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마
 파이보(채점할 대답): {reply}
 
 마지막 대답을 판단해 JSON 하나로만 답하세요.
-- korean: 한국어가 자연스럽고 존댓말을 지켰는가 (1~5, 학생이 영어로 말했으면 자연스러운 영어인가)
+- korean: 한국어가 자연스럽고 존댓말을 지켰는가 (1~5)
 - fit: 학생 말뜻과 앞 대화 흐름에 맞고, 물은 것에 구체적으로 답했는가 (1~5)
 - short: 짧고 소리로 읽기 좋은가 (1~5)
 - engage: 친구처럼 반응하고 대화를 이어 가는가 (1~5)
@@ -48,21 +47,16 @@ JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마
 
 
 def questions() -> list[dict]:
-    """[{"set": "첫마디"|"이어지는 대화", "messages": 물을 메시지들, "grade", "lang"}]."""
-    out = []
-    for line in SCHOOL.read_text().splitlines():
+    """[{"set": "첫마디"|"이어지는 대화", "messages": 물을 메시지들}]."""
+    out, later = [], []
+    for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
-        out.append({"set": "첫마디", "messages": ex["messages"][:2], "grade": ex.get("grade"),
-                    "lang": ex.get("lang")})
-    for line in LEAD.read_text().splitlines():
-        ex = json.loads(line)
+        out.append({"set": "첫마디", "messages": ex["messages"][:2]})
         users = [j for j, m in enumerate(ex["messages"]) if m["role"] == "user"]
-        if len(users) < 3:
-            continue
-        cut = users[(len(users) + 1) // 2]      # 가운데쯤의 학생 말까지 (앞 대화는 그대로)
-        out.append({"set": "이어지는 대화", "messages": ex["messages"][:cut + 1],
-                    "grade": ex.get("grade"), "lang": ex.get("lang")})
-    return out
+        if len(users) >= 3:
+            cut = users[(len(users) + 1) // 2]      # 가운데쯤의 학생 말까지 (앞 대화는 그대로)
+            later.append({"set": "이어지는 대화", "messages": ex["messages"][:cut + 1]})
+    return out + later
 
 
 def answer(gguf: str, name: str) -> None:
@@ -104,7 +98,7 @@ def marks(text: str) -> dict:
 
 
 def judge() -> None:
-    from make_data import load_teacher, thinking_params
+    from teacher import load_teacher, thinking_params
 
     qs = questions()
     llm = None
@@ -114,7 +108,7 @@ def judge() -> None:
             continue
         answers = json.loads(f.read_text())["answers"]
         llm = llm or load_teacher()
-        convs = [[{"role": "user", "content": JUDGE.format(style=style_for(q), dialog=dialog(q),
+        convs = [[{"role": "user", "content": JUDGE.format(style=PIBO_STYLE, dialog=dialog(q),
                                                            reply=a or "(말 없음)")}]
                  for q, a in zip(qs, answers, strict=True)]
         outs = llm.chat(convs, thinking_params(1536), chat_template_kwargs={"enable_thinking": True},
@@ -124,15 +118,8 @@ def judge() -> None:
     print(report())
 
 
-def same(text: str) -> str:
-    return re.sub(r"[\s.,!?~…'\"]", "", text)
-
-
 def echo(q: dict, reply: str) -> bool:
     """앞 대화의 파이보 말과 글자 덩어리(3글자)가 절반 넘게 겹치는지."""
-    def grams(t):
-        t = same(t)
-        return {t[i:i + 3] for i in range(len(t) - 2)}
     mine = grams(reply)
     return any(mine and len(mine & grams(m["content"])) / len(mine) > 0.5
                for m in q["messages"] if m["role"] == "assistant")
@@ -167,8 +154,7 @@ def report() -> str:
             shapes = Counter(same(answers[i]) for i in idx)
             dup = sum(shapes[same(answers[i])] > 1 for i in idx) / len(idx)
             echoed = sum(echo(qs[i], answers[i]) for i in idx) / len(idx)
-            bad = sum(bool(pibo_problem(answers[i], 400)) or bool(BANMAL.search(answers[i]))
-                      for i in idx) / len(idx)
+            bad = sum(bool(pibo_problem(answers[i], 400)) for i in idx) / len(idx)
             length = statistics.mean(len(answers[i]) for i in idx)
             rows.append(f"| {name} | {which} ({len(idx)}) | {total} | {' | '.join(parts)} | "
                         f"{rate('wrong')} | {rate('repeat')} | {echoed:.0%} | {dup:.0%} | {bad:.0%} | "

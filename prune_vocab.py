@@ -1,7 +1,7 @@
 """어휘 줄이기: 파이보가 쓰지 않는 토큰을 빼서 임베딩(=출력층)을 줄입니다.
 
-    python prune_vocab.py --model runs/qwen3-0.6b-school/final \\
-        --out runs/qwen3-0.6b-school/small --data data/train-school.jsonl --check data/heldout-school.jsonl
+    python prune_vocab.py --model runs/themaker-0.8b/final \\
+        --out runs/themaker-0.8b/small --data data/train-themaker.jsonl --check data/heldout.jsonl
 
 Qwen3-0.6B는 어휘가 15만, Qwen3.5-0.8B는 25만이라 입력·출력이 함께 쓰는 임베딩이
 Q4_K_M 파일의 1/3~2/5입니다 (122MiB, 199MiB). 출력층은 토큰마다 전부 읽으므로 속도에도

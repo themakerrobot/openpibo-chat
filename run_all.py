@@ -1,4 +1,5 @@
-"""최종 대화 모델(themaker) 한 번에: 데이터 → 검사 → 합치기 → Qwen3.5-0.8B 학습 → 어휘 줄이기 → Q4_K_M.
+"""최종 대화 모델(themaker) 한 번에: 원본 대화 → 파이보 말로 바꿔 쓰기·검사 → 합치기 →
+Qwen3.5-0.8B 학습 → 어휘 줄이기 → Q4_K_M → 채점.
 
     python run_all.py            # 다시 돌리면 끝난 단계는 건너뛰고 이어서
     python run_all.py --status
@@ -38,27 +39,13 @@ def steps():
     """(단계 이름, 명령, 먼저 끝나야 하는 단계들)."""
     run = f"runs/{NAME}"
     return [
-        # 초·중·고 친구 대화 6만 개 (학년 고르게, 초등 70자·중고 120자) → 사실·존댓말 검사
-        ("data-school", ["make_data.py", "--out", "data/school.jsonl", "--chat", "60000",
-                         "--seed", "1"], []),
-        ("data-school-clean", ["filter_chat.py", "--data", "data/school.jsonl",
-                               "--out", "data/train-school.jsonl"], ["data-school"]),
-        # 영어 대화 6천 (학생이 영어로 말하면 쉬운 영어로) + 한국어로 묻는 영어 공부 3천
-        ("data-english", ["make_data.py", "--out", "data/english.jsonl", "--english", "6000",
-                          "--learn", "3000", "--seed", "3"], []),
-        ("data-english-clean", ["filter_chat.py", "--data", "data/english.jsonl",
-                                "--out", "data/english-clean.jsonl",
-                                "--log", "data/chat-check-english.jsonl"], ["data-english"]),
-        # 파이보가 대화를 이어 가는 일상 대화 4~8번 주고받기 1만 2천 개
-        ("data-lead", ["make_data.py", "--out", "data/lead.jsonl", "--lead", "12000",
-                       "--seed", "4"], []),
-        ("data-lead-clean", ["filter_chat.py", "--data", "data/lead.jsonl",
-                             "--out", "data/lead-clean.jsonl",
-                             "--log", "data/chat-check-lead.jsonl"], ["data-lead"]),
-        # 합치기: 대화만, 같은 대답 줄이기, 기기 이름·소개·자기소개 (merge_data.py, devices.py)
-        ("data-themaker", ["merge_data.py", "--out", DATA, "data/train-school.jsonl",
-                           "data/english-clean.jsonl", "data/lead-clean.jsonl"],
-         ["data-school-clean", "data-english-clean", "data-lead-clean"]),
+        # 원본 대화(data/source.jsonl, 채점용 data/source-heldout.jsonl: PC에만 있음)의 상대 말을
+        # 선생이 파이보 말투로 바꿔 쓰고, 다시 검사해 좋은 것만
+        ("data-pibo", ["rewrite.py", "--data", "data/source.jsonl", "--out", "data/pibo.jsonl"], []),
+        ("data-heldout", ["rewrite.py", "--data", "data/source-heldout.jsonl",
+                          "--out", "data/heldout.jsonl"], []),
+        # 합치기: 같은 대답 줄이기, 기기 이름·소개·자기소개 (merge_data.py, devices.py)
+        ("data-themaker", ["merge_data.py", "--out", DATA, "data/pibo.jsonl"], ["data-pibo"]),
         ("train", ["train.py", "--base", BASE, "--data", DATA, "--out", run, "--lr", "2e-5",
                    "--batch", "2", "--accum", "16"], ["data-themaker"]),
         # 어휘 24만 → 약 3만 (한글·학습 데이터에 나온 토큰은 그대로): Q4_K_M 505 → 약 323MiB
@@ -67,14 +54,12 @@ def steps():
         # 학습 데이터로 imatrix를 재서 Q4_K_M
         ("gguf", ["export.py", "--model", f"{run}/small", "--name", NAME, "--quant", "Q4_K_M",
                   "--imatrix", DATA], ["small"]),
-        # 채점: 학습에 안 쓴 질문(첫마디 400, 이어지는 대화 200)으로 최종 모델과 예전 모델
-        # (baseline/before-Q4_K_M.gguf, 없으면 건너뜀)을 같은 설정으로 묻고 선생이 매김
-        ("data-lead-heldout", ["make_data.py", "--out", "data/heldout-lead.jsonl", "--lead", "200",
-                               "--seed", "997", "--avoid", "data/lead.jsonl"], ["data-lead"]),
+        # 채점: 학습에 안 쓴 대화로 최종 모델과 예전 모델(baseline/before-Q4_K_M.gguf, 없으면
+        # 건너뜀)을 같은 설정으로 묻고 선생이 매김
         ("score-before", ["score.py", "answer", "--gguf", BEFORE, "--name", "before"],
-         ["data-lead-heldout"]),
+         ["data-heldout"]),
         ("score-themaker", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker"],
-         ["gguf", "data-lead-heldout"]),
+         ["gguf", "data-heldout"]),
         ("score-judge", ["score.py", "judge"], ["score-before", "score-themaker"]),
     ]
 

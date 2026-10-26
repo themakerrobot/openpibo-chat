@@ -1,7 +1,6 @@
 """최종 대화 모델(themaker) 만들기와 파이보 앱의 시험. GPU·선생 모델 없이 돕니다."""
 
 import json
-import random
 import subprocess
 import sys
 from pathlib import Path
@@ -34,174 +33,162 @@ class FakeTok:
         return {"input_ids": [ord(c) for c in text]}
 
 
-def chat_reply(*turns) -> str:
-    return json.dumps({"turns": [{"user": u, "pibo": p} for u, p in turns]}, ensure_ascii=False)
+def chat_line(*turns, **extra) -> str:
+    from prompts import to_messages
 
-
-def chat_line(*turns, **req) -> str:
-    from prompts import to_example
-
-    return json.dumps(to_example({"kind": "chat", **req}, chat_reply(*turns), random.Random(0)),
+    return json.dumps({"kind": "chat", **extra,
+                       "messages": to_messages([{"user": u, "pibo": p} for u, p in turns])},
                       ensure_ascii=False)
 
 
-# ------------------------------------------------------------- 데이터 만들기
+# ------------------------------------------------------------- 파이보 말로 바꿔 쓰기·검사
 
-def test_teacher_replies_become_dialogs_or_are_dropped_with_a_reason():
-    from prompts import build_example, to_example
-
-    rng = random.Random(0)
-    req = {"kind": "chat", "grade": "초저"}
-    good = '```json\n{"turns": [{"user": "공룡 어디 갔어?", "pibo": "아주 오래전에 사라졌어요."}]}\n```'
-    ex = to_example(req, good, rng)
-    assert ex["messages"][0]["content"] == SYSTEM and ex["grade"] == "초저"
-    assert [m["role"] for m in ex["messages"]] == ["system", "user", "assistant"]
-    assert build_example(req, "글") == (None, "JSON을 못 읽음")
-    assert build_example(req, chat_reply(("안녕", "안녕하세요 😀")))[1] == "파이보 말에 기호 '😀'"
-    assert build_example(req, chat_reply(("안녕", "좋아요~")))[1] == "파이보 말에 기호 '~'"
-    assert build_example(req, chat_reply(("안녕", "가" * 121)))[1] == "파이보 말이 120자 넘음"
-    assert build_example(req, chat_reply(("hi", "Pibo: Hi!")))[1] == "파이보 말에 '파이보:'"
+SRC = {"id": "a:1", "source": "a", "topic": "반려동물",
+       "turns": [{"user": "우리 강아지가 오늘 산책하다가 넘어졌어", "other": "헐 괜찮아? 다친 데는 없어?"},
+                 {"user": "응 괜찮아 근데 놀랐어", "other": "나도 놀랐겠다"}]}
 
 
-def test_teacher_turns_written_one_side_at_a_time_are_paired():
-    from prompts import build_example
-
-    req = {"kind": "chat", "grade": "중"}
-    split = ('{"turns": [{"user": "숙제 많아서 힘들어..."}, {"pibo": "많이 힘들겠어요. 나눠서 해 봐요."}, '
-             '{"user": "응 해볼게"}, {"pibo": "좋아요, 응원할게요."}, {"user": "그나저나')
-    ex, why = build_example(req, split)
-    assert why is None
-    assert [m["content"] for m in ex["messages"][1:]] == [
-        "숙제 많아서 힘들어...", "많이 힘들겠어요. 나눠서 해 봐요.", "응 해볼게", "좋아요, 응원할게요."]
-    assert build_example(req, '{"turns": [{"pibo": "안녕"}, {"user": "응"}]}')[0] is None
+def rewritten(*pairs_, ok=True):
+    return json.dumps({"ok": ok, "turns": [{"user": u, "pibo": p} for u, p in pairs_]},
+                      ensure_ascii=False)
 
 
-def test_requests_cover_every_grade_and_kind_with_everyday_topics():
-    import make_data
-    import prompts
+def test_rewritten_pibo_words_are_checked_letter_by_letter():
+    from prompts import decide_rewrite, rewrite_prompt
 
-    reqs = prompts.requests(800, seed=1, n_en=200, n_learn=200, n_lead=800)
-    kinds = [make_data.slot(r) for r in reqs]
-    assert {k: kinds.count(k) for k in set(kinds)} == {"chat": 800, "en": 200, "learn": 200, "lead": 800}
-    for kind in ("chat", "lead"):
-        grades = [r["grade"] for r in reqs if make_data.slot(r) == kind]
-        assert all(len(grades) * 0.18 < grades.count(g) < len(grades) * 0.32 for g in prompts.GRADES)
-    assert not any(r["topic"] in prompts.HIGH and r["grade"] != "고" for r in reqs if "topic" in r)
-    assert not any(r["topic"] in prompts.OLDER and r["grade"] == "초저" for r in reqs if "topic" in r)
-    lead = [r for r in reqs if r.get("lead")]
-    assert all(r["topic"] in prompts.TALK for r in lead)                 # 일상 주제만
-    assert all(prompts.LEAD_RULES in r["prompt"] for r in lead)
-    assert sum("구체적인 예나" in r["prompt"] for r in lead) > 100          # 이어 묻기가 가장 많음
-    assert len({f for f, _ in prompts.LEAD_FLOWS if any(f in r["prompt"] for r in lead)}) == \
-        len(prompts.LEAD_FLOWS)
-    high = next(r for r in reqs if r.get("grade") == "고" and make_data.slot(r) == "chat")
-    assert "120자" in high["prompt"] and "70자" in next(
-        r for r in reqs if r.get("grade") == "초저" and make_data.slot(r) == "chat")["prompt"]
-    assert not any("도구" in r["prompt"] or "불빛을 켜지" in r["prompt"] for r in reqs)
-
-
-def test_lengths_follow_the_grade_and_english_gets_more_room():
-    from prompts import max_len, style_for, to_example
-
-    long = ("수행평가 때문에 걱정이 많군요. 오늘 할 일을 작게 나눠서 하나씩 해 보면 훨씬 덜 막막할 거예요. "
-            "어떤 과목이 제일 걱정돼요? 오늘 저녁에 한 가지만 먼저 끝내 보고, 내일 다시 같이 계획을 세워 봐요. 할 수 있어요!")
-    assert 120 < len(long) <= 160
-    reply = chat_reply(("수행평가 망할 듯", long))
-    assert to_example({"kind": "chat", "grade": "고"}, reply, random.Random(0)) is not None
-    assert to_example({"kind": "chat", "grade": "초저"}, reply, random.Random(0)) is None
-    assert max_len({"grade": "고", "lang": "en"}) == 220 and max_len({"grade": "초저", "lang": "en"}) == 130
-    assert "영어 대화" in style_for({"grade": "중", "lang": "en"})
-    assert "설명은 한국어로" in style_for({"grade": "중", "lang": "learn"})
-    assert "고등학생에게" in style_for({"grade": "고"})
+    text = rewrite_prompt(SRC)
+    assert "A: 우리 강아지가 오늘 산책하다가 넘어졌어\nB: 헐 괜찮아? 다친 데는 없어?" in text
+    assert "열네 살 친구" in text and "주제: 반려동물" in text
+    u1, u2 = SRC["turns"][0]["user"], SRC["turns"][1]["user"]
+    good = rewritten((u1, "어머, 많이 놀랐겠어요. 강아지 다친 데는 없어요?"), (u2, "다행이에요. 다음엔 천천히 걸어 봐요."))
+    turns, why = decide_rewrite("<think>음</think>" + good, SRC)
+    assert why is None and len(turns) == 2
+    assert decide_rewrite(rewritten((u1, "다쳤어요?")), SRC)[0] is not None          # 앞만 남겨도 됨
+    cases = {
+        '{"ok": false, "why": "어른 이야기"}': "학생 대화가 아님: 어른 이야기",
+        "글": "선생의 답을 못 읽음",
+        rewritten((u1, "괜찮아요?"), (u2, "다행이에요."), ("또", "네.")): "주고받기 수가 맞지 않음",
+        rewritten(("오늘 학교에서 시험을 봤어요", "어땠어요?")): "학생 말을 바꿔 씀",
+        rewritten((u1, "괜찮아요? 뻄ๆ 놀랐겠어요.")): "파이보 말에 다른 글자 'ๆ'",
+        rewritten((u1, "너의 강아지가 걱정돼요.")): "파이보 말에 반말",
+        rewritten((u1, "괜찮아요? 😀")): "파이보 말에 기호 '😀'",
+        rewritten((u1, "가" * 121)): "파이보 말이 120자 넘음",
+        rewritten((u1, "우리 강아지가 오늘 산책하다가 넘어졌군요.")): "학생 말을 되받아 읊음",
+        rewritten((u1, "괜찮아요?"), (u2, "괜찮아요?")): "같은 대화에서 같은 말",
+    }
+    for answer, reason in cases.items():
+        assert decide_rewrite(answer, SRC) == (None, reason), answer
 
 
-def test_teacher_is_not_marked_failed_when_the_gpu_is_busy(tmp_path, monkeypatch):
-    import make_data
+def test_check_keeps_only_natural_friendly_safe_talk():
+    from prompts import check_prompt, decide_check, to_messages
 
-    monkeypatch.setattr(make_data, "CHOSEN", tmp_path / "teacher.txt")
-    monkeypatch.setattr(make_data, "gpu_free_fraction", lambda: 0.01)
+    msgs = to_messages([{"user": "강아지가 넘어졌어", "pibo": "많이 놀랐겠어요."}])
+    assert "학생: 강아지가 넘어졌어\n파이보: 많이 놀랐겠어요." in check_prompt(msgs)
+    good = {"natural": 5, "fit": 4, "friend": 4, "kid": True, "robot": False, "wrong": False,
+            "unsafe": False}
+    assert decide_check("<think>음</think>" + json.dumps(good)) == (good, None)
+    assert decide_check(json.dumps(dict(good, friend=3)))[1] == "friend 3점"
+    assert decide_check(json.dumps(dict(good, kid=False)))[1] == "학생 대화가 아님"
+    assert decide_check(json.dumps(dict(good, robot=True)))[1] == "사람 경험을 지어냄"
+    assert decide_check(json.dumps(dict(good, unsafe=True)))[1] == "안전하지 않음"
+    assert decide_check(json.dumps(dict(good, natural="높음")))[1] == "검사 답을 못 읽음"
+
+
+def test_rewrite_runs_both_stages_keeps_the_good_ones_and_resumes(tmp_path):
+    import rewrite
+
+    bad = {"id": "a:2", "source": "a", "topic": "가족",
+           "turns": [{"user": "회사 회식이 너무 많아", "other": "힘들겠다"}]}
+    sources = [SRC, bad]
+    u1, u2 = SRC["turns"][0]["user"], SRC["turns"][1]["user"]
+    good = {"natural": 5, "fit": 5, "friend": 5, "kid": True, "robot": False, "wrong": False,
+            "unsafe": False}
+    asked = []
+
+    def fake(prompts, tokens):
+        asked.append(len(prompts))
+        out = []
+        for p in prompts:
+            if "A: 회사" in p:
+                out.append('{"ok": false, "why": "어른 이야기"}')
+            elif p.startswith("아래 대화에서"):
+                out.append(rewritten((u1, "많이 놀랐겠어요. 다친 데는 없어요?"), (u2, "다행이에요.")))
+            else:
+                out.append(json.dumps(good))
+        return out
+
+    log = tmp_path / "log.jsonl"
+    done = rewrite.run(fake, sources, log)
+    kept, by_source, why = rewrite.results(sources, done)
+    assert asked == [2, 1] and len(kept) == 1 and why == {"학생 대화가 아님": 1}
+    assert [m["role"] for m in kept[0]["messages"]] == ["system", "user", "assistant", "user", "assistant"]
+    assert kept[0]["source"] == "a" and kept[0]["marks"] == good
+
+    def boom(prompts, tokens):
+        raise AssertionError("이미 한 것은 다시 묻지 않음")
+
+    assert rewrite.results(sources, rewrite.run(boom, sources, log))[0] == kept
+    changed = dict(SRC, turns=[SRC["turns"][0], dict(SRC["turns"][1], other="다행이다")])  # 원본이 바뀌면 다시
+    asked.clear()
+    rewrite.run(fake, [changed, bad], log)
+    assert asked == [1, 1]
+
+
+def test_teacher_stays_the_32b_and_finds_ninja_in_the_venv(tmp_path, monkeypatch):
+    import os
+
+    import teacher
+
+    monkeypatch.setattr(teacher, "CHOSEN", tmp_path / "teacher.txt")
+    monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.setitem(sys.modules, "vllm", type(sys)("vllm"))
     sys.modules["vllm"].LLM = None
+    monkeypatch.setattr(teacher, "gpu_free_fraction", lambda: 0.01)
     with pytest.raises(SystemExit, match="비어 있어"):
-        make_data.load_teacher()
-    assert not (tmp_path / "teacher-failed.txt").exists()
+        teacher.load_teacher()
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
+    monkeypatch.setattr(teacher, "gpu_free_fraction", lambda: 0.99)
+    loaded = []
 
+    def broken(name, **kw):
+        loaded.append(name)
+        raise RuntimeError("ninja 없음")
 
-# ------------------------------------------------------------- 사실·존댓말 검사
-
-def test_dialogs_are_fact_checked_and_rewritten():
-    from filter_chat import chat_examples, decide, prompt, rewrite
-    from prompts import after_think
-
-    chat = chat_line(("공룡은 왜 없어졌어?", "아직 아무도 몰라요."), ("언제 살았어?", "아주 오래전에 살았어요."),
-                     grade="초고")
-    other = chat_line(("안녕", "안녕하세요."), grade="중")
-    lines = [chat, other, chat]
-    items = list(chat_examples(lines))
-    assert [i for i, _, _, _ in items] == [0, 1, 2]
-    _, ex, users, pibos = items[0]
-    text = prompt(ex, users, pibos)
-    assert "학생: 언제 살았어?\n파이보 2: 아주 오래전에 살았어요." in text and "말 2개" in text
-    assert after_think("<think>\n{\"x\": 1} 고민\n</think>\n\n{\"ok\": true}") == "\n\n{\"ok\": true}"
-    assert after_think("<think>\n끝없이 생각") == ""
-    fixed = ["큰 소행성이 떨어져서 사라졌어요.", "아주 오래전에 살았어요."]
-    good = "<think>음</think>" + json.dumps({"ok": False, "problem": "얼버무림", "fixed": fixed},
-                                            ensure_ascii=False)
-    assert decide(good, pibos)["verdict"] == "fixed"
-    assert decide('<think>음</think>{"ok": true}', pibos) == {"verdict": "ok", "after": pibos,
-                                                            "problem": None}
-    assert decide("<think>끝없이", pibos)["verdict"] == "drop"
-    assert decide(json.dumps({"ok": False, "fixed": fixed[:1]}), pibos)["verdict"] == "drop"
-    assert decide(json.dumps({"ok": False, "fixed": ["좋아요 😀", "네."]}), pibos)["verdict"] == "drop"
-    ok = decide('{"ok": true}', ["안녕하세요."])
-    out = rewrite(lines, {0: decide(good, pibos), 1: ok, 2: decide("모름", pibos)})
-    assert len(out) == 2 and out[1] == other
-    said = [m["content"] for m in json.loads(out[0])["messages"] if m["role"] == "assistant"]
-    assert said == fixed
+    sys.modules["vllm"].LLM = broken
+    with pytest.raises(SystemExit, match="Qwen3-32B-AWQ을 띄우지 못함"):
+        teacher.load_teacher()
+    with pytest.raises(SystemExit):
+        teacher.load_teacher()
+    assert loaded == ["Qwen/Qwen3-32B-AWQ"] * 2               # 실패해도 작은 모델로 넘어가지 않음
+    assert teacher.after_think("<think>\n{\"x\": 1} 고민\n</think>\n\n{\"ok\": true}") == "\n\n{\"ok\": true}"
+    assert teacher.after_think("<think>\n끝없이 생각") == ""
 
 
 def test_banmal_left_in_pibos_words_is_found():
-    from filter_chat import BANMAL
+    from prompts import BANMAL
 
     rude = ["문어는 팔이 여덟 개예요. 재미있지?", "아 그런 일이 생겼구나. 힘들었겠네.",
-            "안녕하세요! 네가 인사하면 반가워요.", "먹을 거예요. 넌 뭐야?", "같이 해 볼까?"]
+            "안녕하세요! 네가 인사하면 반가워요.", "먹을 거예요. 넌 뭐야?", "같이 해 볼까?",
+            "과학은 너의 미래를 도와줘요.", "내가 찾아볼게요."]
     polite = ["멋진 소리가 나는 거 좋아요.", "정말 잘했어요!", "제가 도와드릴게요.",
               "너무 재미있겠네요!", "같이 해 볼까요?", "그 마음 이해돼요."]
     assert all(BANMAL.search(s) for s in rude)
     assert not any(BANMAL.search(s) for s in polite)
 
 
-def test_check_log_from_other_data_is_not_reused():
-    from filter_chat import matches
-
-    r = {"line": 0, "users": ["공룡 얘기"], "before": ["오래전에 살았어요."], "verdict": "ok"}
-    assert matches(r, ["공룡 얘기"], ["오래전에 살았어요."])
-    assert not matches(r, ["시험 망했어", "응"], ["힘들겠어요.", "응원할게요."])
-
-
 # ------------------------------------------------------------- 합치기
 
-def test_merging_keeps_only_talk_and_caps_the_same_reply(tmp_path):
+def test_merging_drops_copies_and_caps_the_same_reply(tmp_path):
     from merge_data import REPEAT_MAX, merge
 
-    tool = json.dumps({"kind": "tool", "tools": True, "messages": [
-        {"role": "system", "content": SYSTEM}, {"role": "user", "content": "눈 꺼"},
-        {"role": "assistant", "content": "", "tool_calls": [{"type": "function", "function": {
-            "name": "eye_off", "arguments": {}}}]},
-        {"role": "tool", "content": "완료"}, {"role": "assistant", "content": "껐어요."}]},
-        ensure_ascii=False)
-    old_chat = json.loads(chat_line(("안녕", "안녕하세요 0.")))
-    old_chat["tools"] = True
-    lines = [tool, json.dumps(old_chat, ensure_ascii=False)]
-    lines += [chat_line((f"추워 {k}", "따뜻한 음식을 먹으면 좋겠어요!" if k % 2 else f"그렇군요 {k}."))
-              for k in range(1, 21)]
-    (tmp_path / "a.jsonl").write_text("\n".join(lines + lines[2:4]) + "\n")
+    lines = [chat_line((f"추워 {k}", "따뜻한 음식을 먹으면 좋겠어요!" if k % 2 else f"그렇군요 {k}."),
+                       source="a") for k in range(1, 21)]
+    (tmp_path / "a.jsonl").write_text("\n".join(lines + lines[:2]) + "\n")
     out, kept, why = merge([str(tmp_path / "a.jsonl")])
-    exs = [json.loads(x) for x in out]
-    assert why["도구를 부르는 대화"] == 1 and why["같은 줄이 또 나옴"] == 2
+    assert why["같은 줄이 또 나옴"] == 2
     assert sum("따뜻한 음식" in x for x in out) == REPEAT_MAX
-    assert len(out) == 1 + 10 + REPEAT_MAX
-    assert all(e["kind"] == "chat" and "tools" not in e for e in exs)
+    assert len(out) == 10 + REPEAT_MAX and kept == {"a": 10 + REPEAT_MAX}
 
 
 def test_names_are_swapped_with_the_right_particles():
@@ -347,22 +334,19 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     steps = run_all.steps()
     names = [n for n, _, _ in steps]
-    assert names == ["data-school", "data-school-clean", "data-english", "data-english-clean",
-                     "data-lead", "data-lead-clean", "data-themaker", "train", "small", "gguf",
-                     "data-lead-heldout", "score-before", "score-themaker", "score-judge"]
-    assert cmds_of(steps)["score-judge"][1] == ["score-before", "score-themaker"]
-    assert "--avoid" in cmds_of(steps)["data-lead-heldout"][0]
-    cmds = {n: (cmd, needs) for n, cmd, needs in steps}
-    assert cmds["data-themaker"][1] == ["data-school-clean", "data-english-clean", "data-lead-clean"]
+    assert names == ["data-pibo", "data-heldout", "data-themaker", "train", "small",
+                     "gguf", "score-before", "score-themaker", "score-judge"]
+    cmds = cmds_of(steps)
+    assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
+                                  "data/pibo.jsonl"], [])
+    assert cmds["data-themaker"][1] == ["data-pibo"]
+    assert cmds["score-judge"][1] == ["score-before", "score-themaker"]
+    assert cmds["score-before"][1] == ["data-heldout"]
     cmd, needs = cmds["train"]
     assert "Qwen/Qwen3.5-0.8B" in cmd and run_all.DATA in cmd and needs == ["data-themaker"]
     cmd, _ = cmds["gguf"]
     assert cmd[cmd.index("--quant") + 1] == "Q4_K_M" and "--imatrix" in cmd
     assert run_all.GGUF == "out/themaker-0.8b-Q4_K_M.gguf"
-    for name in names:                                  # 단계마다 따로 기록 (덮어쓰지 않게)
-        cmd = cmds[name][0]
-        if cmd[0] == "filter_chat.py" and name != "data-school-clean":
-            assert "--log" in cmd
 
 
 def test_status_shows_the_running_step(tmp_path, monkeypatch):
@@ -373,21 +357,21 @@ def test_status_shows_the_running_step(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "HERE", tmp_path)
     (tmp_path / "logs").mkdir()
     (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "data-school.done").touch()
-    (tmp_path / "logs" / "data-school.log").write_text(
+    (tmp_path / "state" / "data-heldout.done").touch()
+    (tmp_path / "logs" / "data-heldout.log").write_text(
         "\n===== 2026-10-21 10:00:00 시작\n끝남\n===== 2026-10-21 11:00:00 끝 (코드 0)\n")
-    (tmp_path / "logs" / "data-school-clean.log").write_text(
-        "\n===== 2026-10-21 20:00:00 시작\n검사 1000/60000\n"
+    (tmp_path / "logs" / "data-pibo.log").write_text(
+        "\n===== 2026-10-21 20:00:00 시작\nrewrite 1000/45000\n"
         " 17%|█▋ | 442/2560 [16:53<1:21:47]\r 18%|█▊ | 462/2560 [17:40<1:20:40]\r")
-    assert run_all.progress(tmp_path / "logs" / "data-school.log") is None
-    assert run_all.progress(tmp_path / "logs" / "data-school-clean.log").startswith("18%")
+    assert run_all.progress(tmp_path / "logs" / "data-heldout.log") is None
+    assert run_all.progress(tmp_path / "logs" / "data-pibo.log").startswith("18%")
     assert not run_all.runner_alive()
     with open(tmp_path / ".lock", "w") as held:   # 실행기가 돌고 있는 것처럼
         fcntl.flock(held, fcntl.LOCK_EX)
         assert run_all.runner_alive()
         run_all.report()
     text = (tmp_path / "REPORT.md").read_text()
-    assert "- data-school-clean: 진행 중 18%" in text and "- data-school: 끝" in text
+    assert "- data-pibo: 진행 중 18%" in text and "- data-heldout: 끝" in text
 
 
 def test_orphaned_vllm_engines_are_stopped_before_a_step(monkeypatch):
@@ -536,35 +520,32 @@ def test_reply_language_and_detected_names_are_said_right():
 def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
     import score
 
-    school = [chat_line(("학교에서 친구랑 싸웠어", "속상했겠어요."), grade="중"),
-              chat_line(("시험 끝났다", "수고했어요!"), grade="고")]
-    lead = [chat_line(("날씨가 춥네", "정말 추워요. 따뜻하게 입어요."), ("그래서 뭐 먹을까", "어묵탕은 어때요?"),
-                      ("좋아", "저도 좋아요."), ("또 뭐 있어", "호빵도 있어요."), grade="초고"),
-            chat_line(("응", "그렇군요."), grade="중")]                 # 짧은 대화는 빼고
-    (tmp_path / "s.jsonl").write_text("\n".join(school) + "\n")
-    (tmp_path / "l.jsonl").write_text("\n".join(lead) + "\n")
-    monkeypatch.setattr(score, "SCHOOL", tmp_path / "s.jsonl")
-    monkeypatch.setattr(score, "LEAD", tmp_path / "l.jsonl")
+    held = [chat_line(("학교에서 친구랑 싸웠어", "속상했겠어요.")),
+            chat_line(("시험 끝났다", "수고했어요!")),
+            chat_line(("날씨가 춥네", "정말 추워요. 따뜻하게 입어요."), ("그래서 뭐 먹을까", "어묵탕은 어때요?"),
+                      ("좋아", "저도 좋아요."), ("또 뭐 있어", "호빵도 있어요."))]
+    (tmp_path / "h.jsonl").write_text("\n".join(held) + "\n")
+    monkeypatch.setattr(score, "HELDOUT", tmp_path / "h.jsonl")
     monkeypatch.setattr(score, "RESULTS", tmp_path / "r")
     qs = score.questions()
-    assert [q["set"] for q in qs] == ["첫마디", "첫마디", "이어지는 대화"]
-    assert qs[2]["messages"][-1]["content"] == "좋아" and len(qs[2]["messages"]) == 6
-    assert "학생: 날씨가 춥네\n파이보: 정말 추워요." in score.dialog(qs[2])
-    assert score.echo(qs[2], "정말 추워요. 따뜻하게 입어요!") and not score.echo(qs[2], "군고구마도 맛있어요.")
+    assert [q["set"] for q in qs] == ["첫마디", "첫마디", "첫마디", "이어지는 대화"]
+    assert qs[3]["messages"][-1]["content"] == "좋아" and len(qs[3]["messages"]) == 6
+    assert "학생: 날씨가 춥네\n파이보: 정말 추워요." in score.dialog(qs[3])
+    assert score.echo(qs[3], "정말 추워요. 따뜻하게 입어요!") and not score.echo(qs[3], "군고구마도 맛있어요.")
     assert score.marks('<think>음</think>{"korean": 5, "fit": 4, "short": 5, "engage": 3, '
                        '"wrong": false, "repeat": true}') == {"korean": 5, "fit": 4, "short": 5,
                                                              "engage": 3, "wrong": False, "repeat": True}
     (tmp_path / "r").mkdir()
-    for name, answers in (("before", ["속상했겠어요.", "속상했겠어요.", "정말 추워요. 따뜻하게 입어요."]),
+    for name, answers in (("before", ["속상했겠어요.", "속상했겠어요.", "추워요.", "정말 추워요. 따뜻하게 입어요."]),
                           ("themaker", ["많이 속상했겠어요. 무슨 일이었어요?", "수고했어요! 이제 뭐 할 거예요?",
-                                        "군고구마도 맛있어요."])):
+                                        "정말 추운 날이에요.", "군고구마도 맛있어요."])):
         (tmp_path / "r" / f"answers-{name}.json").write_text(json.dumps({"answers": answers},
                                                                         ensure_ascii=False))
     good = {"korean": 5, "fit": 5, "short": 5, "engage": 5, "wrong": False, "repeat": False}
-    (tmp_path / "r" / "scores-themaker.json").write_text(json.dumps([good] * 3))
+    (tmp_path / "r" / "scores-themaker.json").write_text(json.dumps([good] * 4))
     text = score.report()
     rows = {r.split(" | ")[0][2:] + r.split(" | ")[1]: r for r in text.splitlines()[2:] if r.startswith("|")}
-    assert rows["before첫마디 (2)"].split(" | ")[10] == "100%"          # 같은 대답
+    assert rows["before첫마디 (3)"].split(" | ")[10] == "67%"           # 같은 대답
     assert rows["before이어지는 대화 (1)"].split(" | ")[9] == "100%"     # 앞 말 되풀이 (글자)
-    assert rows["themaker첫마디 (2)"].split(" | ")[2] == "5.00"
+    assert rows["themaker첫마디 (3)"].split(" | ")[2] == "5.00"
     assert (tmp_path / "r" / "score.md").exists()
