@@ -1,7 +1,7 @@
 """선생 모델에게 주는 글(파이보 말 바꿔 쓰기, 데이터 검사)과 받은 글의 검사.
 
-원본 대화(data/source.jsonl, PC에만 둠)의 학생 말은 거의 그대로 두고, 상대의 말만 선생이
-파이보 말투로 바꿔 씁니다(REWRITE). 같은 선생이 다시 읽고 점수가 모자라거나 문제가 있으면
+원본 대화(data/source.jsonl, PC에만 둠)의 학생 말은 원본 그대로 두고, 상대의 말만 선생이
+파이보 말투로 바꿔 씁니다(REWRITE: 선생은 파이보 말만 씀). 같은 선생이 다시 읽고 점수가 모자라거나 문제가 있으면
 뺍니다(CHECK).
 
 학습 대화 하나는 OpenAI 형식의 메시지 목록입니다::
@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import re
-from difflib import SequenceMatcher
 
 from teacher import first_json
 from tools import SYSTEM
@@ -23,7 +22,9 @@ MAX_PIBO = 120
 PIBO_STYLE = """파이보는 초·중·고 학생과 이야기하는 교육용 로봇이에요. 열네 살 친구처럼 밝고 다정하게,
 친근한 존댓말("~해요", "~예요")로 말해요.
 - 한두 문장, 80자 안쪽. 소리로 읽어 주는 말이라 이모지, 기호, 괄호, 목록, "ㅋㅋ" 같은 글자는 쓰지 않아요.
-- 학생을 "너"라고 부르지 않고, 자기는 "저", "제가"라고 해요.
+- 반말을 섞지 않아요. 학생을 "너", "네가", "니가", "너의"로 부르지 않고 (주어를 빼고 말해요),
+  "~구나", "~지?", "~거든", "~잖아", "~했어", "~할게" 같은 반말 끝 대신 "~군요", "~네요", "~죠?",
+  "~거든요", "~했어요", "~할게요"로 말해요. 자기는 "저", "제가"라고 해요.
 - 학생 말을 그대로 되받아 읊지 않아요 ("~해서 ~하셨군요" 같은 상담사 말투로 끝내지 않기).
   짧게 마음을 알아주고, 그 이야기에 맞는 구체적인 생각, 정보, 질문을 더해요. 질문은 한 번에 하나만,
   매번 하지는 않아요. 같은 칭찬이나 같은 맺음말을 되풀이하지 않아요.
@@ -34,8 +35,8 @@ PIBO_STYLE = """파이보는 초·중·고 학생과 이야기하는 교육용 �
   믿을 만한 어른에게 꼭 알리라고 말해요.
 - 이름, 주소, 학교 같은 개인정보는 묻지 않아요. 바르고 고운 말만 써요."""
 
-REWRITE = """아래 대화에서 A의 말은 학생의 말로 두고, B의 말을 교육용 로봇 '파이보'의 말로 바꿔
-학습 대화를 만들어요.
+REWRITE = """아래 대화에서 A의 말은 학생의 말로 그대로 두고, B의 말만 교육용 로봇 '파이보'의 말로
+바꿔 학습 대화를 만들어요.
 
 {style}
 
@@ -43,14 +44,13 @@ REWRITE = """아래 대화에서 A의 말은 학생의 말로 두고, B의 말�
 1. 초·중·고 학생이 로봇 친구와 나눌 만한 대화인지 먼저 봐요. 직장, 결혼, 연애, 술, 돈벌이 같은 어른
    이야기가 중심이거나, A가 직장인이나 부모처럼 말하거나, 욕설, 비하, 혐오, 성적인 말, 저급한 말이
    있으면 {{"ok": false, "why": "까닭 짧게"}}만 써요.
-2. 나눌 만하면 차례대로 주고받기를 써요.
-   - user: A의 말을 거의 그대로 둬요. 'ㅋㅋ', 'ㅠㅠ', '#@이름#' 같은 가림 표시, 오타만 자연스럽게 고쳐요.
-   - pibo: B가 한 말의 뜻과 흐름(공감, 질문, 의견, 정보)을 살려 파이보 말투로 바꿔요. 다음 A의 말이
+2. 나눌 만하면 A의 말마다 그 뒤에 할 파이보의 말을 차례대로 써요. A의 말은 쓰지 않고 고치지도 않아요.
+   - B가 한 말의 뜻과 흐름(공감, 질문, 의견, 정보)을 살려 파이보 말투로 바꿔요. 다음 A의 말이
      자연스럽게 이어지도록 B의 질문은 비슷한 질문으로 남겨요. B가 사람의 경험을 말했으면 로봇에
      맞게 바꿔요. B의 말이 없으면 새로 써요.
-   - 뒤로 가며 어른 이야기로 흐르거나 이어지지 않으면 거기서 끊고 앞의 주고받기만 써요.
+   - 뒤로 가며 어른 이야기로 흐르거나 이어지지 않으면 거기서 끊고 앞의 것만 써요.
 JSON 하나로만 답해요.
-출력 형식: {{"ok": true, "turns": [{{"user": "...", "pibo": "..."}}, {{"user": "...", "pibo": "..."}}]}}
+출력 형식: {{"ok": true, "pibo": ["A의 첫 말 뒤에 할 말", "A의 둘째 말 뒤에 할 말"]}}
 
 대화 (주제: {topic}):
 {dialog}"""
@@ -152,33 +152,27 @@ def overlap(a: str, b: str) -> float:
     return len(ga & grams(b)) / len(ga) if ga else 0.0
 
 
-#: 학생 말이 원본과 이만큼은 같아야 함 (오타·가림 표시를 고친 것은 남게, 문장을 바꾼 것은 빠지게)
-USER_ALIKE = 0.6
-
-
-def alike(a: str, b: str) -> float:
-    """두 말이 글자로 얼마나 같은지 (0~1, 띄어쓰기·문장부호 무시)."""
-    return SequenceMatcher(None, same(a), same(b)).ratio()
+#: 원본의 가림 표시 (#@이름# 등): 학생 말에 있으면 그 대화는 쓰지 않음 (학생 말은 고치지 않으므로)
+MASK = re.compile(r"#@[^#\s]*#")
 
 
 def decide_rewrite(text: str, src: dict) -> tuple[list[dict] | None, str | None]:
-    """선생이 바꿔 쓴 답 → (주고받기들, None) 또는 (None, 뺀 까닭)."""
+    """선생이 쓴 파이보 말들 → (주고받기들, None) 또는 (None, 뺀 까닭). 학생 말은 원본 그대로이고,
+    파이보 말이 원본보다 적으면 거기서 끊습니다 (예전 형식 {"turns": [{"user", "pibo"}]}도 읽되
+    학생 말은 원본을 씀)."""
     d = first_json(text)
     if not isinstance(d, dict) or not isinstance(d.get("ok"), bool):
         return None, "선생의 답을 못 읽음"
     if not d["ok"]:
         return None, "학생 대화가 아님: " + str(d.get("why") or "")[:40]
-    turns = d.get("turns")
-    if not isinstance(turns, list) or not turns:
-        return None, "주고받기 수가 맞지 않음"
+    said = d.get("pibo")
+    if said is None and isinstance(d.get("turns"), list):
+        said = [t.get("pibo") if isinstance(t, dict) else None for t in d["turns"]]
+    if not isinstance(said, list) or not said:
+        return None, "파이보 말이 없음"
     out = []
-    # 원본보다 많이 쓴 뒤쪽은 버림 (앞쪽은 학생 말이 원본과 차례대로 맞는지 아래에서 봄)
-    for t, s in zip(turns, src["turns"], strict=False):
-        if not (isinstance(t, dict) and isinstance(t.get("user"), str) and t["user"].strip()):
-            return None, "학생 말 없음"
-        user, pibo = t["user"].strip(), t.get("pibo")
-        if alike(s["user"], user) < USER_ALIKE:
-            return None, f"학생 말을 바꿔 씀: {s['user'][:30]} → {user[:30]}"
+    for pibo, s in zip(said, src["turns"], strict=False):     # 넘친 뒤쪽은 버림
+        user = s["user"]
         if why := pibo_problem(pibo):
             return None, f"{why}: {str(pibo)[:40]}"
         pibo = pibo.strip()

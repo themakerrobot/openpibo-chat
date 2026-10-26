@@ -4,8 +4,8 @@
     python rewrite.py --data data/source.jsonl --out data/try.jsonl --limit 200   # 먼저 조금 해 보기
 
 1. 바꿔 쓰기 (prompts.REWRITE, 생각 켬): 학생과 나눌 만한 대화가 아니면 선생이 뺍니다.
-   학생 말은 거의 그대로, 상대 말은 파이보 말투로. 글자 검사(기호, 다른 나라 글자, 반말, 길이,
-   학생 말 되받아 읊기, 학생 말을 바꿔 씀)에 걸리면 뺍니다.
+   선생은 파이보 말만 쓰고 학생 말은 원본 그대로 씁니다 (가림 표시가 있는 대화는 미리 뺌).
+   글자 검사(기호, 다른 나라 글자, 반말, 길이, 학생 말 되받아 읊기)에 걸리면 뺍니다.
 2. 검사 (prompts.CHECK, 생각 켬): 자연스러움·알맞음·친구 말투가 4점 미만이거나, 어른 이야기·
    저급한 말, 지어낸 사람 경험, 틀린 사실, 안전 문제가 있으면 뺍니다. 고치지 않고 뺍니다.
 
@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from prompts import check_prompt, decide_check, decide_rewrite, rewrite_prompt, to_messages
+from prompts import MASK, check_prompt, decide_check, decide_rewrite, rewrite_prompt, to_messages
 
 #: 이만큼씩 선생에게 보내고 기록합니다 (진행률이 로그에 남고, 끊겨도 이어 감)
 CHUNK = 1000
@@ -78,6 +78,11 @@ def run(llm_ask, sources: list[dict], log_path: Path,
               ("check", 2048, lambda s: check_prompt(to_messages(done[s["id"], "rewrite"]["turns"])),
                lambda s, text: dict(zip(("marks", "why"), decide_check(text), strict=True)))]
     for stage, tokens, make, decide in stages:
+        if stage == "rewrite":               # 학생 말에 가림 표시가 있으면 묻지 않고 뺌
+            for s in sources:
+                if (s["id"], stage) not in done and any(MASK.search(t["user"]) for t in s["turns"]):
+                    done[s["id"], stage] = {"id": s["id"], "key": key_of(s), "stage": stage,
+                                            "turns": None, "why": "학생 말에 가림 표시"}
         todo = [s for s in sources if (s["id"], stage) not in done
                 and (stage == "rewrite" or done[s["id"], "rewrite"]["turns"])]
         print(f"{stage}: {len(todo)}개 할 차례", flush=True)
