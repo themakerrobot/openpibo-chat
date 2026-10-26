@@ -2,7 +2,7 @@
 
     python run_all.py            # 다시 돌리면 끝난 단계는 건너뛰고 이어서
     python run_all.py --status
-    python run_all.py --first 'qwen3\.5-0\.8b-school(-|$)|judge-school'   # 이 단계들부터
+    python run_all.py --first 'qwen3\\.5-0\\.8b-school(-|$)|judge-school'   # 이 단계들부터
 
 단계마다 로그는 logs/<단계>.log, 끝나면 state/<단계>.done. 로그가
 --stall 초 동안 멈추면 그 단계를 멈추고 다시 합니다 (세 번까지). 실패한
