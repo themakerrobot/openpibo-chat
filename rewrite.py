@@ -29,8 +29,9 @@ from pathlib import Path
 from prompts import (MASK, check_prompt, decide_check, decide_rewrite, first_turns, rewrite_prompt,
                      to_messages)
 
-#: 이만큼씩 선생에게 보내고 기록합니다 (진행률이 로그에 남고, 끊겨도 이어 감)
-CHUNK = 1000
+#: 이만큼씩 선생에게 보내고 기록합니다 (진행률이 로그에 남고, 끊겨도 이어 감). 크면 묶음 끝에서
+#: 가장 긴 답을 기다리는 빈 시간이 줄지만, 끊기면 그만큼 다시 함 (3000개는 약 1시간)
+CHUNK = 3000
 
 
 def key_of(src: dict) -> str:
