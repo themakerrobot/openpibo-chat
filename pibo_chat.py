@@ -16,6 +16,8 @@
 - 모델이 도구를 부르면 그 앞의 짧은 말("빨간색으로 바꿀게요!")을 하고 실행합니다. 보기는 본
   결과("앞에 컵이 보여요.")를 덧붙입니다. 기기에 없는 동작이면 실행하지 않고 없다고 말합니다.
 - "멈춰"는 안전을 위해 모델에 묻지 않고 바로 멈춥니다.
+- 자리를 옮기는 동작(앞으로·뒤로·왼쪽·오른쪽)은 학생 말에 그 방향 낱말이 있을 때만 실행합니다
+  (MOVE_WORDS). 없으면 한 번 더 묻고, 또 부르면 실행하지 않고 대화로 대답합니다.
 - 음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS 목소리는 lang_of로).
 - openpibo의 Device(MCU)·카메라는 root 권한이 필요해 sudo로 실행합니다.
 """
@@ -204,6 +206,23 @@ def same(text: str) -> str:
 #: 멈추라는 말은 어디에 있어도 바로 멈춥니다 (안전, 모델에 묻지 않음)
 STOP = re.compile(r"멈춰|멈추라|정지|스톱|그만\s*움직|stop|\bfreeze\b", re.IGNORECASE)
 
+#: 자리를 옮기는 동작은 학생 말에 그 방향 낱말이 있을 때만 실행합니다 (안전: 이야기 속 말에
+#: 모델이 잘못 부르면 책상에서 움직이지 않게). 제자리 동작(춤, 인사 …)과 불빛·보기는 모델이 정함
+MOVE_WORDS = {"앞으로": re.compile(r"앞|이리|다가|오라|forward|come", re.IGNORECASE),
+              "뒤로": re.compile(r"뒤|물러|back", re.IGNORECASE),
+              "왼쪽": re.compile(r"왼|left", re.IGNORECASE),
+              "오른쪽": re.compile(r"오른|right", re.IGNORECASE)}
+#: 막은 뒤 다시 물어도 또 막히면 하는 말
+NOT_MOVING = "그랬군요. 조금 더 이야기해 줄래요?"
+
+
+def blocked(text: str, call: tuple[str, dict] | None) -> bool:
+    """학생 말에 방향 낱말이 없는데 자리를 옮기는 동작을 불렀는지."""
+    if not call or call[0] != "move":
+        return False
+    words = MOVE_WORDS.get(str(call[1].get("action")))
+    return words is not None and not words.search(text)
+
 
 def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bool = True) -> str:
     """학생 말 하나 → 할 말. tools가 거짓("대화만 하자")이면 도구 목록 없이 대화만.
@@ -217,8 +236,15 @@ def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bo
         return said
     msgs = [{"role": "system", "content": system}] + window(history)
     msg = ask(url, msgs, tools)
-    content = (msg.get("content") or "").strip()
     calls = calls_of(msg) if tools else []
+    if calls and blocked(text, calls[0]):
+        # 같은 도구 목록으로 한 번 더 (앞부분이 같아 서버가 기억한 걸 씀). 또 막히면 정해진 말로
+        print(f"  [도구] {calls[0][0]}({calls[0][1]}) 막음: 학생 말에 방향 낱말이 없음", flush=True)
+        msg = ask(url, msgs, tools, temperature=1.0)
+        calls = calls_of(msg)
+        if calls and blocked(text, calls[0]):
+            msg, calls = {"content": NOT_MOVING}, []
+    content = (msg.get("content") or "").strip()
     if calls:
         said = act(robot, *calls[0], content)
     else:

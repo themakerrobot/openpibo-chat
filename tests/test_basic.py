@@ -616,6 +616,25 @@ def test_every_device_sends_the_same_system_prompt_and_tools(monkeypatch):
     assert seen == [(SYSTEM, True), (SYSTEM, False)]
 
 
+def test_moving_away_needs_a_direction_word_in_the_childs_words(monkeypatch):
+    import pibo_chat as app
+
+    robot, history = Robot(), []
+    replies = iter([reply("뒤로 갈게요.", "move", action="뒤로"),       # 이야기 속 말에 잘못 부름
+                    reply("서운했겠어요. 그 친구랑 이야기해 봤어요?"),   # 다시 물으면 대화
+                    reply("뒤로 갈게요.", "move", action="뒤로"),
+                    reply("뒤로 갈게요.", "move", action="뒤로"),       # 또 부르면 정해진 말
+                    reply("뒤로 갈게요.", "move", action="뒤로"),       # 방향 낱말이 있으면 실행
+                    reply("신나게 춤춰 볼게요!", "move", action="춤")])  # 제자리 동작은 그대로
+    monkeypatch.setattr(app, "ask", lambda *a, **k: next(replies))
+    assert app.turn("x", history, "우리 반 친구가 인사를 잘 안 해", robot, SYSTEM) == \
+        "서운했겠어요. 그 친구랑 이야기해 봤어요?"
+    assert app.turn("x", history, "오늘 좀 피곤해", robot, SYSTEM) == app.NOT_MOVING
+    assert app.turn("x", history, "조금 뒤로 가 줄래?", robot, SYSTEM) == "뒤로 갈게요."
+    assert app.turn("x", history, "춤춰 줘", robot, SYSTEM) == "신나게 춤춰 볼게요!"
+    assert robot.did == [("move", "뒤로"), ("move", "춤")]
+
+
 def test_server_errors_do_not_stop_the_app(monkeypatch, capsys):
     import io
     import urllib.error
