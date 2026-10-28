@@ -10,7 +10,7 @@
 - 움직이기 (파이브레인에서도 모델은 부릅니다. 못 움직인다는 말은 앱이 함)
 - 보기 ("앞에 뭐 있어?")
 - 부르면 안 되는 말: "난 빨간색이 좋아", "어제 춤 학원 갔어" 같은 이야기 속 낱말 → 대화만
-- 시스템 글은 모든 기기 공통(tools.SYSTEM). 학생은 기기 이름(파이보, 파이브레인 …)으로 부르기도 함
+- 시스템 글은 모든 기기 공통(tools.SYSTEM, --lang en이면 tools.SYSTEM_EN과 영어 말 모양). 학생은 기기 이름(파이보, 파이브레인 …)으로 부르기도 함
 - --chat을 주면 그 대화의 앞부분 한두 번을 붙여 대화 중간에 시키는 모양도 만듭니다
 
 모델의 말은 호출 앞의 짧은 말("빨간색으로 바꿀게요!")이고, 앱이 그 말을 하고 도구를 실행합니다.
@@ -24,7 +24,7 @@ import random
 from pathlib import Path
 
 from persona import CALLS, rename_text
-from tools import ACTIONS, SYSTEM, has_batchim
+from tools import ACTIONS, SYSTEMS, has_batchim
 
 #: 색 이름 → (꾸미는 말, 색 낱말, ~게 꼴 또는 None)
 FORMS = {
@@ -190,21 +190,140 @@ def context(rng: random.Random, chats: list[dict]) -> list[dict]:
             for m in msgs]
 
 
-def make(n: int, seed: int, chats: list[dict]) -> list[dict]:
+# ------------------------------------------------------------- 영어 (themaker-en)
+# 도구 목록은 한국어 모델과 같은 tools.TOOLS (색·동작 값도 같은 한국어 이름): 기기 앱을 그대로 씀
+
+COLORS_EN = {"빨강": "red", "주황": "orange", "노랑": "yellow", "초록": "green", "파랑": "blue",
+             "하늘": "sky blue", "보라": "purple", "분홍": "pink", "하양": "white"}
+ENDS_EN = ["", "", " please", ", please", "!"]
+PREFIXES_EN = ["", "", "", "", "{call}, ", "Hey, ", "Um, ", "Okay, "]
+CALLS_EN = ["Pibo", "PiBrain", "TheMaker"]
+
+LIGHT_ON_EN = ["Turn on the {color} light{end}", "Can you make the light {color}?",
+               "Change the light to {color}{end}", "Make your light {color}{end}",
+               "I want to see a {color} light", "Switch the light to {color}{end}",
+               "Show me a {color} light{end}", "Can you turn on a {color} light?",
+               "Could you change your light to {color}?"]
+LIGHT_ON_SAY_EN = ["Okay, changing it to {color}!", "Here's a {color} light.", "Sure, {color} it is!",
+                   "Turning on the {color} light."]
+PLAIN_ON_EN = ["Turn on the light{end}", "It's too dark, turn on the light{end}",
+               "Can you turn your light on?", "Light on{end}", "Make it bright{end}"]
+PLAIN_ON_SAY_EN = ["Turning on my light!", "Sure, here's a bright light.", "Okay, white light on."]
+LIGHT_OFF_EN = ["Turn off the light{end}", "Light off{end}", "You can turn off the light now",
+                "Can you switch off your light?", "Turn your light off{end}"]
+LIGHT_OFF_SAY_EN = ["Turning off the light.", "Okay, light off.", "Sure, I'll turn it off."]
+FOLLOW_EN = ["Now make it {color}", "Change it to {color}{end}", "Hmm, {color} would be better",
+             "No, make it {color}{end}", "Can you try {color} too?"]
+
+MOVE_EN = {
+    "인사": ["Say hello{end}", "Can you say hi to my friend?", "Say hi to everyone{end}"],
+    "춤": ["Dance for me{end}", "Can you dance?", "Show me a fun dance{end}", "Music is on, let's dance!"],
+    "손흔들기": ["Wave your hand{end}", "Wave goodbye to me", "Can you wave at me?"],
+    "박수": ["Clap your hands{end}", "Give me a clap!", "Can you clap for me?"],
+    "하이파이브": ["High five!", "Give me a high five{end}", "Let's do a high five"],
+    "끄덕이기": ["Nod your head{end}", "Nod if you agree", "Can you nod for me?"],
+    "도리도리": ["Shake your head{end}", "Shake your head if you don't agree", "Can you shake your head?"],
+    "앞으로": ["Move forward{end}", "Come here{end}", "Come a little closer", "Can you move forward?"],
+    "뒤로": ["Move back{end}", "Step back a little{end}", "Can you go backward?"],
+    "왼쪽": ["Turn left{end}", "Can you turn to the left?", "Let's turn left"],
+    "오른쪽": ["Turn right{end}", "Can you turn to the right?", "Let's turn right"],
+}
+MOVE_SAY_EN = {
+    "인사": ["Hello, everyone! Nice to meet you.", "Hi there!"],
+    "춤": ["Let's dance!", "Okay, watch my dance!"],
+    "손흔들기": ["Bye bye!", "Sure, waving now!"],
+    "박수": ["Clap clap clap!", "Great job, here's a clap!"],
+    "하이파이브": ["High five!", "Yay, high five!"],
+    "끄덕이기": ["Okay, I'm nodding.", "Nod nod!"],
+    "도리도리": ["Okay, shaking my head.", "Shake shake!"],
+    "앞으로": ["Moving forward.", "Okay, coming closer."],
+    "뒤로": ["Moving back.", "Okay, stepping back."],
+    "왼쪽": ["Turning left.", "Okay, turning to the left."],
+    "오른쪽": ["Turning right.", "Okay, turning to the right."],
+}
+assert set(MOVE_EN) == set(MOVE_SAY_EN) == set(ACTIONS)
+LOOK_EN = ["What's in front of you?", "What do you see?", "What can you see right now?",
+           "Do you know what this is?", "Guess what I'm holding", "Look with your camera{end}",
+           "Look around{end}", "What is this? Take a look"]
+LOOK_SAY_EN = ["Let me take a look.", "Hold on, let me see.", "Let me look with my camera."]
+NOT_CALLS_EN = [
+    ("I like {color} the most", ["{Color} is pretty! Do you have a favorite {color} thing?",
+                                 "I like {color} too. Why do you like it?"]),
+    ("I wore a {color} shirt yesterday", ["That sounds nice! Where did you go?"]),
+    ("My little brother only uses {color} crayons", ["He must really love {color}. What does he like to draw?"]),
+    ("I went to dance class yesterday", ["That sounds fun! What dance did you learn?"]),
+    ("I practiced dancing with my friends", ["Cool! What song did you dance to?"]),
+    ("A robot danced in the movie I saw", ["That sounds fun! What movie was it?"]),
+    ("I slept with the light on last night", ["It can be hard to sleep with the light on. Did you sleep well?"]),
+    ("My eyes are so tired", ["Try looking far away for a little while to rest your eyes."]),
+    ("I closed my eyes and made a wish", ["What did you wish for? I hope it comes true."]),
+    ("I'm going to study hard from now on", ["That's great! Which subject will you start with?"]),
+    ("We played a clapping game in P.E. class", ["Sounds fun! Who won?"]),
+    ("Do you know what I saw today?", ["Hmm, what did you see? I'm curious."]),
+    ("My friend in class doesn't say hello to me", ["That must feel a little sad. Maybe your friend is just shy?"]),
+    ("I sat in the back of the class today", ["How was class today? Did anything fun happen?"]),
+]
+
+
+def said_en(rng: random.Random, template: str, color: str | None = None) -> str:
+    slots = {"end": rng.choice(ENDS_EN), "call": rng.choice(CALLS_EN)}
+    if color:
+        slots.update(color=COLORS_EN[color], Color=COLORS_EN[color].capitalize())
+    text = template.format(**slots)
+    prefix = rng.choice(PREFIXES_EN).format(**slots)
+    return prefix + (text[0].lower() + text[1:] if prefix and not text.startswith("I") else text)
+
+
+def turn_for_en(kind: str, rng: random.Random) -> tuple[list[dict], str]:
+    """turn_for와 같은 종류를 영어로."""
+    if kind == "light":
+        color = rng.choice(list(COLORS_EN))
+        return [{"role": "user", "content": said_en(rng, rng.choice(LIGHT_ON_EN), color)},
+                assistant(rng.choice(LIGHT_ON_SAY_EN).format(color=COLORS_EN[color]), "light",
+                          color=color)], "불빛"
+    if kind == "plain_on":
+        return [{"role": "user", "content": said_en(rng, rng.choice(PLAIN_ON_EN))},
+                assistant(rng.choice(PLAIN_ON_SAY_EN), "light", color="하양")], "불빛"
+    if kind == "light_off":
+        return [{"role": "user", "content": said_en(rng, rng.choice(LIGHT_OFF_EN))},
+                assistant(rng.choice(LIGHT_OFF_SAY_EN), "light", color="끄기")], "불빛 끄기"
+    if kind == "follow":
+        first, second = rng.sample(list(COLORS_EN), 2)
+        before = [{"role": "user", "content": said_en(rng, rng.choice(LIGHT_ON_EN), first)},
+                  {"role": "assistant", "content": rng.choice(LIGHT_ON_SAY_EN).format(color=COLORS_EN[first])}]
+        return before + [{"role": "user", "content": said_en(rng, rng.choice(FOLLOW_EN), second)},
+                         assistant(rng.choice(LIGHT_ON_SAY_EN).format(color=COLORS_EN[second]),
+                                   "light", color=second)], "불빛 이어서"
+    if kind == "move":
+        action = rng.choice(list(MOVE_EN))
+        return [{"role": "user", "content": said_en(rng, rng.choice(MOVE_EN[action]))},
+                assistant(rng.choice(MOVE_SAY_EN[action]), "move", action=action)], "움직이기"
+    if kind == "look":
+        return [{"role": "user", "content": said_en(rng, rng.choice(LOOK_EN))},
+                assistant(rng.choice(LOOK_SAY_EN), "look")], "보기"
+    user, replies = rng.choice(NOT_CALLS_EN)
+    color = rng.choice(list(COLORS_EN))
+    word = COLORS_EN[color]
+    return [{"role": "user", "content": said_en(rng, user, color)},
+            {"role": "assistant", "content": rng.choice(replies).format(color=word, Color=word.capitalize())}], \
+        "부르지 않음"
+
+
+def make(n: int, seed: int, chats: list[dict], lang: str = "ko") -> list[dict]:
     rng = random.Random(seed)
     kinds = [k for k, _ in KINDS]
     weights = [w for _, w in KINDS]
     out, seen = [], set()
     while len(out) < n:
         kind = rng.choices(kinds, weights)[0]
-        last, topic = turn_for(kind, rng)
-        msgs = [{"role": "system", "content": SYSTEM}] + context(rng, chats) + last
+        last, topic = turn_for_en(kind, rng) if lang == "en" else turn_for(kind, rng)
+        msgs = [{"role": "system", "content": SYSTEMS[lang]}] + context(rng, chats) + last
         key = json.dumps(msgs, ensure_ascii=False)
         if key in seen:
             continue
         seen.add(key)
         out.append({"kind": "tool", "source": "tools", "topic": topic, "tools": True,
-                    "messages": msgs})
+                    "messages": msgs, **({"lang": lang} if lang != "ko" else {})})
     return out
 
 
@@ -214,11 +333,12 @@ def main():
     p.add_argument("--n", type=int, default=4000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--chat", help="앞부분을 빌려 올 대화 (없으면 도구 말만)")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko", help="en이면 영어 모델용")
     args = p.parse_args()
     chats = []
     if args.chat and Path(args.chat).exists():
         chats = [json.loads(x) for x in Path(args.chat).read_text().splitlines() if x.strip()]
-    rows = make(args.n, args.seed, chats)
+    rows = make(args.n, args.seed, chats, args.lang)
     Path(args.out).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     count: dict = {}
     for r in rows:

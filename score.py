@@ -30,6 +30,7 @@ from teacher import after_think, first_json
 RESULTS = Path("results")
 HELDOUT = Path("data/heldout.jsonl")
 TOOLS_HELDOUT = Path("data/heldout-tools.jsonl")
+LANG = "ko"
 
 JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마지막 파이보의 대답을 채점합니다.
 {style}
@@ -46,12 +47,45 @@ JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마
 - repeat: 앞 대화에서 파이보가 한 말을 거의 그대로 되풀이했으면 true (앞 대화가 없으면 false)
 출력 형식: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
 
+#: 영어 모델(themaker-en): 같은 항목을 영어로 (korean 칸에 영어의 자연스러움을 매김)
+JUDGE_EN = """Below is a conversation between a student and TheMaker, an educational AI. Score TheMaker's
+last reply.
+{style}
+
+{dialog}
+TheMaker (reply to score): {reply}
+
+Judge the last reply and answer with one JSON only.
+- korean: the reply is in natural, easy English (1-5; 1 if it is not in English)
+- fit: it fits what the student means and the flow, and answers specifically (1-5)
+- short: it is short and easy to read aloud (1-5)
+- engage: it reacts like a friend and keeps the conversation going (1-5)
+- wrong: true if there is any wrong fact (science, common sense, numbers)
+- repeat: true if it almost repeats something TheMaker said before (false if there is no earlier talk)
+Output format: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
+
+
+def set_lang(lang: str) -> None:
+    """en이면 영어 모델의 채점 대화(data/heldout-en.jsonl 등)와 결과 폴더(results-en)로."""
+    global RESULTS, HELDOUT, TOOLS_HELDOUT, LANG
+    LANG = lang
+    if lang == "en":
+        RESULTS, HELDOUT = Path("results-en"), Path("data/heldout-en.jsonl")
+        TOOLS_HELDOUT = Path("data/heldout-tools-en.jsonl")
+
+
+def problem(text: str) -> str | None:
+    if LANG == "en":
+        from prompts_en import en_problem
+        return en_problem(text, 400)
+    return pibo_problem(text, 400)
+
 
 def with_system(messages: list[dict]) -> list[dict]:
     """시스템 글은 지금 것(tools.SYSTEM)으로: 채점 대화를 만든 뒤 시스템 글을 바꿨어도 기기 앱과 같게."""
-    from tools import SYSTEM
+    from tools import SYSTEMS
 
-    return [dict(m, content=SYSTEM) if m["role"] == "system" else m for m in messages]
+    return [dict(m, content=SYSTEMS[LANG]) if m["role"] == "system" else m for m in messages]
 
 
 def questions() -> list[dict]:
@@ -128,7 +162,8 @@ def answer(gguf: str, name: str) -> None:
 def dialog(q: dict) -> str:
     lines = []
     for m in q["messages"][1:]:
-        lines.append(("학생: " if m["role"] == "user" else "파이보: ") + m["content"])
+        who = ("Student: ", "TheMaker: ") if LANG == "en" else ("학생: ", "파이보: ")
+        lines.append(who[m["role"] != "user"] + m["content"])
     return "\n".join(lines)
 
 
@@ -141,6 +176,7 @@ def marks(text: str) -> dict:
 
 
 def judge() -> None:
+    from prompts_en import EN_STYLE
     from teacher import load_teacher, thinking_params
 
     qs = questions()
@@ -151,8 +187,9 @@ def judge() -> None:
             continue
         answers = json.loads(f.read_text())["answers"]
         llm = llm or load_teacher()
-        convs = [[{"role": "user", "content": JUDGE.format(style=PIBO_STYLE, dialog=dialog(q),
-                                                           reply=a or "(말 없음)")}]
+        judge_, style = (JUDGE_EN, EN_STYLE) if LANG == "en" else (JUDGE, PIBO_STYLE)
+        convs = [[{"role": "user", "content": judge_.format(style=style, dialog=dialog(q),
+                                                            reply=a or "(말 없음)")}]
                  for q, a in zip(qs, answers, strict=True)]
         outs = llm.chat(convs, thinking_params(1536), chat_template_kwargs={"enable_thinking": True},
                         use_tqdm=False)
@@ -172,6 +209,8 @@ def report() -> str:
     qs = questions()
     head = ["모델", "묶음", "대화 점수", "한국어", "알맞음", "짧음", "이어 가기", "틀린 사실",
             "앞 말 되풀이 (선생)", "앞 말 되풀이 (글자)", "같은 대답", "기호·반말", "평균 글자 수"]
+    if LANG == "en":
+        head[3], head[11] = "영어", "기호·영어 아닌 글자"
     rows = ["| " + " | ".join(head) + " |", "|" + " --- |" * len(head)]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
@@ -197,7 +236,7 @@ def report() -> str:
             shapes = Counter(same(answers[i]) for i in idx)
             dup = sum(shapes[same(answers[i])] > 1 for i in idx) / len(idx)
             echoed = sum(echo(qs[i], answers[i]) for i in idx) / len(idx)
-            bad = sum(bool(pibo_problem(answers[i], 400)) for i in idx) / len(idx)
+            bad = sum(bool(problem(answers[i])) for i in idx) / len(idx)
             length = statistics.mean(len(answers[i]) for i in idx)
             rows.append(f"| {name} | {which} ({len(idx)}) | {total} | {' | '.join(parts)} | "
                         f"{rate('wrong')} | {rate('repeat')} | {echoed:.0%} | {dup:.0%} | {bad:.0%} | "
@@ -242,7 +281,9 @@ def main():
     p.add_argument("what", choices=["answer", "judge", "report"])
     p.add_argument("--gguf")
     p.add_argument("--name")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko", help="en이면 영어 모델 채점")
     args = p.parse_args()
+    set_lang(args.lang)
     if args.what == "answer":
         answer(args.gguf, args.name)
     elif args.what == "judge":

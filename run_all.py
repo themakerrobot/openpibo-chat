@@ -4,8 +4,9 @@ Qwen3.5-0.8B 학습 → 어휘 줄이기 → Q4_K_M → 채점.
     python run_all.py            # 다시 돌리면 끝난 단계는 건너뛰고 이어서
     python run_all.py --status
 
-결과: out/themaker-0.8b-Q4_K_M.gguf (모든 기기 공통 대화 모델, 도구 없음)과 채점표
-results/score.md (예전 모델과 나란히).
+결과: out/themaker-0.8b-Q4_K_M.gguf (모든 기기 공통 한국어 대화 모델, 도구 3개)와 채점표
+results/score.md (예전 모델과 나란히). 그 뒤 영어 모델 out/themaker-en-0.8b-Q4_K_M.gguf와
+results-en/score.md (같은 대화를 선생이 영어로 옮겨 따로 학습, 도구 목록은 같음).
 단계마다 로그는 logs/<단계>.log, 끝나면 state/<단계>.done. 로그가 --stall 초 동안 멈추면
 그 단계를 멈추고 다시 합니다 (네 번까지). 실패한 단계가 있어도 다음 단계로 가고(필요한
 단계가 끝나지 않았으면 건너뜀), REPORT.md는 단계마다 새로 씁니다.
@@ -31,6 +32,10 @@ BASE = "Qwen/Qwen3.5-0.8B"   # 2026-03, Apache-2.0
 NAME = "themaker-0.8b"
 DATA = "data/train-themaker.jsonl"
 GGUF = f"out/{NAME}-Q4_K_M.gguf"
+#: 영어 모델 (같은 대화를 선생이 영어로 옮겨 따로 학습)
+NAME_EN = "themaker-en-0.8b"
+DATA_EN = "data/train-themaker-en.jsonl"
+GGUF_EN = f"out/{NAME_EN}-Q4_K_M.gguf"
 #: 쓰지 않을 원본 (원본 파일의 source 이름, PC의 환경 변수 SKIP으로, 띄어쓰기로 여럿)
 SKIP = os.environ.get("SKIP", "").split()
 #: 견줄 예전 모델 (지금 파이보에 올린 것)
@@ -39,7 +44,7 @@ BEFORE = "baseline/before-Q4_K_M.gguf"
 
 def steps():
     """(단계 이름, 명령, 먼저 끝나야 하는 단계들)."""
-    run = f"runs/{NAME}"
+    run, run_en = f"runs/{NAME}", f"runs/{NAME_EN}"
     return [
         # 원본 대화(data/source.jsonl, 채점용 data/source-heldout.jsonl: PC에만 있음)의 상대 말을
         # 선생이 파이보 말투로 바꿔 쓰고, 다시 검사해 좋은 것만
@@ -70,6 +75,31 @@ def steps():
         ("score-themaker", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker"],
          ["gguf", "data-heldout", "data-tools-heldout"]),
         ("score-judge", ["score.py", "judge"], ["score-before", "score-themaker"]),
+        # ---- 영어 모델: 거른 한국어 대화를 선생이 영어로 옮기고(생각 끔) 다시 검사(생각 켬)
+        ("data-en", ["translate.py", "--data", "data/pibo.jsonl", "--out", "data/pibo-en.jsonl",
+                     "--log", "data/translate-log.jsonl"], ["data-pibo"]),
+        ("data-en-heldout", ["translate.py", "--data", "data/heldout.jsonl",
+                             "--out", "data/heldout-en.jsonl",
+                             "--log", "data/translate-heldout-log.jsonl"], ["data-heldout"]),
+        ("data-tools-en", ["tool_data.py", "--lang", "en", "--out", "data/tools-en.jsonl",
+                           "--n", "4000", "--chat", "data/pibo-en.jsonl"], ["data-en"]),
+        ("data-tools-en-heldout", ["tool_data.py", "--lang", "en", "--out", "data/heldout-tools-en.jsonl",
+                                   "--n", "300", "--seed", "99", "--chat", "data/heldout-en.jsonl"],
+         ["data-en-heldout"]),
+        ("data-themaker-en", ["merge_data.py", "--lang", "en", "--out", DATA_EN, "data/pibo-en.jsonl",
+                              "data/tools-en.jsonl"], ["data-en", "data-tools-en"]),
+        ("train-en", ["train.py", "--base", BASE, "--data", DATA_EN, "--out", run_en, "--lr", "2e-5",
+                      "--batch", "2", "--accum", "16", "--extra", "data/extra-en.txt", "--lang", "en"],
+         ["data-themaker-en"]),
+        ("small-en", ["prune_vocab.py", "--model", f"{run_en}/final", "--out", f"{run_en}/small",
+                      "--data", DATA_EN], ["train-en"]),
+        ("gguf-en", ["export.py", "--model", f"{run_en}/small", "--name", NAME_EN, "--quant", "Q4_K_M",
+                     "--imatrix", DATA_EN, "--lang", "en"], ["small-en"]),
+        ("score-en-before", ["score.py", "answer", "--gguf", BEFORE, "--name", "before", "--lang", "en"],
+         ["data-en-heldout", "data-tools-en-heldout"]),
+        ("score-en-themaker", ["score.py", "answer", "--gguf", GGUF_EN, "--name", "themaker-en",
+                               "--lang", "en"], ["gguf-en", "data-en-heldout", "data-tools-en-heldout"]),
+        ("score-en-judge", ["score.py", "judge", "--lang", "en"], ["score-en-before", "score-en-themaker"]),
     ]
 
 
@@ -212,14 +242,15 @@ def report():
         lines.append(f"- {name}: {mark}")
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
-    score = HERE / "results" / "score.md"
-    if score.exists():
-        lines += ["", "## 채점 (results/score.md)", "", score.read_text()]
-    check = HERE / GGUF.replace(".gguf", "-check.json")
-    if check.exists():
-        d = json.loads(check.read_text())
-        lines += ["", f"## {Path(d['file']).name} ({d['MB']} MB)", "", "```",
-                  json.dumps(d["check"], ensure_ascii=False, indent=1), "```"]
+    for folder, gguf in (("results", GGUF), ("results-en", GGUF_EN)):
+        score = HERE / folder / "score.md"
+        if score.exists():
+            lines += ["", f"## 채점 ({folder}/score.md)", "", score.read_text()]
+        check = HERE / gguf.replace(".gguf", "-check.json")
+        if check.exists():
+            d = json.loads(check.read_text())
+            lines += ["", f"## {Path(d['file']).name} ({d['MB']} MB)", "", "```",
+                      json.dumps(d["check"], ensure_ascii=False, indent=1), "```"]
     (HERE / "REPORT.md").write_text("\n".join(lines) + "\n")
 
 

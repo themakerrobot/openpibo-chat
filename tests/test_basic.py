@@ -380,7 +380,10 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     steps = run_all.steps()
     names = [n for n, _, _ in steps]
     assert names == ["data-pibo", "data-heldout", "data-tools", "data-tools-heldout", "data-themaker",
-                     "train", "small", "gguf", "score-before", "score-themaker", "score-judge"]
+                     "train", "small", "gguf", "score-before", "score-themaker", "score-judge",
+                     "data-en", "data-en-heldout", "data-tools-en", "data-tools-en-heldout",
+                     "data-themaker-en", "train-en", "small-en", "gguf-en", "score-en-before",
+                     "score-en-themaker", "score-en-judge"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
                                   "data/pibo.jsonl", "--skip", *run_all.SKIP], [])
@@ -393,6 +396,13 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     cmd, _ = cmds["gguf"]
     assert cmd[cmd.index("--quant") + 1] == "Q4_K_M" and "--imatrix" in cmd
     assert run_all.GGUF == "out/themaker-0.8b-Q4_K_M.gguf"
+    # 영어 모델: 한국어 데이터(data-pibo)가 끝나면 옮기고, 같은 방법으로 학습·변환·채점
+    assert cmds["data-en"][1] == ["data-pibo"] and "data/pibo.jsonl" in cmds["data-en"][0]
+    cmd, needs = cmds["train-en"]
+    assert run_all.DATA_EN in cmd and "data/extra-en.txt" in cmd and needs == ["data-themaker-en"]
+    assert "--lang" in cmds["gguf-en"][0] and run_all.GGUF_EN == "out/themaker-en-0.8b-Q4_K_M.gguf"
+    for step in ("score-en-before", "score-en-themaker", "score-en-judge", "data-tools-en"):
+        assert cmds[step][0][cmds[step][0].index("--lang") + 1] == "en"
 
 
 def test_status_shows_the_running_step(tmp_path, monkeypatch):
@@ -709,3 +719,107 @@ def test_scores_compare_the_final_model_with_the_old_one(tmp_path, monkeypatch):
                  or r.startswith("| themaker |")}
     assert tool_rows["themaker"].split(" | ")[1].startswith("100%")
     assert tool_rows["before"].split(" | ")[1].startswith("0%") and "100%" in tool_rows["before"].split(" | ")[2]
+
+
+# ------------------------------------------------------------- 영어 모델 (themaker-en)
+
+def test_translation_keeps_every_line_and_drops_bad_english():
+    from prompts_en import decide_translate, translate_prompt
+    from tools import SYSTEM_EN
+
+    ex = json.loads(chat_line(("강아지가 넘어졌어", "많이 놀랐겠어요. 지금은 괜찮아요?"),
+                              ("응 괜찮아", "다행이에요. 저는 로봇이라 직접 못 봐서 궁금했어요.")))
+    prompt = translate_prompt(ex)
+    assert "4 lines" in prompt and "1. Student: 강아지가 넘어졌어" in prompt and "더메이커" in prompt
+    good = json.dumps({"ok": True, "lines": ["My puppy fell down", "Oh no, that must have been scary! Is it okay now?",
+                                              "Yeah, it's fine", "I'm glad. I am a robot, so I was curious."]})
+    msgs, why = decide_translate(good, ex)
+    assert why is None and msgs[0]["content"] == SYSTEM_EN and len(msgs) == 5
+    assert msgs[4]["content"] == "I'm glad. I am an AI, so I was curious."      # 로봇 → AI
+    cases = {json.dumps({"ok": False, "why": "wordplay"}): "영어로 옮기기 어려움",
+             json.dumps({"ok": True, "lines": ["a", "b"]}): "줄 수가 다름",
+             good.replace("scary!", "scary! 😀"): "기호",
+             good.replace("scary!", "scary! 강아지"): "영어 아닌 글자",
+             "no json": "선생의 답을 못 읽음"}
+    for text, want in cases.items():
+        assert decide_translate(text, ex)[1].startswith(want), text
+    curly = good.replace("I'm glad", "I’m glad")                                   # 굽은 따옴표는 고쳐 씀
+    assert decide_translate(curly, ex)[0][4]["content"].startswith("I'm glad")
+
+
+def test_translate_runs_from_the_log_and_checks_only_what_passed(tmp_path):
+    import translate
+
+    rows = [json.loads(chat_line((f"놀자 {k}", f"좋아요 {k}."), source="daily")) for k in range(3)]
+    for k, r in enumerate(rows):
+        r["id"] = f"d{k}"
+    exs = {r["id"]: r for r in rows}
+    asked = []
+
+    def fake(prompts, tokens, think):
+        asked.append((len(prompts), think))
+        if not think:                                    # 옮기기: 생각 끔
+            return [json.dumps({"ok": k != 1, "lines": [f"Let's play {k}", f"Sure {k}!"]})
+                    for k in range(len(prompts))]
+        return ['{"natural": 5, "fit": 5, "friend": 5, "kid": true, "robot": false, "wrong": false, '
+                '"unsafe": false}'] * len(prompts)
+
+    log = tmp_path / "log.jsonl"
+    done = translate.run(fake, exs, log)
+    assert asked == [(3, False), (2, True)]                           # 빠진 것은 검사하지 않음
+    kept, by_source, why = translate.results(exs, done)
+    assert [k["messages"][1]["content"] for k in kept] == ["Let's play 0", "Let's play 2"]
+    assert kept[0]["lang"] == "en" and by_source == {"daily": 2} and why == {"영어로 옮기기 어려움": 1}
+    asked.clear()
+    translate.run(fake, exs, log)                                      # 다시 돌리면 묻지 않음
+    assert asked == []
+
+
+def test_english_tool_dialogs_use_the_same_tool_list():
+    from tool_data import make
+    from tools import SYSTEM_EN
+
+    rows = make(800, 0, [], "en")
+    topics = {r["topic"] for r in rows}
+    assert topics == {"불빛", "불빛 끄기", "불빛 이어서", "움직이기", "보기", "부르지 않음"}
+    for r in rows:
+        assert r["messages"][0]["content"] == SYSTEM_EN and r["lang"] == "en"
+        for m in r["messages"][1:]:
+            assert m["content"].isascii(), m
+        for c in r["messages"][-1].get("tool_calls", []):
+            assert check_call(c["function"]["name"], c["function"]["arguments"]) is None
+        if r["topic"] == "부르지 않음":
+            assert "tool_calls" not in r["messages"][-1]
+
+
+def test_english_identity_and_own_dialogues():
+    import persona
+    from tools import ENGINE_EN, SYSTEM_EN
+    from train import read_extra
+
+    out, count = persona.apply([chat_line(("hi", "I am a robot, so Pibo can't eat."))], 200, lang="en")
+    exs = [json.loads(x) for x in out]
+    assert exs[0]["messages"][2]["content"] == "I am an AI, so TheMaker can't eat."
+    assert all(e["messages"][0]["content"] == SYSTEM_EN for e in exs) and count["자기소개"] == 200
+    said = " ".join(m["content"] for e in exs[1:] for m in e["messages"] if m["role"] == "assistant")
+    assert said.isascii() and f"I'm {ENGINE_EN}" in said and "Circulus" in said
+    own = read_extra(ROOT / "data" / "extra-en.txt", "en")
+    assert len(own) > 20 and all(e["messages"][0]["content"] == SYSTEM_EN for e in own)
+    assert own[0]["messages"][1]["content"] == "Who are you?"
+
+
+def test_english_app_says_its_fixed_lines_in_english(monkeypatch):
+    import pibo_chat as app
+
+    monkeypatch.setattr(app, "LANG", "en")
+    robot = Robot()
+    robot.can_move = False
+    assert app.act(robot, "move", {"action": "춤"}, "Let's dance!") == app.SAY["en"]["cant_move"]
+    monkeypatch.setattr(app, "ask", lambda *a, **k: reply("Moving back.", "move", action="뒤로"))
+    assert app.turn("x", [], "I sat in the back row", Robot(), "s") == "Moving back."   # back: 방향 낱말
+    assert app.turn("x", [], "I'm tired today", Robot(), "s") == app.SAY["en"]["not_moving"]
+    assert app.english_names(["cup", "apple", "cup"]) == "an apple and a cup"
+    pibo = app.Pibo(fake=True)
+    assert pibo.look() == "an apple and a cup"
+    monkeypatch.setattr(app, "ask", lambda *a, **k: reply("Let me take a look.", "look"))
+    assert app.turn("x", [], "What do you see?", pibo, "s") == "Let me take a look. I can see an apple and a cup."

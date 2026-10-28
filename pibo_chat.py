@@ -6,6 +6,7 @@
     sudo ~/.pyenv/bin/python3 pibo_chat.py --url http://127.0.0.1:50020   # 키보드로 말하기
     python3 pibo_chat.py --fake        # openpibo가 없는 PC에서: 동작은 흉내만
     python3 pibo_chat.py --no-tools    # 도구 없이 대화만
+    sudo ~/.pyenv/bin/python3 pibo_chat.py --lang en   # 영어 모델(themaker-en-0.8b-Q4_K_M.gguf)을 띄웠을 때
 
 파이브레인은 pibrain_chat.py (같은 모델, 같은 도구 목록, 불빛 함수만 다르고 움직이기는 없음).
 
@@ -32,9 +33,35 @@ import sys
 import time
 import urllib.request
 
-from tools import ACTIONS, COLORS, SYSTEM, TOOLS, calls_of, check_call, has_batchim
+from tools import ACTIONS, COLORS, SYSTEMS, TOOLS, calls_of, check_call, has_batchim
 
 HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈)
+LANG = "ko"   # 모델의 말: ko(themaker) 또는 en(themaker-en), --lang으로 바꿈
+
+#: 앱이 정해 두고 하는 말
+SAY = {
+    "ko": {"unclear": "미안해요, 잘 못 알아들었어요. 한 번만 다시 말해 줄래요?",
+           "failed": "미안해요, 지금은 그걸 하지 못했어요.", "light_off": "불빛을 껐어요.",
+           "light_on": "불빛을 바꿨어요.", "moving": "움직여 볼게요!", "nothing": "앞에 아무것도 안 보여요.",
+           "cant_move": "저는 몸이 없어서 움직일 수는 없어요. 대신 불빛을 바꿔 볼까요?",
+           "not_moving": "그랬군요. 조금 더 이야기해 줄래요?", "stop": "네, 멈출게요.",
+           "error": "잠깐 문제가 생겼어요. 한 번만 다시 말해 줄래요?", "hello": "안녕",
+           "tools_on": "좋아요, 이제 다시 움직이고 불빛도 바꿀 수 있어요!",
+           "tools_off": "좋아요, 지금부터는 대화만 할게요."},
+    "en": {"unclear": "Sorry, I didn't catch that. Can you say it again?",
+           "failed": "Sorry, I couldn't do that right now.", "light_off": "I turned off the light.",
+           "light_on": "I changed the light.", "moving": "Okay, let me move!",
+           "nothing": "I don't see anything in front of me.",
+           "cant_move": "I don't have a body, so I can't move. Want me to change the light instead?",
+           "not_moving": "I see. Can you tell me more?", "stop": "Okay, I'll stop.",
+           "error": "Something went wrong for a moment. Can you say that again?", "hello": "Hi",
+           "tools_on": "Okay, now I can move and change the light again!",
+           "tools_off": "Okay, from now on I'll just talk."},
+}
+
+
+def say(key: str) -> str:
+    return SAY[LANG][key]
 
 
 def lang_of(text: str) -> str:
@@ -93,6 +120,15 @@ def korean_names(names) -> str:
     return ", ".join(sorted(said)) or "아무것도 안 보임"
 
 
+def english_names(names) -> str:
+    """검출된 이름들 → "a cup and a person" (영어 모델용, 없으면 "아무것도 안 보임")."""
+    said = sorted({str(n).strip().lower().replace("_", " ") for n in names if n and str(n).strip()})
+    said = [("an " if n[0] in "aeiou" else "a ") + n for n in said]
+    if not said:
+        return "아무것도 안 보임"
+    return said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1]
+
+
 class Pibo:
     """파이보의 openpibo 함수 (openpibo-os.pibo 기준). fake면 실행하지 않고 흉내만."""
 
@@ -133,37 +169,41 @@ class Pibo:
             self.part("motion").set_motion("stop")
 
     def look(self) -> str:
-        """카메라로 찍어 사물 인식 → "컵, 사람" (없으면 "아무것도 안 보임")."""
+        """카메라로 찍어 사물 인식 → "컵, 사람" (영어 모델이면 "a cup and a person", 없으면
+        "아무것도 안 보임")."""
+        names = korean_names if LANG == "ko" else english_names
         if self.fake:
-            return "컵, 사과"
+            return names(["cup", "apple"])
         from openpibo.vision_camera import Camera
         from openpibo.vision_detect import Detect
         items = Detect().detect_object(Camera().read())
-        return korean_names(i.get("name") if isinstance(i, dict) else i for i in items or [])
+        return names(i.get("name") if isinstance(i, dict) else i for i in items or [])
 
 
 def act(robot: Pibo, name: str, args: dict, said: str) -> str:
     """모델이 부른 도구 하나를 실행하고 할 말을 돌려줍니다. said: 모델이 호출 앞에 쓴 말."""
     if check_call(name, args):
-        return said or "미안해요, 잘 못 알아들었어요. 한 번만 다시 말해 줄래요?"
+        return said or say("unclear")
     t = time.time()
     try:
         if name == "move" and not robot.can_move:
-            return robot.cant_move          # 모델의 "춤출게요!"는 버림
+            # 모델의 "춤출게요!"는 버림
+            return robot.cant_move if LANG == "ko" else say("cant_move")
         if name == "light":
             robot.light(args["color"])
-            done = said or ("불빛을 껐어요." if args["color"] == "끄기" else "불빛을 바꿨어요.")
+            done = said or say("light_off" if args["color"] == "끄기" else "light_on")
         elif name == "move":
             robot.move(args["action"])
-            done = said or "움직여 볼게요!"
+            done = said or say("moving")
         else:                               # look
             seen = robot.look()
             done = (f"{said} " if said else "") + (
-                "앞에 아무것도 안 보여요." if seen == "아무것도 안 보임" else
+                say("nothing") if seen == "아무것도 안 보임" else
+                f"I can see {seen}." if LANG == "en" else
                 f"앞에 {seen}{'이' if has_batchim(seen) else '가'} 보여요.")
     except Exception as exc:  # noqa: BLE001 — 로봇이 멈추지 않게
         print(f"  [도구] {name}({args}) 실패: {exc}", flush=True)
-        return "미안해요, 지금은 그걸 하지 못했어요."
+        return say("failed")
     print(f"  [도구] {name}({args}) ({time.time() - t:.1f}초)", flush=True)
     return done
 
@@ -213,7 +253,7 @@ MOVE_WORDS = {"앞으로": re.compile(r"앞|이리|다가|오라|forward|come", 
               "왼쪽": re.compile(r"왼|left", re.IGNORECASE),
               "오른쪽": re.compile(r"오른|right", re.IGNORECASE)}
 #: 막은 뒤 다시 물어도 또 막히면 하는 말
-NOT_MOVING = "그랬군요. 조금 더 이야기해 줄래요?"
+NOT_MOVING = SAY["ko"]["not_moving"]
 
 
 def blocked(text: str, call: tuple[str, dict] | None) -> bool:
@@ -243,7 +283,7 @@ def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bo
         msg = ask(url, msgs, tools, temperature=1.0)
         calls = calls_of(msg)
         if calls and blocked(text, calls[0]):
-            msg, calls = {"content": NOT_MOVING}, []
+            msg, calls = {"content": say("not_moving")}, []
     content = (msg.get("content") or "").strip()
     if calls:
         said = act(robot, *calls[0], content)
@@ -269,22 +309,23 @@ def warm_up(url: str, system: str, tools: bool) -> None:
                          f"확인하세요 ({exc})") from None
     print("  (준비 중)", flush=True)
     t = time.time()
-    ask(url, [{"role": "system", "content": system}, {"role": "user", "content": "안녕"}],
+    ask(url, [{"role": "system", "content": system}, {"role": "user", "content": say("hello")}],
         tools, max_tokens=1, timeout=900)
     print(f"  (준비 {time.time() - t:.1f}초)", flush=True)
 
 
 #: "대화만 하자" 같은 말로 도구를 끄고 켭니다
-SWITCH_REPLY = {True: "좋아요, 이제 다시 움직이고 불빛도 바꿀 수 있어요!",
-                False: "좋아요, 지금부터는 대화만 할게요."}
+SWITCH_REPLY = {True: SAY["ko"]["tools_on"], False: SAY["ko"]["tools_off"]}
 
 
 def tool_switch(text: str, on: bool) -> bool:
     """학생 말에 따라 바뀐 도구 사용 여부 (띄어쓰기는 보지 않음)."""
     t = re.sub(r"\s", "", text)
-    if re.search(r"(쓰지|사용하지|움직이지)(마|말)|대화만|말로만|얘기만|이야기만|가만히있", t):
+    if re.search(r"(쓰지|사용하지|움직이지)(마|말)|대화만|말로만|얘기만|이야기만|가만히있"
+                 r"|(don't|donot)(move|usetools)|justtalk|onlytalk", t, re.IGNORECASE):
         return False
-    if re.search(r"움직여도|(이제|다시)움직|도구.*(쓰|써|사용)", t):
+    if re.search(r"움직여도|(이제|다시)움직|도구.*(쓰|써|사용)|youcanmove|use(your)?tools", t,
+                 re.IGNORECASE):
         return True
     return on
 
@@ -296,11 +337,14 @@ def main(robot_class=Pibo):
     p.add_argument("--fake", action="store_true", help="openpibo 없이 동작을 한 척만")
     p.add_argument("--history", type=int, default=HISTORY,
                    help="기억하는 주고받기 수 (지금 말 포함)")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko",
+                   help="en이면 영어 모델(themaker-en): 영어 시스템 글과 영어로 정해 둔 말")
     args = p.parse_args()
     globals()["HISTORY"] = max(1, args.history)
+    globals()["LANG"] = args.lang
     robot = robot_class(fake=args.fake)
     name = robot.name                        # 화면에 찍는 이름만 (모델에는 보내지 않음)
-    system = SYSTEM
+    system = SYSTEMS[LANG]
     use_tools = not args.no_tools
     warm_up(args.url, system, use_tools)
     history: list = []
@@ -319,7 +363,7 @@ def main(robot_class=Pibo):
                 # 끄고 켜는 말은 모델에 보내지 않고 정해진 말로 대답하고 기억을 비웁니다
                 history.clear()
                 print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
-                speak(name, SWITCH_REPLY[use_tools])
+                speak(name, say("tools_on" if use_tools else "tools_off"))
                 continue
         t = time.time()
         try:
@@ -328,7 +372,7 @@ def main(robot_class=Pibo):
             body = exc.read().decode("utf-8", "ignore")[:300] if hasattr(exc, "read") else ""
             print(f"  (서버 오류: {exc} {body})", flush=True)
             history.clear()
-            speak(name, "잠깐 문제가 생겼어요. 한 번만 다시 말해 줄래요?")
+            speak(name, say("error"))
         print(f"  (모두 {time.time() - t:.1f}초)", flush=True)
 
 

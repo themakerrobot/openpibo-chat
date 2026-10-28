@@ -9,6 +9,8 @@
   시스템 글은 모든 기기에 같은 `tools.SYSTEM`이고, 앱이 보내지 않아도 GGUF 템플릿이 넣습니다.
 - 도구 3개(불빛, 보기, 움직이기, `tools.TOOLS`)를 모델이 학생 말을 보고 부릅니다. 기기 앱은 그 호출을
   자기 함수로 실행합니다 (파이보 `pibo_chat.py`, 파이브레인 `pibrain_chat.py`: 움직이기는 못 한다고 말함).
+- 영어 모델 `out/themaker-en-0.8b-Q4_K_M.gguf`: 같은 대화를 선생이 쉬운 영어로 옮겨 따로 학습한 것
+  (`tools.SYSTEM_EN`, 도구 목록은 같음). 기기에 올릴 때 한국어·영어 중 하나를 고르고 앱은 `--lang en`.
 
 ## 데이터와 학습
 
@@ -28,6 +30,7 @@
 | 어휘 줄이기 | `prune_vocab.py` | 24만 → 약 3만 토큰 |
 | GGUF | `export.py` | 학습 데이터로 imatrix를 재서 Q4_K_M. 템플릿은 늘 생각 없이, 시스템 글이 없으면 `tools.SYSTEM`을 넣음 |
 | 채점 | `score.py` | 학습에 안 쓴 대화로 최종 모델과 예전 모델을 같은 설정으로 묻고 선생이 매김. 도구는 맞게 불렀는지 정답률 (`results/score.md`) |
+| 영어 모델 | `translate.py`, `prompts_en.py`, `data/extra-en.txt` | 거른 한국어 대화(`data/pibo.jsonl`)를 선생이 생각 없이 쉬운 영어로 옮기고, 생각을 켜고 다시 검사(4점 미만은 뺌). 도구 대화·자기소개도 영어로, 학습·어휘 줄이기·GGUF·채점은 같은 방법 (`results-en/score.md`). `run_all.py`가 한국어 다음에 이어서 함 |
 
 ## 5090 PC에서
 

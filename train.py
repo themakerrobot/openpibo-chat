@@ -46,11 +46,16 @@ def targets(tok, example: dict, max_len: int):
             yield ids, labels
 
 
-def read_extra(path) -> list[dict]:
-    """data/extra.txt: "아이:" 줄과 "더메이커:" 줄이 번갈아 나오는 대화, 빈 줄로 구분.
-    #으로 시작하는 줄은 무시합니다."""
-    from tools import SYSTEM
+#: 직접 쓴 대화의 줄 머리 (한국어 extra.txt, 영어 extra-en.txt)
+USER_TAGS, MODEL_TAGS = ("아이:", "Kid:"), ("더메이커:", "TheMaker:")
 
+
+def read_extra(path, lang: str = "ko") -> list[dict]:
+    """data/extra.txt: "아이:" 줄과 "더메이커:" 줄이 번갈아 나오는 대화, 빈 줄로 구분 (영어는
+    data/extra-en.txt에 "Kid:", "TheMaker:"). #으로 시작하는 줄은 무시합니다."""
+    from tools import SYSTEMS
+
+    SYSTEM = SYSTEMS[lang]
     out, msgs = [], []
 
     def close():
@@ -66,21 +71,22 @@ def read_extra(path) -> list[dict]:
             continue
         if not line:
             close()
-        elif line.startswith("아이:"):
-            msgs.append({"role": "user", "content": line[3:].strip()})
-        elif line.startswith("더메이커:"):
-            msgs.append({"role": "assistant", "content": line[5:].strip()})
+        elif line.startswith(USER_TAGS):
+            msgs.append({"role": "user", "content": line.split(":", 1)[1].strip()})
+        elif line.startswith(MODEL_TAGS):
+            msgs.append({"role": "assistant", "content": line.split(":", 1)[1].strip()})
     close()
     return out
 
 
-def build_rows(tok, data: str, max_len: int) -> list[dict]:
+def build_rows(tok, data: str, max_len: int, extra: str | None = None,
+               lang: str = "ko") -> list[dict]:
     """학습 데이터와 직접 쓴 대화(세 번씩)를 학습 차례 목록으로."""
     rows, broken = [], 0
     lines = Path(data).read_text().splitlines()
-    extra = Path(data).with_name("extra.txt")
+    extra = Path(extra) if extra else Path(data).with_name("extra.txt")
     if extra.exists():   # 직접 쓴 대화: 만든 데이터보다 세 번 더 보게
-        own = [json.dumps(e, ensure_ascii=False) for e in read_extra(extra)]
+        own = [json.dumps(e, ensure_ascii=False) for e in read_extra(extra, lang)]
         print(f"직접 쓴 대화 {len(own)}개 추가 (세 번씩)", flush=True)
         lines += own * 3
     for line in lines:
@@ -114,6 +120,8 @@ def main():
     p.add_argument("--accum", type=int, default=16)
     p.add_argument("--max-len", type=int, default=1536)
     p.add_argument("--allow-cpu", action="store_true", help="GPU 없이 (시험용, 아주 느림)")
+    p.add_argument("--extra", help="직접 쓴 대화 (기본: --data 옆의 extra.txt)")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko", help="직접 쓴 대화의 시스템 글")
     args = p.parse_args()
 
     import gc
@@ -133,7 +141,7 @@ def main():
         raise SystemExit("GPU가 안 보여요: nvidia-smi를 확인하세요 (드라이버 업데이트 뒤면 "
                          "재부팅이나 드라이버 재설치가 필요할 수 있어요)")
     tok = AutoTokenizer.from_pretrained(args.base)
-    rows = build_rows(tok, args.data, args.max_len)
+    rows = build_rows(tok, args.data, args.max_len, args.extra, args.lang)
     pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
 
     def collate(batch):

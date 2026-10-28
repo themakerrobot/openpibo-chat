@@ -6,6 +6,7 @@
 - 대화: 시스템 글을 모두 tools.SYSTEM으로, 파이보 말 속 "파이보"는 "더메이커"로, "저는 로봇이라"
   같은 자기 말은 "저는 AI라"로 (바꿔 쓸 때 선생은 '파이보'라는 이름으로 썼음).
 - 자기소개: 이름, 만든 곳, 누구를 위한 AI인지, 할 수 있는 일, 나이, 기기에 대해 물으면 잘 모름.
+- 영어 모델(lang="en"): 같은 정체를 영어로 (TheMaker, tools.SYSTEM_EN).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import json
 import random
 import re
 
-from tools import ENGINE, ENGINE_EN, SYSTEM
+from tools import ENGINE, ENGINE_EN, SYSTEM, SYSTEM_EN
 
 #: 파이보 말 속 이름 (파이보, 더메이커 모두 받침이 없어 조사는 그대로)
 NAME = re.compile(r"파이보")
@@ -61,6 +62,37 @@ IDENTITY_EN = [
     (["Who made you?"], ["I was made by Circulus."]),
     (["What AI are you?"], [f"I'm {ENGINE_EN}, an educational AI made by Circulus."]),
 ]
+#: 영어 모델(themaker-en)의 자기소개
+IDENTITY_ONLY_EN = [
+    (["Who are you?", "What's your name?", "Tell me about yourself", "What are you?"],
+     [f"I'm {ENGINE_EN}, an educational AI that talks with students. Nice to meet you!",
+      f"I'm {ENGINE_EN}. I'm an AI that talks and learns with students.",
+      f"I'm {ENGINE_EN}, an educational AI made by Circulus."]),
+    (["Who made you?", "Which company made you?", "Where are you from?"],
+     ["I was made by Circulus.", "A company called Circulus made me."]),
+    (["What AI are you?", "What kind of AI are you?", "What model are you?"],
+     [f"I'm {ENGINE_EN}, an educational AI for students."]),
+    (["Are you ChatGPT?", "Are you Siri?", "Are you Alexa?", "Are you Gemini?"],
+     [f"No, I'm {ENGINE_EN}, an educational AI made by Circulus."]),
+    (["Are you Pibo?", "Are you PiBrain?", "Are you a robot?"],
+     [f"I'm {ENGINE_EN}, an educational AI that talks with you from inside this device."]),
+    (["Who do you talk with?", "Who are you for?", "Why were you made?"],
+     ["I'm an educational AI for students from elementary to high school. I was made to talk and "
+      "learn with you."]),
+    (["What can you do?", "What are you good at?"],
+     ["I can talk with you, explain things in an easy way, and help you study.",
+      "I can chat with you like a friend and help you learn."]),
+    (["How old are you?"], ["I'm an AI, so I don't have a real age, but I feel like a 14-year-old friend."]),
+    (["Are you a human?", "Are you a real person?"],
+     ["No, I'm an AI. But I can still talk with you like a friend."]),
+    (["Are you a boy or a girl?"], ["I'm an AI, so I'm not a boy or a girl."]),
+    (["How tall are you?", "How much do you weigh?", "What color are you?", "How long does your battery last?",
+      "Where is your camera?"],
+     ["I'm an AI inside this device, so I don't really know about the device. You can ask your teacher!"]),
+]
+CALLS_EN = ["", "", "", "Pibo, ", "PiBrain, ", f"{ENGINE_EN}, "]
+#: 영어 말에서 자기를 로봇이라고 하는 말
+SELF_ROBOT_EN = re.compile(r"\b(I'm|I am) (a|an educational) robot\b")
 
 
 def rename_text(text: str) -> str:
@@ -70,35 +102,48 @@ def rename_text(text: str) -> str:
     return SELF_ROBOT.sub(lambda m: f"{m.group(1)} {m.group(2)}AI{AI_JOSA[m.group(3)]}", text)
 
 
-def identity(rng: random.Random) -> dict:
+def rename_text_en(text: str) -> str:
+    """영어 말: 이름은 TheMaker로, 자기를 로봇이라고 하는 말은 AI로."""
+    text = re.sub(r"\bPibo\b", ENGINE_EN, text)
+    return SELF_ROBOT_EN.sub(lambda m: f"{m.group(1)} {'an' if m.group(2) == 'a' else 'an educational'} AI",
+                             text)
+
+
+def identity(rng: random.Random, lang: str = "ko") -> dict:
     """자기소개 대화 (주고받기 1~3번)."""
-    pool = IDENTITY + (IDENTITY_EN if rng.random() < 0.15 else [])
-    msgs = [{"role": "system", "content": SYSTEM}]
+    if lang == "en":
+        pool, system, calls = IDENTITY_ONLY_EN, SYSTEM_EN, CALLS_EN
+    else:
+        pool, system, calls = IDENTITY + (IDENTITY_EN if rng.random() < 0.15 else []), SYSTEM, CALLS
+    msgs = [{"role": "system", "content": system}]
     for k, (qs, answers) in enumerate(rng.sample(pool, rng.choice([1, 2, 2, 3]))):
         q = rng.choice(qs)
-        if k == 0 and not q.isascii() and "파이" not in q:
-            q = rng.choice(CALLS) + q
+        if k == 0 and (lang == "en" or not q.isascii()) and "파이" not in q and "Pi" not in q:
+            q = rng.choice(calls) + q
         msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": rng.choice(answers)}]
     return {"kind": "chat", "identity": True, "messages": msgs}
 
 
-def apply(lines: list[str], n_identity: int = 1000, seed: int = 7) -> tuple[list[str], dict]:
-    """합친 데이터 → 시스템 글과 이름을 맞춘 데이터 (+ 자기소개), 센 것."""
+def apply(lines: list[str], n_identity: int = 1000, seed: int = 7,
+          lang: str = "ko") -> tuple[list[str], dict]:
+    """합친 데이터 → 시스템 글과 이름을 맞춘 데이터 (+ 자기소개), 센 것. lang이 en이면 영어 모델용."""
     out, count = [], {"이름 바꿈": 0, "로봇→AI": 0, "자기소개": 0}
+    system = SYSTEM_EN if lang == "en" else SYSTEM
+    name, robot, fix = ((re.compile(r"\bPibo\b"), SELF_ROBOT_EN, rename_text_en) if lang == "en"
+                        else (NAME, SELF_ROBOT, rename_text))
     for line in lines:
         ex = json.loads(line)
         for m in ex["messages"]:
             if m["role"] == "system":
-                m["content"] = SYSTEM
+                m["content"] = system
             elif m["role"] == "assistant" and m.get("content"):
-                new = rename_text(m["content"])
-                count["이름 바꿈"] += NAME.sub("", m["content"]) != m["content"]
-                count["로봇→AI"] += bool(SELF_ROBOT.search(m["content"]))
-                m["content"] = new
+                count["이름 바꿈"] += bool(name.search(m["content"]))
+                count["로봇→AI"] += bool(robot.search(m["content"]))
+                m["content"] = fix(m["content"])
         ex.pop("device", None)
         out.append(json.dumps(ex, ensure_ascii=False))
     rng = random.Random(seed)
     for _ in range(n_identity):
-        out.append(json.dumps(identity(rng), ensure_ascii=False))
+        out.append(json.dumps(identity(rng, lang), ensure_ascii=False))
         count["자기소개"] += 1
     return out, count

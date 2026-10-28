@@ -61,11 +61,19 @@ def thinking_params(max_tokens: int):
     return SamplingParams(temperature=0.6, top_p=0.95, top_k=20, max_tokens=max_tokens, seed=0)
 
 
-def ask(llm, prompts: list[str], max_tokens: int) -> list[str]:
-    """생각을 켜고 여러 개를 한 번에 묻습니다 (생각 뒤의 글만 돌려줌)."""
+def plain_params(max_tokens: int):
+    """생각 없이 답할 때의 설정 (Qwen3 권장값)."""
+    from vllm import SamplingParams
+
+    return SamplingParams(temperature=0.7, top_p=0.8, top_k=20, max_tokens=max_tokens, seed=0)
+
+
+def ask(llm, prompts: list[str], max_tokens: int, think: bool = True) -> list[str]:
+    """여러 개를 한 번에 묻습니다 (생각 뒤의 글만 돌려줌). think가 거짓이면 생각 없이: 번역처럼
+    생각이 필요 없는 일은 답이 수백 토큰 짧아져 몇 배 빠릅니다."""
     outs = llm.chat([[{"role": "user", "content": p}] for p in prompts],
-                    thinking_params(max_tokens), chat_template_kwargs={"enable_thinking": True},
-                    use_tqdm=False)
+                    thinking_params(max_tokens) if think else plain_params(max_tokens),
+                    chat_template_kwargs={"enable_thinking": think}, use_tqdm=False)
     return [after_think(o.outputs[0].text) for o in outs]
 
 

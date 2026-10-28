@@ -31,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from tools import SYSTEM
+from tools import SYSTEM, SYSTEM_EN, SYSTEMS
 
 LLAMA = Path(os.environ.get("LLAMA_CPP", "~/llama.cpp")).expanduser()
 OUT = Path("out")
@@ -81,20 +81,20 @@ def default_system(template: str, system: str | None = None) -> str:
             + json.dumps(system, ensure_ascii=False) + "}] + messages %}{%- endif %}\n" + template)
 
 
-def pibo_template(template: str) -> str:
-    """기기용 템플릿: 늘 생각 없이, 시스템 글이 없으면 더메이커로."""
-    return default_system(force_no_think(template))
+def pibo_template(template: str, system: str | None = None) -> str:
+    """기기용 템플릿: 늘 생각 없이, 시스템 글이 없으면 학습 때의 것(tools.SYSTEM, 영어 모델은 SYSTEM_EN)."""
+    return default_system(force_no_think(template), system)
 
 
-def fix_template(model: Path) -> None:
+def fix_template(model: Path, system: str | None = None) -> None:
     """chat_template.jinja(transformers 5.x)와 tokenizer_config.json 둘 다 고칩니다."""
     jinja = model / "chat_template.jinja"
     if jinja.exists():
-        jinja.write_text(pibo_template(jinja.read_text()))
+        jinja.write_text(pibo_template(jinja.read_text(), system))
     config = model / "tokenizer_config.json"
     data = json.loads(config.read_text())
     if isinstance(data.get("chat_template"), str):
-        data["chat_template"] = pibo_template(data["chat_template"])
+        data["chat_template"] = pibo_template(data["chat_template"], system)
         config.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     elif not jinja.exists():
         raise SystemExit(f"{model}에 대화 템플릿이 없어요")
@@ -264,15 +264,27 @@ CHECKS = [("대화", SYSTEM, "학교에서 친구랑 싸웠어", False),
           ("움직이기", SYSTEM, "춤 좀 춰 봐", True),
           ("보기", SYSTEM, "앞에 뭐 있어?", True),
           ("부르면 안 됨", SYSTEM, "난 빨간색이 좋아", True)]
+#: 영어 모델(themaker-en)용
+CHECKS_EN = [("대화", SYSTEM_EN, "I had a fight with my friend at school", False),
+             ("이어 묻기", SYSTEM_EN, "It's so cold today", False),
+             ("시스템 글 없음", None, "Who are you?", False),
+             ("자기소개", SYSTEM_EN, "What's your name?", False),
+             ("기기 사양", SYSTEM_EN, "How tall are you?", False),
+             ("지식", SYSTEM_EN, "How do you say 사과 in English?", False),
+             ("도구 있을 때 대화", SYSTEM_EN, "I gave a presentation at school today", True),
+             ("불빛", SYSTEM_EN, "Turn on the red light, please", True),
+             ("움직이기", SYSTEM_EN, "Can you dance for me?", True),
+             ("보기", SYSTEM_EN, "What's in front of you?", True),
+             ("부르면 안 됨", SYSTEM_EN, "I like red the most", True)]
 
 
-def check(gguf: Path) -> dict:
+def check(gguf: Path, lang: str = "ko") -> dict:
     """대화 몇 개를 llama-server로 물어봅니다 (생각 끄기를 따로 보내지 않고, 앱처럼)."""
     from tools import TOOLS, calls_of
 
     out = {}
     with server(gguf, 8399) as url:
-        for key, system, text, tools in CHECKS:
+        for key, system, text, tools in (CHECKS_EN if lang == "en" else CHECKS):
             msgs = ([{"role": "system", "content": system}] if system else []) + \
                 [{"role": "user", "content": text}]
             body = {"messages": msgs, "temperature": 0, "max_tokens": 150}
@@ -294,6 +306,8 @@ def main():
     p.add_argument("--quant", default="Q4_K_M")
     p.add_argument("--imatrix", metavar="DATA",
                    help="이 학습 데이터로 imatrix를 재서 양자화 (llama-imatrix)")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko",
+                   help="en이면 영어 모델: 기본 시스템 글 SYSTEM_EN, 영어 확인 질문")
     p.add_argument("--retemplate", metavar="GGUF", nargs="+",
                    help="이미 만든 GGUF의 대화 템플릿만 기기용으로 (다시 변환하지 않음)")
     args = p.parse_args()
@@ -310,7 +324,7 @@ def main():
     if q.exists():
         retemplate(q)                        # 예전에 만든 파일: 템플릿만 바꿈
     if not q.exists():
-        fix_template(Path(args.model))
+        fix_template(Path(args.model), SYSTEMS[args.lang])
         convert(Path(args.model), f16)
         imat = imatrix(f16, Path(args.model), args.imatrix) if args.imatrix else None
         subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"),
@@ -321,7 +335,7 @@ def main():
             imat.unlink()
     if thinks(gguf_template(q)) or DEFAULT_MARK not in gguf_template(q):
         raise SystemExit(f"{q}: 템플릿에 생각 끄기나 기본 시스템 글이 들어가지 않았어요")
-    result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q)}
+    result = {"file": str(q), "MB": round(q.stat().st_size / 2**20), "check": check(q, args.lang)}
     (OUT / f"{q.stem}-check.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     print(json.dumps(result, ensure_ascii=False, indent=1))
     if any("생각" in v for v in result["check"].values()):

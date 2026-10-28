@@ -12,6 +12,7 @@ samples/
 # 데이터는 어떤 것도 git에 올리지 않습니다: 직접 쓴 대화만
 data/*
 !data/extra.txt
+!data/extra-en.txt
 *.zip
 *.xlsx
 *.tsv

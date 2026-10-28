@@ -72,6 +72,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("data", nargs="+")
+    p.add_argument("--lang", choices=["ko", "en"], default="ko", help="en이면 영어 모델용")
     p.add_argument("--no-persona", action="store_true",
                    help="시스템 글·이름 맞추기와 자기소개를 하지 않음")
     args = p.parse_args()
@@ -88,7 +89,7 @@ def main():
     print("가장 흔한 첫 문장: " + " / ".join(f"{t} ({n})" for t, n in firsts.most_common(10)),
           flush=True)
     if not args.no_persona:
-        lines, count = apply(lines)
+        lines, count = apply(lines, lang=args.lang)
         print("교육용 AI 더메이커: " + ", ".join(f"{k} {v}" for k, v in count.items()), flush=True)
     Path(args.out).write_text("\n".join(lines) + "\n")
     print(f"{args.out}: {len(lines)}줄", flush=True)

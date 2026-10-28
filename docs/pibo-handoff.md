@@ -51,7 +51,7 @@
 | 학습 PC | Ubuntu, IP `192.168.68.118`, 사용자 `circulus`, 저장소 `~/openpibo-chat` |
 | 새 llama.cpp | `/home/pi/llama.cpp-new` (빌드 11889, 커밋 `d854d98`). 기존 `/home/pi/.llama.cpp`는 Qwen3.5를 못 읽음 |
 | 기존 서버 | 서비스가 `/home/pi/.llama.cpp/build/bin/llama-server -m /home/pi/.model/llm/llm-model.gguf --ctx-size 2048 --log-disable --host 0.0.0.0 --port 50020`로 젬마3 1B를 띄움 |
-| 새 모델 | `themaker-0.8b-Q4_K_M.gguf` (PC `out/`, 약 320MB) |
+| 새 모델 | `themaker-0.8b-Q4_K_M.gguf` (PC `out/`, 약 320MB). 영어판은 `themaker-en-0.8b-Q4_K_M.gguf`: 올릴 때 하나만 고르고 앱은 `--lang en` (영어 시스템 글 `tools.SYSTEM_EN`, 도구 목록은 같음) |
 | 파이썬 | `sudo ~/.pyenv/bin/python3` (openpibo가 여기에 있고, Device·카메라·NeoPixel은 root 필요) |
 | 기기 웹 대화 | `openpibo-os.{pibo,pibrain}/chat/run_chat.py`의 `SYSTEM`이 예전 문구. 새 모델에서는 `tools.SYSTEM`과 글자까지 같게 바꿔야 함 (두 기기 같은 글) |
 
@@ -142,3 +142,4 @@ ExecStart=/home/pi/llama.cpp-new/build/bin/llama-server -m /home/pi/.model/llm/l
   backward1, left, right)이 이 파이보의 motion_db에 모두 있는지
 - 파이브레인 NeoPixel을 앱에서 켤 때 Tools(50000)나 검수 서버와 겹치지 않는지
 - 파이브레인은 마이크가 없어 음성 인식이 안 됨: 글자 입력 화면(`chat/run_chat.py`)에 도구를 붙일지
+- 영어판: 파이보의 음성 인식·합성이 영어를 지원하는지. 해외 배포는 데이터 이용 조건을 확인한 뒤에만
