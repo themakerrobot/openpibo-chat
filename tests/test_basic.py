@@ -743,6 +743,10 @@ def test_translation_keeps_every_line_and_drops_bad_english():
              "no json": "선생의 답을 못 읽음"}
     for text, want in cases.items():
         assert decide_translate(text, ex)[1].startswith(want), text
+    tagged = json.dumps({"ok": True, "lines": ["1. Student: My puppy fell down", "2. TheMaker: Oh no! Is it okay?",
+                                                "3) Student:Yeah", "TheMaker: I'm glad."]})
+    assert [m["content"] for m in decide_translate(tagged, ex)[0][1:]] == \
+        ["My puppy fell down", "Oh no! Is it okay?", "Yeah", "I'm glad."]     # 번호·이름표는 뗌
     curly = good.replace("I'm glad", "I’m glad")                                   # 굽은 따옴표는 고쳐 씀
     assert decide_translate(curly, ex)[0][4]["content"].startswith("I'm glad")
 

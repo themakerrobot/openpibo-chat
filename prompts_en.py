@@ -43,7 +43,8 @@ Rules:
    simple romanization like "tteokbokki".
 4. If the conversation only works in Korean (Korean wordplay, spelling, Korean grammar or Korean
    words as the topic), answer only {{"ok": false, "why": "short reason"}}.
-Answer with one JSON only, with exactly {count} lines in "lines" (one for each numbered line).
+Answer with one JSON only, with exactly {count} lines in "lines" (one for each numbered line),
+each line only the words that are said (no number, no "Student:" or "{name}:").
 Output format: {{"ok": true, "lines": ["line 1", "line 2"]}}
 
 Conversation:
@@ -100,8 +101,12 @@ def check_prompt(messages: list[dict]) -> str:
     return CHECK.format(name=ENGINE_EN, style=EN_STYLE, dialog=dialog(messages))
 
 
+#: 선생이 보여 준 모양을 따라 줄 앞에 붙인 번호와 이름표 ("2. TheMaker: …")
+LINE_TAG = re.compile(rf"^\s*(\d+\s*[.)]\s*)?((Student|{ENGINE_EN}|TheMaker\(더메이커\))\s*:\s*)?")
+
+
 def clean(text: str) -> str:
-    text = text.translate(PLAIN).strip()
+    text = LINE_TAG.sub("", text.translate(PLAIN)).strip()
     text = re.sub(r"\bPibo\b", ENGINE_EN, text)
     return SELF_ROBOT.sub(lambda m: f"{m.group(1)} {'an' if m.group(2) == 'a' else 'an educational'} AI",
                           text)
