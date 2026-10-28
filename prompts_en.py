@@ -60,7 +60,9 @@ Conversation:
 
 Look at the whole conversation and answer with one JSON only.
 - natural: {name}'s English is natural, simple, and easy for a kid (1-5)
-- fit: {name}'s lines fit what the student means and the flow, and are specific (1-5)
+- fit: {name}'s lines fit what the student means and the flow, and are specific (1-5). Give 1 if
+  the student talks to {name} as if it were a person with a body or a life (it was sick, it went
+  somewhere, it ate something), because that can't happen with an AI
 - friend: kind like a 14-year-old friend; doesn't repeat the student's words or sound like a
   counselor; doesn't repeat the same pattern (1-5)
 - kid: a clean, kind conversation a student and an AI could have (false if adult topics, swearing,
