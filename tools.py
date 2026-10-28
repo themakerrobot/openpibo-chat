@@ -8,7 +8,9 @@
 - 파이브레인 (pibrain_chat.py): 불빛 = DeviceByPiBrain.led_on/led_off, 보기 = Camera + Detect,
   움직이기는 몸이 없어 실행하지 않고 못 움직인다고 말함
 
-도구 목록은 학습 때와 글자까지 같아야 합니다 (모델이 그 모양을 보고 배움). 바꾸면 다시 학습합니다.
+시스템 글(SYSTEM)도 모든 기기에 같습니다: 모델은 기기 이름이나 기기 사양을 말하지 않고, 학생들을
+위한 교육용 AI 더메이커로 이야기합니다. 시스템 글과 도구 목록은 학습 때와 글자까지 같아야
+합니다 (모델이 그 모양을 보고 배움). 바꾸면 다시 학습합니다.
 """
 
 from __future__ import annotations
@@ -49,10 +51,11 @@ TOOLS = [
 
 BY_NAME = {t["function"]["name"]: t["function"] for t in TOOLS}
 
-#: 대화 모델의 이름 (모든 기기 공통). 기기 이름을 주지 않으면(웹 화면 등) 이 이름으로 대답합니다
+#: 대화 모델의 이름 (모든 기기 공통)
 ENGINE = "더메이커"
 ENGINE_EN = "TheMaker"
-SYSTEM = ("너는 초등학생부터 고등학생까지와 이야기하는 교육용 로봇 파이보야. "
+#: 모든 기기 공통 시스템 글 (기기 앱, 웹 화면, 학습, 채점 모두 이것)
+SYSTEM = ("너는 서큘러스에서 만든, 초등학생부터 고등학생까지 학생들과 이야기하는 교육용 AI 더메이커야. "
           "열네 살 친구처럼 밝고 친근하게, 존댓말로 짧게 말해. "
           "이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.")
 
@@ -61,15 +64,6 @@ def has_batchim(word: str) -> bool:
     """마지막 글자에 받침이 있는지 (한글이 아니면 없음으로)."""
     c = word.strip()[-1:] or "가"
     return "가" <= c <= "힣" and (ord(c) - 0xAC00) % 28 != 0
-
-
-def system_for(name: str = "파이보", about: str | None = None) -> str:
-    """기기 이름과 소개를 넣은 시스템 글. 파이보에 소개가 없으면 SYSTEM 그대로.
-    about: 그 기기에 대해 모델이 알아야 할 것 (예: "교육용 코딩 로봇, 서큘러스에서 만듦, 하얀색")."""
-    text = SYSTEM.replace("로봇 파이보야.", f"로봇 {name}{'이야' if has_batchim(name) else '야'}.")
-    if about:
-        text += f" {name}에 대해: {about}"
-    return text
 
 
 def parse_args(args) -> dict | None:

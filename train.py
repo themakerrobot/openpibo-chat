@@ -3,7 +3,7 @@
     python train.py --base Qwen/Qwen3.5-0.8B --data data/train-themaker.jsonl \
         --out runs/themaker-0.8b --lr 2e-5 --batch 2 --accum 16
 
-파이보의 대답에만 손실을 줍니다 (앞의 대화와 시스템 글은 읽기만). data/extra.txt(사람이 직접 쓴
+모델의 대답에만 손실을 줍니다 (앞의 대화와 시스템 글은 읽기만). data/extra.txt(사람이 직접 쓴
 대화)는 세 번씩 더 봅니다. 끊겼다가 다시 돌리면 끝까지 저장된 마지막 체크포인트부터 이어서
 합니다. GPU가 안 보이면 학습하지 않습니다 (CPU로 몇십 배 느리게 돌지 않게).
 """
@@ -28,7 +28,7 @@ def tools_of(example: dict):
 
 
 def targets(tok, example: dict, max_len: int):
-    """한 대화에서 파이보가 말하는(또는 도구를 부르는) 차례마다 (input_ids, labels) 하나."""
+    """한 대화에서 모델이 말하는(또는 도구를 부르는) 차례마다 (input_ids, labels) 하나."""
     msgs, tools = example["messages"], tools_of(example)
     for i, m in enumerate(msgs):
         if m["role"] != "assistant":
@@ -47,7 +47,7 @@ def targets(tok, example: dict, max_len: int):
 
 
 def read_extra(path) -> list[dict]:
-    """data/extra.txt: "아이:" 줄과 "파이보:" 줄이 번갈아 나오는 대화, 빈 줄로 구분.
+    """data/extra.txt: "아이:" 줄과 "더메이커:" 줄이 번갈아 나오는 대화, 빈 줄로 구분.
     #으로 시작하는 줄은 무시합니다."""
     from tools import SYSTEM
 
@@ -68,8 +68,8 @@ def read_extra(path) -> list[dict]:
             close()
         elif line.startswith("아이:"):
             msgs.append({"role": "user", "content": line[3:].strip()})
-        elif line.startswith("파이보:"):
-            msgs.append({"role": "assistant", "content": line[4:].strip()})
+        elif line.startswith("더메이커:"):
+            msgs.append({"role": "assistant", "content": line[5:].strip()})
     close()
     return out
 

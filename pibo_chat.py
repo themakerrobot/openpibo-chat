@@ -9,7 +9,8 @@
 
 파이브레인은 pibrain_chat.py (같은 모델, 같은 도구 목록, 불빛 함수만 다르고 움직이기는 없음).
 
-- 앱은 매번 tools.TOOLS(모든 기기 공통: 불빛, 보기, 움직이기)를 모델에 보냅니다. 도구를 부를지는
+- 앱은 매번 tools.SYSTEM과 tools.TOOLS(모든 기기 공통: 불빛, 보기, 움직이기)를 모델에 보냅니다.
+  모델은 어느 기기에서든 교육용 AI 더메이커로 이야기하고 기기 이름이나 사양은 말하지 않습니다. 도구를 부를지는
   모델이 정합니다. 시스템 글과 도구 목록은 매번 같은 앞부분이라, 켤 때 한 번 읽혀 두면(warm_up)
   대화할 때는 새로 한 말만 읽습니다.
 - 모델이 도구를 부르면 그 앞의 짧은 말("빨간색으로 바꿀게요!")을 하고 실행합니다. 보기는 본
@@ -29,7 +30,7 @@ import sys
 import time
 import urllib.request
 
-from tools import ACTIONS, COLORS, TOOLS, calls_of, check_call, has_batchim, system_for
+from tools import ACTIONS, COLORS, SYSTEM, TOOLS, calls_of, check_call, has_batchim
 
 HISTORY = 3   # 기억하는 최근 주고받기 수 (지금 말 포함, --history로 바꿈)
 
@@ -269,13 +270,11 @@ def main(robot_class=Pibo):
     p.add_argument("--fake", action="store_true", help="openpibo 없이 동작을 한 척만")
     p.add_argument("--history", type=int, default=HISTORY,
                    help="기억하는 주고받기 수 (지금 말 포함)")
-    p.add_argument("--name", help=f"기기 이름 (시스템 글에 들어감, 기본: {robot_class.name})")
-    p.add_argument("--about", help="기기 소개 (예: '코딩 로봇, 서큘러스에서 만듦, 하얀색')")
     args = p.parse_args()
     globals()["HISTORY"] = max(1, args.history)
     robot = robot_class(fake=args.fake)
-    name = args.name or robot.name
-    system = system_for(name, args.about)
+    name = robot.name                        # 화면에 찍는 이름만 (모델에는 보내지 않음)
+    system = SYSTEM
     use_tools = not args.no_tools
     warm_up(args.url, system, use_tools)
     history: list = []

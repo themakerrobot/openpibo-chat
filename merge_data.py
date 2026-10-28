@@ -7,8 +7,8 @@
   있을 때도 이야기에는 도구를 부르지 않고 대화하게 합니다 (기기 앱은 늘 도구 목록을 보냄).
 - 똑같은 파이보 대답(띄어쓰기·문장부호 무시)은 REPEAT_MAX번까지만: 같은 대답이 많으면 모델이
   비슷한 말에 늘 같은 말을 합니다. 가장 흔한 첫 문장들을 찍어 사람이 볼 수 있게 합니다.
-- 여러 기기용 (devices.py): 일부 대화의 이름을 다른 이름(더메이커, 파이브레인 …)으로, 기기
-  소개를 시스템 글에, 시스템 글을 보고 하는 자기소개 3천 개. --no-devices면 하지 않습니다.
+- 모든 기기 공통 정체 (persona.py): 시스템 글은 모두 tools.SYSTEM, 파이보 말 속 이름은 더메이커,
+  "저는 로봇이라"는 "저는 AI라", 교육용 AI 더메이커 자기소개 1천 개. --no-persona면 하지 않습니다.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from devices import vary
+from persona import apply
 from prompts import same
 
 #: 똑같은 파이보 대답을 남기는 최대 횟수 (도구 대화는 빼고)
@@ -72,8 +72,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("data", nargs="+")
-    p.add_argument("--no-devices", action="store_true",
-                   help="이름 바꾸기·기기 소개·자기소개를 하지 않음")
+    p.add_argument("--no-persona", action="store_true",
+                   help="시스템 글·이름 맞추기와 자기소개를 하지 않음")
     args = p.parse_args()
     lines, kept, why = merge(args.data)
     print(f"합침: {len(lines)}개 ({', '.join(f'{k} {v}' for k, v in sorted(kept.items()))})",
@@ -87,9 +87,9 @@ def main():
           flush=True)
     print("가장 흔한 첫 문장: " + " / ".join(f"{t} ({n})" for t, n in firsts.most_common(10)),
           flush=True)
-    if not args.no_devices:
-        lines, count = vary(lines)
-        print("여러 기기용: " + ", ".join(f"{k} {v}" for k, v in count.items()), flush=True)
+    if not args.no_persona:
+        lines, count = apply(lines)
+        print("교육용 AI 더메이커: " + ", ".join(f"{k} {v}" for k, v in count.items()), flush=True)
     Path(args.out).write_text("\n".join(lines) + "\n")
     print(f"{args.out}: {len(lines)}줄", flush=True)
 

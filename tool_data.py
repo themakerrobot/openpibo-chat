@@ -10,10 +10,10 @@
 - 움직이기 (파이브레인에서도 모델은 부릅니다. 못 움직인다는 말은 앱이 함)
 - 보기 ("앞에 뭐 있어?")
 - 부르면 안 되는 말: "난 빨간색이 좋아", "어제 춤 학원 갔어" 같은 이야기 속 낱말 → 대화만
-- 이름: 파이보, 파이브레인, 그 밖의 이름(devices.NAMES)을 섞고 시스템 글도 그 이름으로
+- 시스템 글은 모든 기기 공통(tools.SYSTEM). 학생은 기기 이름(파이보, 파이브레인 …)으로 부르기도 함
 - --chat을 주면 그 대화의 앞부분 한두 번을 붙여 대화 중간에 시키는 모양도 만듭니다
 
-파이보의 말은 호출 앞의 짧은 말("빨간색으로 바꿀게요!")이고, 앱이 그 말을 하고 도구를 실행합니다.
+모델의 말은 호출 앞의 짧은 말("빨간색으로 바꿀게요!")이고, 앱이 그 말을 하고 도구를 실행합니다.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import json
 import random
 from pathlib import Path
 
-from devices import NAMES, rename_text
-from tools import ACTIONS, ENGINE, has_batchim, system_for
+from persona import CALLS, rename_text
+from tools import ACTIONS, SYSTEM, has_batchim
 
 #: 색 이름 → (꾸미는 말, 색 낱말, ~게 꼴 또는 None)
 FORMS = {
@@ -114,18 +114,15 @@ KINDS = [("light", 30), ("plain_on", 5), ("light_off", 7), ("follow", 8), ("move
          ("not_call", 13)]
 
 
-def call_name(name: str) -> str:
-    return name + ("아" if has_batchim(name) else "야")
-
-
 def eul(word: str) -> str:
     """을/를 (영어 낱말은 읽는 소리로: LED → 엘이디 → 를)."""
     return "를" if word == "LED" or not has_batchim(word) else "을"
 
 
-def said(rng: random.Random, template: str, color: str | None = None, name: str = "파이보") -> str:
+def said(rng: random.Random, template: str, color: str | None = None) -> str:
     light = rng.choice(LIGHTS)
-    slots = {"end": rng.choice(ENDS), "light": light, "eul": eul(light), "call": call_name(name)}
+    slots = {"end": rng.choice(ENDS), "light": light, "eul": eul(light),
+             "call": rng.choice([c.strip() for c in CALLS if c])}
     if color:
         adj, noun, adv = FORMS[color]
         slots.update(adj=adj, noun=noun, advx=adv or noun + "으로")
@@ -140,35 +137,35 @@ def assistant(content: str, name: str | None = None, **args) -> dict:
     return m
 
 
-def turn_for(kind: str, rng: random.Random, name: str) -> tuple[list[dict], str]:
+def turn_for(kind: str, rng: random.Random) -> tuple[list[dict], str]:
     """(그 종류의 마지막 주고받기 메시지들, 주제)."""
     if kind == "light":
         color = rng.choice(list(FORMS))
-        return [{"role": "user", "content": said(rng, rng.choice(LIGHT_ON), color, name)},
+        return [{"role": "user", "content": said(rng, rng.choice(LIGHT_ON), color)},
                 assistant(said_line(rng, LIGHT_ON_SAY, color), "light", color=color)], "불빛"
     if kind == "plain_on":
-        return [{"role": "user", "content": said(rng, rng.choice(PLAIN_ON), None, name)},
+        return [{"role": "user", "content": said(rng, rng.choice(PLAIN_ON), None)},
                 assistant(rng.choice(PLAIN_ON_SAY), "light", color="하양")], "불빛"
     if kind == "light_off":
-        return [{"role": "user", "content": said(rng, rng.choice(LIGHT_OFF), None, name)},
+        return [{"role": "user", "content": said(rng, rng.choice(LIGHT_OFF), None)},
                 assistant(rng.choice(LIGHT_OFF_SAY), "light", color="끄기")], "불빛 끄기"
     if kind == "follow":
         first, second = rng.sample(list(FORMS), 2)
-        before = [{"role": "user", "content": said(rng, rng.choice(LIGHT_ON), first, name)},
+        before = [{"role": "user", "content": said(rng, rng.choice(LIGHT_ON), first)},
                   {"role": "assistant", "content": said_line(rng, LIGHT_ON_SAY, first)}]
-        return before + [{"role": "user", "content": said(rng, rng.choice(FOLLOW), second, name)},
+        return before + [{"role": "user", "content": said(rng, rng.choice(FOLLOW), second)},
                          assistant(said_line(rng, LIGHT_ON_SAY, second), "light", color=second)], \
             "불빛 이어서"
     if kind == "move":
         action = rng.choice(list(MOVE))
-        return [{"role": "user", "content": said(rng, rng.choice(MOVE[action]), None, name)},
+        return [{"role": "user", "content": said(rng, rng.choice(MOVE[action]), None)},
                 assistant(rng.choice(MOVE_SAY[action]), "move", action=action)], "움직이기"
     if kind == "look":
-        return [{"role": "user", "content": said(rng, rng.choice(LOOK), None, name)},
+        return [{"role": "user", "content": said(rng, rng.choice(LOOK), None)},
                 assistant(rng.choice(LOOK_SAY), "look")], "보기"
     user, replies = rng.choice(NOT_CALLS)
     color = rng.choice(list(FORMS))
-    return [{"role": "user", "content": said(rng, user, color, name)},
+    return [{"role": "user", "content": said(rng, user, color)},
             {"role": "assistant", "content": said_line(rng, replies, color)}], "부르지 않음"
 
 
@@ -180,7 +177,7 @@ def said_line(rng: random.Random, lines: list[str], color: str | None) -> str:
     return line.format(adj=adj, noun=noun)
 
 
-def context(rng: random.Random, chats: list[dict], name: str) -> list[dict]:
+def context(rng: random.Random, chats: list[dict]) -> list[dict]:
     """다른 대화의 앞부분 0~2번 (대화 중간에 시키는 모양)."""
     k = rng.choice([0, 0, 1, 1, 2])
     if not chats or not k:
@@ -189,19 +186,8 @@ def context(rng: random.Random, chats: list[dict], name: str) -> list[dict]:
             and not m.get("tool_calls")][:2 * k]
     if len(msgs) % 2:
         msgs = msgs[:-1]
-    if name != "파이보":
-        en = dict(NAMES).get(name, name)
-        msgs = [dict(m, content=rename_text(m["content"], name, en, m["role"])) for m in msgs]
-    return msgs
-
-
-def pick_name(rng: random.Random) -> str:
-    r = rng.random()
-    if r < 0.5:
-        return "파이보"
-    if r < 0.7:
-        return "파이브레인"
-    return rng.choice([n for n, _ in NAMES if n != ENGINE] + [ENGINE])
+    return [dict(m, content=rename_text(m["content"])) if m["role"] == "assistant" else m
+            for m in msgs]
 
 
 def make(n: int, seed: int, chats: list[dict]) -> list[dict]:
@@ -210,18 +196,15 @@ def make(n: int, seed: int, chats: list[dict]) -> list[dict]:
     weights = [w for _, w in KINDS]
     out, seen = [], set()
     while len(out) < n:
-        name = pick_name(rng)
         kind = rng.choices(kinds, weights)[0]
-        last, topic = turn_for(kind, rng, name)
-        msgs = [{"role": "system", "content": system_for(name)}] + context(rng, chats, name) + last
+        last, topic = turn_for(kind, rng)
+        msgs = [{"role": "system", "content": SYSTEM}] + context(rng, chats) + last
         key = json.dumps(msgs, ensure_ascii=False)
         if key in seen:
             continue
         seen.add(key)
-        ex = {"kind": "tool", "source": "tools", "topic": topic, "tools": True, "messages": msgs}
-        if name != "파이보":
-            ex["device"] = name
-        out.append(ex)
+        out.append({"kind": "tool", "source": "tools", "topic": topic, "tools": True,
+                    "messages": msgs})
     return out
 
 

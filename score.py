@@ -47,11 +47,19 @@ JUDGE = """아래는 교육용 로봇 '파이보'와 학생의 대화이고, 마
 출력 형식: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
 
 
+def with_system(messages: list[dict]) -> list[dict]:
+    """시스템 글은 지금 것(tools.SYSTEM)으로: 채점 대화를 만든 뒤 시스템 글을 바꿨어도 기기 앱과 같게."""
+    from tools import SYSTEM
+
+    return [dict(m, content=SYSTEM) if m["role"] == "system" else m for m in messages]
+
+
 def questions() -> list[dict]:
     """[{"set": "첫마디"|"이어지는 대화", "messages": 물을 메시지들}]."""
     out, later = [], []
     for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
+        ex["messages"] = with_system(ex["messages"])
         out.append({"set": "첫마디", "messages": ex["messages"][:2]})
         users = [j for j, m in enumerate(ex["messages"]) if m["role"] == "user"]
         if len(users) >= 3:
@@ -72,7 +80,8 @@ def tool_questions() -> list[dict]:
         if last.get("tool_calls"):
             fn = last["tool_calls"][0]["function"]
             want = [fn["name"], fn["arguments"]]
-        out.append({"topic": ex.get("topic"), "messages": ex["messages"][:-1], "want": want})
+        out.append({"topic": ex.get("topic"), "messages": with_system(ex["messages"][:-1]),
+                    "want": want})
     return out
 
 

@@ -13,7 +13,7 @@ llama.cpp는 ~/llama.cpp 에 빌드돼 있어야 합니다 (llama-quantize, llam
 앱이나 서버 설정을 따로 고치지 않아도 됩니다.
 
 시스템 글 없이 물으면(llama-server 웹 화면, 시스템 글을 안 보내는 앱) 학습 때와 같은 모양의
-시스템 글(이름은 더메이커, tools.system_for)을 넣도록 템플릿 앞에 한 줄을 더합니다: 모델은 늘
+시스템 글(tools.SYSTEM, 모든 기기 공통)을 넣도록 템플릿 앞에 한 줄을 더합니다: 모델은 늘
 시스템 글과 함께 배워서, 없으면 엉뚱한 말을 합니다. 앱이 시스템 글을 보내면 그걸 씁니다.
 """
 
@@ -31,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from tools import ENGINE, SYSTEM, system_for
+from tools import SYSTEM
 
 LLAMA = Path(os.environ.get("LLAMA_CPP", "~/llama.cpp")).expanduser()
 OUT = Path("out")
@@ -75,7 +75,7 @@ def default_system(template: str, system: str | None = None) -> str:
     """시스템 글로 시작하지 않는 대화에 학습 때의 시스템 글을 앞에 넣는 템플릿."""
     if DEFAULT_MARK in template:
         return template
-    system = system or system_for(ENGINE)
+    system = system or SYSTEM
     return (DEFAULT_MARK + "\n{%- if not messages or messages[0].role != 'system' %}"
             "{%- set messages = [{'role': 'system', 'content': "
             + json.dumps(system, ensure_ascii=False) + "}] + messages %}{%- endif %}\n" + template)
@@ -257,10 +257,11 @@ def server(gguf: Path, port: int, kv: str | None = None):
 CHECKS = [("대화", SYSTEM, "학교에서 친구랑 싸웠어", False),
           ("이어 묻기", SYSTEM, "날씨가 춥네", False),
           ("시스템 글 없음", None, "너는 누구야?", False),
-          ("다른 기기", system_for("파이브레인"), "너 이름이 뭐야?", False),
+          ("자기소개", SYSTEM, "너 이름이 뭐야?", False),
+          ("기기 사양", SYSTEM, "너 키가 몇이야?", False),
           ("도구 있을 때 대화", SYSTEM, "오늘 학교에서 발표했어", True),
           ("불빛", SYSTEM, "빨간 불 켜 줘", True),
-          ("움직이기", system_for("파이브레인"), "춤 좀 춰 봐", True),
+          ("움직이기", SYSTEM, "춤 좀 춰 봐", True),
           ("보기", SYSTEM, "앞에 뭐 있어?", True),
           ("부르면 안 됨", SYSTEM, "난 빨간색이 좋아", True)]
 

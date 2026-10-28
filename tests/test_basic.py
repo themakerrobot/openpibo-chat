@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tools import ENGINE, SYSTEM, check_call, system_for  # noqa: E402
+from tools import ENGINE, SYSTEM, check_call  # noqa: E402
 
 
 class FakeTok:
@@ -219,45 +219,43 @@ def test_merging_drops_copies_and_caps_the_same_reply(tmp_path):
     assert len(out) == 10 + REPEAT_MAX and kept == {"a": 10 + REPEAT_MAX}
 
 
-def test_names_are_swapped_with_the_right_particles():
-    from devices import rename_text
+def test_name_and_robot_become_the_educational_ai():
+    from persona import rename_text
 
-    cases = {"파이보야 놀자": ("파이브레인아 놀자", "코코야 놀자"),
-             "저는 파이보예요.": ("저는 파이브레인이에요.", "저는 코코예요."),
-             "파이보가 도와줄게요": ("파이브레인이 도와줄게요", "코코가 도와줄게요"),
-             "파이보는 로봇이에요": ("파이브레인은 로봇이에요", "코코는 로봇이에요"),
-             "파이보를 만나서": ("파이브레인을 만나서", "코코를 만나서"),
-             "파이보랑 놀자": ("파이브레인이랑 놀자", "코코랑 놀자"),
-             "I'm Pibo!": ("I'm PiBrain!", "I'm Coco!")}
-    for text, (brain, coco) in cases.items():
-        role = "user" if text.startswith("파이보야") else "assistant"
-        assert rename_text(text, "파이브레인", "PiBrain", role) == brain
-        assert rename_text(text, "코코", "Coco", role) == coco
-    assert rename_text("파이보로 가자", "하늘", "Haneul", "user") == "하늘로 가자"   # ㄹ 받침
-    assert rename_text("저는 파이보야", "다온", "Daon", "assistant") == "저는 다온이야"
+    cases = {"저는 파이보예요.": "저는 더메이커예요.",
+             "파이보가 도와줄게요": "더메이커가 도와줄게요",
+             "저는 로봇이라 먹을 수는 없지만 궁금해요.": "저는 AI라 먹을 수는 없지만 궁금해요.",
+             "제가 로봇이라서 잠은 안 자요.": "제가 AI라서 잠은 안 자요.",
+             "저는 교육용 로봇이에요.": "저는 교육용 AI예요.",
+             "로봇 영화 재미있죠?": "로봇 영화 재미있죠?",                 # 자기 이야기가 아님
+             "I'm Pibo!": "I'm TheMaker!"}
+    for text, want in cases.items():
+        assert rename_text(text) == want
 
 
-def test_names_and_self_introductions_follow_the_system_prompt():
-    import devices
+def test_every_chat_gets_the_one_system_prompt_and_identity_has_no_device_facts():
+    import persona
     from train import targets
 
-    lines = [chat_line((f"파이보야 {k}", f"저는 파이보예요 {k}.")) for k in range(400)]
-    out, count = devices.vary(lines, n_identity=300)
-    assert out == devices.vary(lines, n_identity=300)[0]             # 늘 같은 결과
+    lines = [chat_line((f"놀자 {k}", f"저는 파이보예요 {k}.")) for k in range(100)]
+    lines.append(json.dumps({"kind": "chat", "device": "코코", "messages": [
+        {"role": "system", "content": "예전 시스템 글"}, {"role": "user", "content": "안녕"},
+        {"role": "assistant", "content": "저는 로봇이라 몰라요."}]}, ensure_ascii=False))
+    out, count = persona.apply(lines, n_identity=300)
+    assert out == persona.apply(lines, n_identity=300)[0]            # 늘 같은 결과
     exs = [json.loads(x) for x in out]
-    assert 60 < count["이름 바꿈"] < 140 and count["자기소개"] == 300
-    plain = [e for e in exs[:400] if not e.get("device")]
-    assert sum(e["messages"][0]["content"] == SYSTEM for e in plain) > 0.8 * len(plain)
-    renamed = [e for e in exs[:400] if e.get("device")]
-    assert sum(e["device"] == ENGINE for e in renamed) > len(renamed) / 10   # 더메이커가 가장 자주
-    for e in renamed:
-        assert e["messages"][0]["content"].startswith(system_for(e["device"])[:40])
-        assert "파이보" not in e["messages"][1]["content"] + e["messages"][2]["content"]
-    ids = [e for e in exs if e.get("identity")]
-    said = " ".join(m["content"] for e in ids for m in e["messages"] if m["role"] == "assistant")
-    for words in ("아니요, 저는", "서큘러스에서 만들었어요", "잘 몰라요", f"서큘러스의 {ENGINE} 인공지능"):
-        assert words in said
-    for e in exs[:30] + ids[:30]:
+    assert count == {"이름 바꿈": 100, "로봇→AI": 1, "자기소개": 300}
+    assert all(e["messages"][0]["content"] == SYSTEM for e in exs)
+    assert not any("device" in e for e in exs)
+    said = " ".join(m["content"] for e in exs for m in e["messages"] if m["role"] == "assistant")
+    assert "파이보" not in said and "로봇이라" not in said
+    ids = " ".join(m["content"] for e in exs if e.get("identity") for m in e["messages"]
+                   if m["role"] == "assistant")
+    for words in (f"교육용 AI {ENGINE}", "서큘러스에서 만들었어요", "잘 몰라요", "학생들"):
+        assert words in ids
+    for fact in ("센티미터", "킬로그램", "모터", "카메라가 있어요", "하얀색"):
+        assert fact not in ids
+    for e in exs[:30] + exs[-30:]:
         assert None not in list(targets(FakeTok(), e, 4096))
 
 
@@ -295,11 +293,16 @@ def test_own_dialogues_are_read(tmp_path):
     from train import read_extra
 
     f = tmp_path / "extra.txt"
-    f.write_text("# 설명\n아이: 이름이 뭐야?\n파이보: 저는 파이보예요.\n\n# 아이: 무시\n"
-                 "아이: 몇 살이야?\n파이보: 저는 로봇이라 나이가 없어요.\n", encoding="utf-8")
+    f.write_text("# 설명\n아이: 이름이 뭐야?\n더메이커: 저는 더메이커예요.\n\n# 아이: 무시\n"
+                 "아이: 몇 살이야?\n더메이커: 저는 AI라 나이가 없어요.\n", encoding="utf-8")
     got = read_extra(f)
-    assert len(got) == 2 and got[1]["messages"][-1]["content"] == "저는 로봇이라 나이가 없어요."
-    assert read_extra(ROOT / "data" / "extra.txt")                    # 저장소의 것도 읽힘
+    assert len(got) == 2 and got[1]["messages"][-1]["content"] == "저는 AI라 나이가 없어요."
+    assert got[0]["messages"][0]["content"] == SYSTEM
+    own = read_extra(ROOT / "data" / "extra.txt")                     # 저장소의 것도 읽힘
+    said = " ".join(m["content"] for e in own for m in e["messages"] if m["role"] == "assistant")
+    assert len(own) > 30 and "파이보예요" not in said
+    for gone in ("센티미터", "킬로그램", "모터", "배터리와", "날씨"):     # 기기 사양, 없는 기능
+        assert gone not in said
 
 
 def test_resume_skips_a_checkpoint_cut_off_while_saving(tmp_path):
@@ -358,10 +361,10 @@ def test_gguf_template_never_thinks_and_answers_as_themaker_without_a_system_pro
     t = env.from_string(fixed)
     bare = t.render(messages=[{"role": "user", "content": "안녕"}], add_generation_prompt=True,
                     enable_thinking=True)
-    assert bare.count(system_for(ENGINE)) == 1 and bare.endswith("<think>\n\n</think>\n\n")
-    own = t.render(messages=[{"role": "system", "content": SYSTEM},
+    assert bare.count(SYSTEM) == 1 and bare.endswith("<think>\n\n</think>\n\n")
+    own = t.render(messages=[{"role": "system", "content": "기기 앱의 글"},
                              {"role": "user", "content": "안녕"}], add_generation_prompt=True)
-    assert own.count(SYSTEM) == 1 and system_for(ENGINE) not in own
+    assert own.count("기기 앱의 글") == 1 and SYSTEM not in own
 
 
 # ------------------------------------------------------------- 실행기
@@ -444,8 +447,7 @@ def test_tool_dialogs_call_the_right_tool_or_none():
         topics[r["topic"]] = topics.get(r["topic"], 0) + 1
         last = r["messages"][-1]
         assert r["tools"] is True and last["role"] == "assistant" and last["content"]
-        name = r.get("device", "파이보")
-        assert r["messages"][0]["content"] == system_for(name)
+        assert r["messages"][0]["content"] == SYSTEM and "device" not in r
         for c in last.get("tool_calls", []):
             fn = c["function"]
             assert check_call(fn["name"], fn["arguments"]) is None, fn
@@ -455,14 +457,13 @@ def test_tool_dialogs_call_the_right_tool_or_none():
     assert all(topics[t] > 100 for t in topics) and len(KINDS) == 7
     follow = next(r for r in rows if r["topic"] == "불빛 이어서")
     assert "tool_calls" not in follow["messages"][-3]       # 앞의 불빛은 말로만 남음 (앱의 기억과 같게)
-    devices = {r.get("device", "파이보") for r in rows}
-    assert {"파이보", "파이브레인", ENGINE} <= devices
-    assert any(r["topic"] == "움직이기" and r.get("device") == "파이브레인" for r in rows)
+    called = " ".join(r["messages"][-2]["content"] for r in rows)
+    assert "파이보야" in called and "파이브레인아" in called            # 학생은 기기 이름으로 부르기도
 
 
 def test_merge_keeps_tool_dialogs_and_shows_tools_to_some_chats(tmp_path):
-    from devices import vary
     from merge_data import TOOL_SHARE, merge
+    from persona import apply
     from tool_data import make
 
     chats = [chat_line((f"오늘 {k}번째 이야기", f"그랬군요 {k}."), source="a") for k in range(400)]
@@ -473,8 +474,8 @@ def test_merge_keeps_tool_dialogs_and_shows_tools_to_some_chats(tmp_path):
     assert kept["tools"] == 50 and kept["a"] == 400
     with_tools = sum(1 for x in out[:400] if json.loads(x).get("tools"))
     assert 400 * TOOL_SHARE * 0.6 < with_tools < 400 * TOOL_SHARE * 1.4
-    varied, _ = vary(out, n_identity=0)
-    assert varied[400:] == out[400:]                     # 도구 대화는 이름을 바꾸지 않음
+    applied, _ = apply(out, n_identity=0)
+    assert applied[400:] == out[400:]                    # 도구 대화는 이미 같은 시스템 글
 
 
 # ------------------------------------------------------------- 파이보·파이브레인 앱 (참고용)
@@ -601,18 +602,18 @@ def test_window_starts_with_the_child_and_keeps_recent_turns(monkeypatch):
     assert got[0] == {"role": "user", "content": "말 2"} and len(got) == 4
 
 
-def test_each_device_sends_its_own_name_and_the_same_tools(monkeypatch):
+def test_every_device_sends_the_same_system_prompt_and_tools(monkeypatch):
     import pibo_chat as app
     import pibrain_chat
 
     seen = []
     monkeypatch.setattr(app, "listen", lambda: "그만")
     monkeypatch.setattr(app, "warm_up", lambda url, system, tools: seen.append((system, tools)))
-    monkeypatch.setattr(sys, "argv", ["x", "--fake", "--about", "코딩 로봇"])
+    monkeypatch.setattr(sys, "argv", ["x", "--fake"])
     app.main(pibrain_chat.PiBrain)
     monkeypatch.setattr(sys, "argv", ["x", "--fake", "--no-tools"])
     app.main()
-    assert seen == [(system_for("파이브레인", "코딩 로봇"), True), (SYSTEM, False)]
+    assert seen == [(SYSTEM, True), (SYSTEM, False)]
 
 
 def test_server_errors_do_not_stop_the_app(monkeypatch, capsys):
