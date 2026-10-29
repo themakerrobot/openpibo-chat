@@ -49,7 +49,7 @@
 | --- | --- |
 | 파이보 | Raspberry Pi 4B, 램 2GB, IP `192.168.68.121`, 사용자 `pi` |
 | 학습 PC | Ubuntu, IP `192.168.68.118`, 사용자 `circulus`, 저장소 `~/openpibo-chat` |
-| llama.cpp | 사용자 확인: 서비스는 `/home/pi/.llama.cpp`. 예전 기록에는 이 폴더가 Qwen3.5를 못 읽는 옛 빌드라 `/home/pi/llama.cpp-new`(빌드 11889, 커밋 `d854d98`)를 따로 두었다고 되어 있음 → `.llama.cpp/build/bin/llama-server --version`이 11889 이상인지 확인 필요 |
+| llama.cpp | `/home/pi/.llama.cpp`를 그 자리에서 다시 빌드함 (사용자 확인, Qwen3.5를 읽는 새 빌드). 예전에 따로 둔 `/home/pi/llama.cpp-new`는 쓰지 않음 |
 | 기존 서버 | 서비스가 `/home/pi/.llama.cpp/build/bin/llama-server -m /home/pi/.model/llm/llm-model.gguf --ctx-size 2048 --log-disable --host 0.0.0.0 --port 50020`로 젬마3 1B를 띄움 |
 | 새 모델 | `themaker-0.8b-Q4_K_M.gguf` (PC `out/`, 약 320MB). 영어판은 `themaker-en-0.8b-Q4_K_M.gguf`: 올릴 때 하나만 고르고 앱은 `--lang en` (영어 시스템 글 `tools.SYSTEM_EN`, 도구 목록은 같음) |
 | 파이썬 | `sudo ~/.pyenv/bin/python3` (openpibo가 여기에 있고, Device·카메라·NeoPixel은 root 필요) |

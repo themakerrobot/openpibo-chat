@@ -48,7 +48,7 @@
 | IDE [대화] | `/llm?enable=on` → tools·classify·검수를 끄고 `llama-server.service` 시작 + 대화 웹(`chat/run_chat.py`, 50030) | `ide/run_ide.py` 286행 |
 | 대화 웹 시스템 글 | `chat/run_chat.py` 40행 `SYSTEM` (예전 문구 "교육용 로봇 파이보야") | |
 | 모델 링크 | `/home/pi/.model/llm/llm-model.gguf` → (파이보 261026 전환 뒤) `pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf`, 젬마 파일은 남아 있음 | 파이보 `CLAUDE.md` '기기 서비스 전환' |
-| 서비스 | `/etc/systemd/system/llama-server.service`. 사용자 확인: 빌드는 `/home/pi/.llama.cpp`. 예전 기록(파이보 `CLAUDE.md`)에는 `.llama.cpp`가 Qwen3.5를 못 읽는 옛 빌드라 `/home/pi/llama.cpp-new`로 바꿨다고 되어 있어, 지금 `.llama.cpp`가 새 빌드인지 확인 필요. 유닛 파일은 저장소 밖(이미지 작업) | 사용자, 파이보 `CLAUDE.md` |
+| 서비스 | `/etc/systemd/system/llama-server.service`. llama.cpp는 `/home/pi/.llama.cpp`를 그 자리에서 다시 빌드함 (사용자 확인, Qwen3.5를 읽는 새 빌드). 예전 기록(파이보 `CLAUDE.md`)의 `/home/pi/llama.cpp-new`는 쓰지 않음. 유닛 파일은 저장소 밖(이미지 작업) | 사용자 |
 | 파이브레인 | `speech.py`의 `start_llm`/`stop_llm`/`call_llm`은 파이보와 같음. 서비스·모델 전환은 실기기에서 아직 안 봄 | 파이브레인 `CLAUDE.md` 214행 |
 
 **기기에서 먼저 확인할 것 (확인 필요)**
@@ -59,12 +59,12 @@ systemctl cat llama-server.service
 systemctl is-active llama-server; pgrep -af llama-server
 ls /etc/systemd/system/ | grep -i llama
 ps -o user= -p $(pgrep -f run_ide.py | head -1)        # IDE·학생 코드가 root로 도는지
-/home/pi/.llama.cpp/build/bin/llama-server --version      # 빌드 11889(커밋 d854d98) 이상이어야 Qwen3.5를 읽음
-ls -d /home/pi/llama.cpp-new 2>/dev/null
+/home/pi/.llama.cpp/build/bin/llama-server --version      # 다시 빌드한 버전 기록 (11889 이상)
+ls -d /home/pi/llama.cpp-new 2>/dev/null                  # 남아 있으면 보고 (지우지 않음)
 free -m
 ```
 
-- `/home/pi/.llama.cpp`가 themaker(Qwen3.5) GGUF를 읽는 빌드인지, 젬마3 GGUF도 `--jinja`와 함께 문제없이 띄우는지
+- 다시 빌드한 `/home/pi/.llama.cpp`로 themaker(Qwen3.5) GGUF와 젬마3 GGUF가 둘 다 `--jinja`와 함께 문제없이 뜨는지
 - 블록으로 실행한 학생 코드가 root로 도는지 (`systemctl`·링크 바꾸기에 필요)
 
 ---
