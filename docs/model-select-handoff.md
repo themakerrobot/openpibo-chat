@@ -1,169 +1,200 @@
-# 대화 모델 고르기 설계 지시서 (파이보·파이브레인 세션용)
+# 대화 모델 고르기 블록 만들기 지시서 (파이보·파이브레인 세션용, 최종)
 
-이 문서를 받은 세션이 할 일: 기기의 대화 모델을 **gemma3 / themaker-ko / themaker-en** 셋 중에서 골라
-띄우는 방법을 **조사하고 설계안을 내는 것**입니다. 지금 단계에서는 **기기와 저장소를 고치지 않습니다**.
-설계안을 사용자가 고르면 그때 고칩니다.
+이 문서를 받은 세션이 할 일: 블록 코딩에서 대화 모델을 **gemma3 / themaker-ko / themaker-en** 중에서 골라
+띄우는 **"대화 모델 고르기" 블록**을 만듭니다. 설계는 아래로 정해졌습니다. 그대로 만듭니다.
+
+- **저장소 안의 작업**(블록, `speech.py`, IDE, 대화 웹, 문서)은 바로 합니다.
+- **기기 이미지 작업**(서비스 파일, 모델 파일, 링크)은 **백업한 뒤 사용자에게 확인을 받고** 합니다.
+- 파이보(`openpibo-os.pibo`)와 파이브레인(`openpibo-os.pibrain`) 둘 다 같은 방식으로 합니다.
 
 대답과 보고는 한국어 존댓말, 결론 먼저. 부품명·라이브러리·핀 이름은 영문 그대로. 확인 안 된 사실은
 "확인 필요"라고 적습니다.
 
 ---
 
-## 1. 하려는 것
+## 1. 정해진 것
 
-- 모델 셋을 기기에 같이 두고, 블록 코딩에서 **고른 하나만** 띄웁니다 (램 2GB라 동시에 하나).
+| 항목 | 정한 것 |
+| --- | --- |
+| 모델 | `gemma3`(젬마3 1B), `themaker-ko`(더메이커 한국어), `themaker-en`(더메이커 영어). 램 2GB라 **한 번에 하나만** |
+| 예전 블록 | "대화 서버 시작하기(LLM)"(`speech_start_llm` → `dialog.start_llm()`)는 **바꾸지 않음**. 예전 학생 코드가 그대로 돌아야 함 |
+| 새 블록 | "대화 모델 고르기 [젬마3 ▼ / 더메이커 한국어 / 더메이커 영어]" → `dialog.set_llm_model("themaker-ko")`. 이 블록 뒤의 예전 시작 블록이 고른 모델로 띄움 |
+| 고른 모델의 기억 | 그 프로그램의 `Dialog` 객체 안에서만. 파일·링크·서비스 기본값은 바꾸지 않음 |
+| 띄우는 방법 | systemd 템플릿 유닛 `llama-server@.service`. `systemctl start llama-server@themaker-ko`이면 `%i`가 `themaker-ko`가 되어 `/home/pi/.model/llm/themaker-ko.gguf`를 읽음 |
+| 기본 모델 | `llama-server.service` + `llm-model.gguf` 링크는 그대로. 모델 고르기 블록이 없는 프로그램과 IDE [대화]는 지금 기본 모델로 뜸 |
+| 링크 | 블록 실행 때 **링크를 바꾸지 않음**. 모델별 별칭 링크 3개는 이미지 만들 때 한 번만 만듦 |
+| llama.cpp | `/home/pi/.llama.cpp` (그 자리에서 다시 빌드한 새 빌드, 사용자 확인). 예전 기록의 `/home/pi/llama.cpp-new`는 쓰지 않음 |
 
-  | 이름 | 파일 | 말 | 도구 | 시스템 글 |
-  | --- | --- | --- | --- | --- |
-  | gemma3 | `gemma-3-1b-it-Q4_K_M.gguf` (지금 기기에 있음, 약 806MB) | 한국어·영어 | 없음 | 블록이 주는 것 |
-  | themaker-ko | `themaker-0.8b-Q4_K_M.gguf` (PC `out/`, 321MB) | 한국어 | 불빛·보기·움직이기 | `tools.SYSTEM` (GGUF 템플릿에도 들어 있음) |
-  | themaker-en | `themaker-en-0.8b-Q4_K_M.gguf` (PC `out/`, 학습 중) | 영어 | 같음 | `tools.SYSTEM_EN` (GGUF 템플릿에도 들어 있음) |
+```
+[대화 모델 고르기 (더메이커 한국어 ▼)]      ← 새 블록: 고르기만 함
+[대화 서버 시작하기(LLM)]                   ← 예전 블록 그대로
+[대화하기 "안녕" …]
+```
 
-- 지금 블록 **"대화 서버 시작하기(LLM)"**(`speech_start_llm` → `dialog.start_llm()`)는 **그대로 둡니다**.
-  모델 고르는 칸이 없고, 예전에 만든 학생 코드가 그대로 돌아야 합니다.
-- **모델 선택 블록을 하나 더 만듭니다** (사용자가 정함): "대화 모델 고르기 [젬마3 ▼ / 더메이커 한국어 / 더메이커 영어]"
-  → `dialog.set_llm_model("themaker-ko")`. 그 뒤의 예전 블록 "대화 서버 시작하기(LLM)"가 고른 모델로 띄웁니다.
+| 모델 이름 | 파일 (`/home/pi/.model/llm/`) | 말 | 시스템 글 |
+| --- | --- | --- | --- |
+| `gemma3` | `gemma3.gguf` → `gemma-3-1b-it-Q4_K_M.gguf` (지금 있음, 약 806MB) | 한국어·영어 | 블록이 준 것 |
+| `themaker-ko` | `themaker-ko.gguf` → `themaker-0.8b-Q4_K_M.gguf` (321MB) | 한국어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
+| `themaker-en` | `themaker-en.gguf` → `themaker-en-0.8b-Q4_K_M.gguf` (PC에서 학습 중) | 영어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 
-  ```
-  [대화 모델 고르기 (더메이커 한국어 ▼)]      ← 새 블록: 고르기만 함
-  [대화 서버 시작하기(LLM)]                   ← 예전 블록 그대로
-  [말하기 (대화하기 "안녕" …)]
-  ```
-
-  - 고른 모델은 **그 프로그램(Dialog 객체) 안에서만** 기억합니다. 파일·링크·서비스 기본값을 바꾸지 않으므로,
-    모델 선택 블록이 없는 예전 프로그램과 IDE [대화]는 지금 기본 모델 그대로 뜹니다.
-  - 모델 선택 블록을 시작 블록 **뒤에** 놓았을 때: 이미 떠 있는 서버를 고른 모델로 다시 띄울지,
-    아무것도 안 할지 정해서 설계안에 적어 주세요 (추천: 떠 있으면 고른 모델로 다시 띄움).
+모델 파일은 학습 PC(`circulus@192.168.68.118`)의 `~/openpibo-chat/out/`에 있습니다. `themaker-en`은 PC 학습이 끝나야
+생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
 
 ---
 
-## 2. 지금 확인된 것 (저장소 기준, 기기에서 다시 확인)
-
-| 항목 | 내용 | 근거 |
-| --- | --- | --- |
-| 지금 블록 | `speech_start_llm` → `dialog.start_llm()` | `ide/static/customblock.js` 1387행, `ide/static/customblock_callback.js` 427행 |
-| `start_llm()` | `os.system("systemctl start llama-server")` 한 줄. 모델은 고르지 않음 | `openpibo/speech.py` 426행 |
-| `stop_llm()` | `systemctl stop llama-server` | `openpibo/speech.py` 483행 |
-| `call_llm()` | `localhost:50020/v1/chat/completions`, `system_prompt`가 있을 때만 시스템 글을 보냄, `"model": "llm-model.gguf"` | `openpibo/speech.py` 439행 |
-| IDE [대화] | `/llm?enable=on` → tools·classify·검수를 끄고 `llama-server.service` 시작 + 대화 웹(`chat/run_chat.py`, 50030) | `ide/run_ide.py` 286행 |
-| 대화 웹 시스템 글 | `chat/run_chat.py` 40행 `SYSTEM` (예전 문구 "교육용 로봇 파이보야") | |
-| 모델 링크 | `/home/pi/.model/llm/llm-model.gguf` → (파이보 261026 전환 뒤) `pibo-qwen3.5-0.8b-school-small-Q4_K_M.gguf`, 젬마 파일은 남아 있음 | 파이보 `CLAUDE.md` '기기 서비스 전환' |
-| 서비스 | `/etc/systemd/system/llama-server.service`. llama.cpp는 `/home/pi/.llama.cpp`를 그 자리에서 다시 빌드함 (사용자 확인, Qwen3.5를 읽는 새 빌드). 예전 기록(파이보 `CLAUDE.md`)의 `/home/pi/llama.cpp-new`는 쓰지 않음. 유닛 파일은 저장소 밖(이미지 작업) | 사용자 |
-| 파이브레인 | `speech.py`의 `start_llm`/`stop_llm`/`call_llm`은 파이보와 같음. 서비스·모델 전환은 실기기에서 아직 안 봄 | 파이브레인 `CLAUDE.md` 214행 |
-
-**기기에서 먼저 확인할 것 (확인 필요)**
+## 2. 먼저 기기에서 확인 (고치기 전에)
 
 ```bash
 ls -la /home/pi/.model/llm/
 systemctl cat llama-server.service
 systemctl is-active llama-server; pgrep -af llama-server
 ls /etc/systemd/system/ | grep -i llama
-ps -o user= -p $(pgrep -f run_ide.py | head -1)        # IDE·학생 코드가 root로 도는지
-/home/pi/.llama.cpp/build/bin/llama-server --version      # 다시 빌드한 버전 기록 (11889 이상)
-ls -d /home/pi/llama.cpp-new 2>/dev/null                  # 남아 있으면 보고 (지우지 않음)
+/home/pi/.llama.cpp/build/bin/llama-server --version     # 다시 빌드한 버전 기록 (11889 이상)
+ls -d /home/pi/llama.cpp-new 2>/dev/null                 # 남아 있으면 보고만 (지우지 않음)
+ps -o user= -p $(pgrep -f run_ide.py | head -1)          # IDE·학생 코드가 root로 도는지
 free -m
 ```
 
-- 다시 빌드한 `/home/pi/.llama.cpp`로 themaker(Qwen3.5) GGUF와 젬마3 GGUF가 둘 다 `--jinja`와 함께 문제없이 뜨는지
-- 블록으로 실행한 학생 코드가 root로 도는지 (`systemctl`·링크 바꾸기에 필요)
+- 블록으로 실행한 학생 코드가 root로 도는지 확인합니다 (`systemctl` 실행에 필요). 지금 `start_llm()`도
+  `systemctl`을 쓰므로 같은 조건이지만, 확인 필요입니다.
 
 ---
 
-## 3. 설계 후보
+## 3. 저장소 안의 작업 (바로 함)
 
-### A. 링크 바꾸기
-새 블록이 `llm-model.gguf` 링크를 고른 파일로 바꾸고 `llama-server`를 다시 시작합니다.
+### 3-1. `openpibo/speech.py` — `Dialog`에 더하기만
 
-- 좋은 점: 서비스 파일을 안 바꿔도 됩니다. 가장 간단합니다.
-- 나쁜 점: 링크가 **계속 바뀐 채로 남습니다**. 그 뒤 예전 블록(`start_llm()`)이나 IDE [대화]도 마지막에 고른
-  모델로 뜹니다. 기본 모델이 학생 코드에 따라 바뀌는 셈입니다. root 권한이 필요합니다.
+기존 `start_llm()`·`call_llm()`·`stop_llm()`의 **모델을 고르지 않았을 때 동작은 지금과 글자까지 같게** 둡니다.
 
-### B. 모델마다 서비스 이름 (systemd 템플릿 유닛) — 추천
-- `llama-server.service`와 `llm-model.gguf` 링크는 **그대로** 둡니다. 예전 블록과 IDE [대화]는 지금과 똑같습니다.
-- 모델마다 링크를 하나씩 둡니다: `/home/pi/.model/llm/{gemma3,themaker-ko,themaker-en}.gguf`
-- 템플릿 유닛 `llama-server@.service`를 하나 더 둡니다. ExecStart·WorkingDirectory·User는 지금 서비스와
-  같고, `-m`만 `/home/pi/.model/llm/%i.gguf`로 바꿉니다. `systemctl start llama-server@themaker-ko`이면
-  `%i`가 `themaker-ko`가 되어 `themaker-ko.gguf`를 읽습니다.
+| 함수 | 동작 |
+| --- | --- |
+| `set_llm_model(self, model)` (새로 만듦) | `model`은 `"gemma3"`, `"themaker-ko"`, `"themaker-en"` 중 하나. 그 밖이면 `ValueError`("모델 이름은 gemma3, themaker-ko, themaker-en 중 하나"). `/home/pi/.model/llm/{model}.gguf`가 없으면 `FileNotFoundError`("{model} 모델 파일이 아직 없어요"). 고른 이름을 `self`에 기억. 이 `Dialog`가 이미 서버를 띄운 뒤라면 고른 모델로 다시 띄움 |
+| `start_llm(self, port=50020)` | 고른 모델이 없으면 **지금과 똑같이** `systemctl start llama-server`. 골랐으면 `systemctl stop llama-server 'llama-server@*'`로 다 끄고 `systemctl start llama-server@{model}`을 실행한 뒤 `http://127.0.0.1:50020/health`가 `ok`가 될 때까지 최대 120초 기다림 (로딩 중엔 503) |
+| `stop_llm(self)` | `systemctl stop llama-server 'llama-server@*'` (어느 모델이든 끔) |
+| `call_llm(...)` | 바꾸지 않음. `system_prompt`를 안 주면 시스템 글 없이 보내고, themaker는 GGUF 템플릿이 학습 때의 글을 넣음 |
 
-  ```ini
-  # /etc/systemd/system/llama-server@.service (예시: 실제 옵션은 systemctl cat llama-server와 맞춤)
-  [Unit]
-  Description=llama-server (%i)
-  After=network.target
-  Conflicts=llama-server.service
+- `__init__`에서 고른 모델은 `None`입니다.
+- 파이보·파이브레인의 `speech.py`는 이 부분이 같습니다. 두 저장소에 같게 넣습니다.
 
-  [Service]
-  WorkingDirectory=/home/pi/.llama.cpp/build/bin
-  ExecStart=/home/pi/.llama.cpp/build/bin/llama-server -m /home/pi/.model/llm/%i.gguf --jinja --ctx-size 2048 -np 1 --cache-ram 0 -t 4 -ub 256 --log-disable --host 0.0.0.0 --port 50020
-  Restart=no
-  ```
+### 3-2. 블록 (`ide/static/`)
 
-  ```bash
-  # 모델별 별칭 링크: 이미지 만들 때 한 번만 (블록 실행 때는 건드리지 않음)
-  cd /home/pi/.model/llm
-  sudo ln -s gemma-3-1b-it-Q4_K_M.gguf gemma3.gguf
-  sudo ln -s themaker-0.8b-Q4_K_M.gguf themaker-ko.gguf
-  sudo ln -s themaker-en-0.8b-Q4_K_M.gguf themaker-en.gguf
-  sudo systemctl daemon-reload
-  ```
+| 파일 | 할 일 |
+| --- | --- |
+| `customblock.js` | 새 블록 `speech_set_llm_model`을 만듭니다. 모양은 `speech_start_llm`(1387행 근처)과 같고, `field_dropdown` 하나에 `gemma3`·`themaker-ko`·`themaker-en`을 둡니다. 색은 `color_type["speech"]` |
+| `customblock_callback.js` | `Blockly.Python.forBlock['speech_set_llm_model']` → `dialog.set_llm_model('themaker-ko')\n`. `dialog` 준비는 `speech_start_llm`(427행 근처)과 같은 방식으로 합니다 |
+| `customblock_toolbox.js` | 대화(speech) 상자에서 "대화 서버 시작하기(LLM)" **바로 앞**에 둡니다 |
+| `ko.js` | `SPEECH_SET_LLM_MODEL` = "%1 대화 모델 고르기 %2", 툴팁 "대화 서버 시작하기 전에 쓸 모델을 고릅니다. 안 고르면 기본 모델로 시작합니다.", 드롭다운 "젬마3" / "더메이커 한국어" / "더메이커 영어" |
+| `en.js` | "%1 Choose chat model %2", 툴팁 "Choose the model before starting the chat server. Without it, the default model starts.", "Gemma3" / "TheMaker Korean" / "TheMaker English" |
 
-  - `Conflicts=llama-server.service`로 기본 서버와는 서로 끕니다. 템플릿끼리(`@themaker-ko`와 `@themaker-en`)는
-    서로 끄지 않으므로 `start_llm()`이 켜기 전에 `systemctl stop llama-server 'llama-server@*'`로 다 끕니다.
-- 새 블록 → `dialog.start_llm(model="themaker-ko")` → 먼저 `llama-server`와 다른 `llama-server@*`를 끄고
-  `systemctl start llama-server@themaker-ko`를 실행합니다.
-- 좋은 점: 기본값이 바뀌지 않습니다. 어떤 모델이 떠 있는지 `systemctl list-units 'llama-server*'`로 바로 보입니다.
-- 나쁜 점: 유닛 파일이 저장소 밖이라 **이미지 작업**이 됩니다. 끄는 곳을 모두 `llama-server@*`까지
-  끄도록 고쳐야 합니다. 대상은 `stop_llm`, IDE `/llm?enable=off`, `/tools`, `/classifier`, `/hwtest`, [정지], 코드 실행입니다.
-  빠뜨리면 램 2GB에 두 모델이 같이 올라갈 수 있습니다.
+### 3-3. IDE가 끄는 곳 (`ide/run_ide.py`)
 
-### C. 서비스 없이 파이썬이 직접 띄우기
-`start_llm(model=...)`가 llama-server를 `subprocess`로 직접 띄웁니다.
+지금은 `llama-server.service`만 끕니다. 아래를 모두 `llama-server.service`와 `llama-server@*`를 함께 끄게 고칩니다.
+빠뜨리면 램 2GB에 모델 두 개가 올라갈 수 있습니다.
 
-- 좋은 점: 저장소 안에서 끝납니다 (이미지 작업 없음).
-- 나쁜 점: 지금 IDE가 `systemctl`로 끄고 켜는 흐름과 따로 놉니다. 프로세스를 잃으면(IDE 재시작) 정리가 어렵습니다.
-  검수 서버(`hwtest_proc`)처럼 `pkill -f`로 정리하는 방식을 따라야 합니다.
+- `/tools`, `/classifier`, `/hwtest` 켜기
+- `/llm?enable=off`
+- [정지], 코드 실행 시작
+- `systemctl stop`을 부르는 다른 곳: `grep -n "llama-server" ide/run_ide.py`로 모두 찾습니다
 
-**어느 안이든 공통**
-- 파이썬 API는 **더하기만** 합니다: `set_llm_model(self, model)`(고른 이름을 `self`에 기억)과
-  `start_llm(self, port=50020)`의 안쪽 분기. 고른 모델이 없으면(`None`) 지금과 똑같이 `systemctl start llama-server`.
-  A안(링크 바꾸기)은 고른 모델이 기본값에 남으므로 이 방식과 맞지 않습니다 → **B안이나 C안**.
-- `stop_llm()`은 어느 모델이 떠 있든 끄게 합니다.
-- 모델 선택 블록은 드롭다운으로 모델 셋을 고릅니다 (`speech_set_llm_model` 같은 이름). `ko.js`·`en.js`에 글을 넣고, 툴박스(`customblock_toolbox.js`)에 둡니다.
-  가이드 문서(`docs/source*/blocks/guide.md`)도 고칩니다.
-- 파이보와 파이브레인을 같은 방식으로 합니다.
+`/llm?enable=on`(IDE [대화])을 할 때는 `llama-server@*`를 먼저 끄고 기본 `llama-server.service`를 켭니다.
+
+### 3-4. 대화 웹 (`chat/run_chat.py`)
+
+- IDE [대화]는 기본 모델(`llm-model.gguf`)로 뜹니다.
+- `SYSTEM`(40행)을 링크가 가리키는 파일에 맞춰 고릅니다 (`os.path.realpath`로 파일 이름을 봄).
+  - 이름에 `themaker-en`이 있으면 영어 모델의 시스템 글
+  - `themaker`가 있으면 한국어 모델의 시스템 글
+  - 그 밖(젬마 등)은 지금 글 그대로
+- themaker의 시스템 글은 학습 저장소(openpibo-chat)의 `tools.SYSTEM` / `tools.SYSTEM_EN`과 **글자까지 같게** 넣습니다
+  (PC `~/openpibo-chat/tools.py`에서 복사).
+
+### 3-5. 문서
+
+- `docs/source/blocks/guide.md`, `docs/source_en/blocks/guide.md`에 새 블록을 설명합니다.
+  - 모델 셋의 차이: 젬마3는 한국어·영어, 더메이커 한국어는 한국어 전용·짧은 존댓말, 더메이커 영어는 영어 전용
+  - 더메이커는 시스템 글 없이 쓰는 것이 가장 자연스럽다는 것
+  - 고르기 블록은 시작 블록 앞에 놓는다는 것
+- `CLAUDE.md`의 '대화 웹'·서비스 절에 템플릿 유닛과 끄는 곳 목록을 적습니다.
 
 ---
 
-## 4. 같이 정해야 할 것 (설계안에 의견을 적어 주세요)
+## 4. 기기 이미지 작업 (백업 → 사용자 확인 → 함)
 
-1. **시스템 글**
-   - themaker-ko/en은 학습한 시스템 글(`tools.SYSTEM`/`SYSTEM_EN`)로만 배웠습니다. `call_llm(system_prompt="너는 내 스마트한 비서야")`처럼
-     다른 글을 주면 대답이 어떻게 될지 모릅니다 (확인 필요).
-   - `system_prompt`를 안 주면 GGUF 템플릿이 학습 때의 글을 넣습니다.
-   - themaker를 고른 경우 블록의 시스템 글을 무시할지, 학습한 글 뒤에 붙일지, 그대로 보낼지 정해야 합니다.
-2. **대화 웹 (`chat/run_chat.py`)**: `SYSTEM`을 지금 떠 있는 모델에 맞춰야 합니다. 젬마는 지금 글, themaker-ko는
-   `tools.SYSTEM`, themaker-en은 `tools.SYSTEM_EN`입니다. 대화 웹이 어떤 모델이 떠 있는지 아는 방법을 정해야 합니다
-   (예: B안이면 `systemctl is-active llama-server@<이름>`).
-3. **도구**: 블록의 `call_llm`은 도구를 보내지 않습니다 (글자 대화만). 도구(불빛·보기·움직이기)는
-   `pibo_chat.py`/`pibrain_chat.py` 방식의 앱에서만 씁니다. 블록에서도 도구를 쓸지는 이번 범위 밖으로 둡니다.
-4. **IDE [대화]의 기본 모델**: 지금처럼 `llm-model.gguf` 링크(기본 하나)로 둘지, IDE 화면에도 고르는 곳을 둘지 정합니다.
-5. **llama-server 옵션**: 모델마다 같은 옵션(`--jinja --ctx-size 2048 -np 1 --cache-ram 0 -t 4 -ub 256`)으로
-   되는지 확인합니다. 젬마는 `--jinja`로도 대답이 정상인지 확인 필요합니다.
+```bash
+# 백업
+sudo cp /etc/systemd/system/llama-server.service ~/llama-server.service.bak
+ls -la /home/pi/.model/llm/ > ~/model-llm-ls.bak
+
+# 모델 파일 받기 (PC에서)
+scp circulus@192.168.68.118:openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf /tmp/ && sudo mv /tmp/themaker-0.8b-Q4_K_M.gguf /home/pi/.model/llm/
+# themaker-en-0.8b-Q4_K_M.gguf 는 PC 학습이 끝난 뒤 같은 방법으로
+
+# 모델별 별칭 링크 (한 번만)
+cd /home/pi/.model/llm
+sudo ln -s gemma-3-1b-it-Q4_K_M.gguf gemma3.gguf
+sudo ln -s themaker-0.8b-Q4_K_M.gguf themaker-ko.gguf
+sudo ln -s themaker-en-0.8b-Q4_K_M.gguf themaker-en.gguf      # 파일이 오기 전엔 깨진 링크 (set_llm_model이 파일 없음으로 알림)
+```
+
+`/etc/systemd/system/llama-server@.service`는 `systemctl cat llama-server`의 내용을 그대로 복사해 만듭니다.
+`-m` 경로만 `/home/pi/.model/llm/%i.gguf`로 바꾸고, `Description`과 `Conflicts`를 더합니다.
+
+```ini
+[Unit]
+Description=llama-server (%i)
+After=network.target
+Conflicts=llama-server.service
+
+[Service]
+# 아래 두 줄은 지금 llama-server.service와 같게 (User 등 다른 줄도 그대로)
+WorkingDirectory=/home/pi/.llama.cpp/build/bin
+ExecStart=/home/pi/.llama.cpp/build/bin/llama-server -m /home/pi/.model/llm/%i.gguf <지금 서비스의 나머지 옵션 그대로>
+Restart=no
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+- **옵션**: themaker는 `--jinja`가 있어야 GGUF 템플릿(생각 끄기, 기본 시스템 글)을 씁니다. 지금 서비스에 `--jinja`가 없으면 템플릿
+  유닛에는 넣고, 지금 서비스(`llama-server.service`)는 건드리지 않습니다. 램 2GB에 맞춘 옵션은
+  `--ctx-size 2048 -np 1 --cache-ram 0 -t 4 -ub 256`입니다.
+- **Conflicts**: `Conflicts=llama-server.service`로 기본 서버와는 서로 끕니다. 템플릿끼리(`@themaker-ko`와 `@themaker-en`)는
+  서로 끄지 않으므로, `start_llm()`이 켜기 전에 반드시 다 끕니다 (3-1).
+- **`enable` 안 함**: 템플릿 유닛은 `enable` 하지 않습니다 (부팅 때 안 뜸).
 
 ---
 
-## 5. 하지 말 것
+## 5. 시험
 
-- 설계안이 정해지기 전에 서비스 파일, 링크, 블록, `speech.py`를 바꾸지 않습니다.
-- 예전 블록(`speech_start_llm`)과 `start_llm()`의 동작을 바꾸지 않습니다.
+1. **예전 프로그램**: 고르기 블록 없이 [대화 서버 시작하기] → [대화하기]. 지금 기본 모델로 대답해야 합니다.
+2. **모델 셋**: 각각 [대화 모델 고르기] → [대화 서버 시작하기] → [대화하기 "너는 누구야?"].
+   - `systemctl list-units 'llama-server*'`에 하나만 active인지 봅니다.
+   - `pgrep -c llama-server`가 1인지 봅니다.
+   - 더메이커 한국어는 "교육용 AI 더메이커예요", 영어는 "I'm TheMaker"로 대답해야 합니다.
+3. **바꾸기**: 한 프로그램에서 themaker-ko로 시작한 뒤 [대화 모델 고르기 (젬마3)]. 젬마로 다시 떠야 합니다 (서버 하나만).
+4. **끄기**: [대화 서버 끄기], IDE [도구]·[분류기]·[H/W 검수]·[정지]를 누른 뒤 `pgrep -c llama-server`가 0이어야 합니다.
+5. **IDE [대화]**: 모델을 고른 프로그램을 돌린 뒤 IDE [대화]를 열어도 기본 모델로 떠야 합니다.
+6. **파일 없음**: themaker-en 파일이 없을 때 고르면 알아볼 수 있는 오류가 나야 합니다.
+7. **젬마3 + `--jinja`**: 템플릿 유닛으로 띄운 젬마3가 정상으로 대답하는지 확인합니다.
+8. 모델마다 `free -m`과 첫 대답까지 걸린 시간을 잽니다.
+
+---
+
+## 6. 하지 말 것
+
+- 예전 블록(`speech_start_llm`)과 `start_llm()`·`call_llm()`의 **모델을 고르지 않았을 때 동작**을 바꾸지 않습니다.
+- 블록 실행 때 `llm-model.gguf` 링크를 바꾸지 않습니다.
 - llama-server를 두 개 동시에 띄우지 않습니다 (램 2GB).
-- 젬마 모델 파일과 지금 서비스 파일을 백업 없이 지우거나 덮어쓰지 않습니다.
+- 서비스 파일과 젬마 모델 파일을 백업 없이 지우거나 덮어쓰지 않습니다. `llama-server.service`는 `disable` 하지 않습니다.
+- 4장(이미지 작업)은 사용자 확인 전에 하지 않습니다.
+- 파이보에서 빌드할 일이 생기면 `-j2`로 합니다 (`-j4` 금지).
 
 ---
 
-## 6. 보고할 것
+## 7. 보고할 것
 
-1. 2장 "기기에서 먼저 확인할 것"의 결과
-2. A·B·C 중 추천안과 까닭. 바꿀 파일과 줄 목록 (저장소 안 / 이미지 작업을 나눠서)
-3. 4장 다섯 가지에 대한 의견
+1. 2장 확인 결과 (링크, 서비스 파일, 버전, root 여부, `free -m`)
+2. 바꾼 파일과 줄 (저장소 안 / 이미지 작업을 나눠서, 파이보·파이브레인 각각)
+3. 5장 시험 결과 (모델마다 램·시간, 실패한 것)
 4. 확인 필요로 남은 것
