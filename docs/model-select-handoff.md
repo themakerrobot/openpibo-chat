@@ -37,8 +37,9 @@
 | `themaker-ko` | `themaker-ko.gguf` → `themaker-0.8b-Q4_K_M.gguf` (321MB) | 한국어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 | `themaker-en` | `themaker-en.gguf` → `themaker-en-0.8b-Q4_K_M.gguf` (PC에서 학습 중) | 영어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 
-모델 파일은 학습 PC(`circulus@192.168.68.118`)의 `~/openpibo-chat/out/`에 있습니다. `themaker-en`은 PC 학습이 끝나야
-생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
+모델 파일은 Hugging Face 공개 저장소 `leeyunjai/themaker`의 `.model/llm/`에 있습니다 (기기 이미지가 `/home/pi/.model`을
+받는 곳과 같음, 파이보 `IMAGE.md` 125행). 학습 PC(`circulus@192.168.68.118`)의 `~/openpibo-chat/out/`에도 있습니다.
+`themaker-en`은 PC 학습이 끝나야 생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
 
 ---
 
@@ -125,9 +126,13 @@ free -m
 sudo cp /etc/systemd/system/llama-server.service ~/llama-server.service.bak
 ls -la /home/pi/.model/llm/ > ~/model-llm-ls.bak
 
-# 모델 파일 받기 (PC에서)
-scp circulus@192.168.68.118:openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf /tmp/ && sudo mv /tmp/themaker-0.8b-Q4_K_M.gguf /home/pi/.model/llm/
-# themaker-en-0.8b-Q4_K_M.gguf 는 PC 학습이 끝난 뒤 같은 방법으로
+# 모델 파일 받기: Hugging Face에서 (git clone 말고 download, IMAGE.md와 같은 방식)
+huggingface-cli download leeyunjai/themaker .model/llm/themaker-0.8b-Q4_K_M.gguf --local-dir /tmp/hf-themaker
+sudo mv /tmp/hf-themaker/.model/llm/themaker-0.8b-Q4_K_M.gguf /home/pi/.model/llm/
+# 또는 학습 PC에서: scp circulus@192.168.68.118:openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf /tmp/
+# 이미 ~/pibo-take/에 받아 둔 기기는 그 파일을 옮기면 됨 (sha256 2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c)
+sha256sum /home/pi/.model/llm/themaker-0.8b-Q4_K_M.gguf
+# themaker-en-0.8b-Q4_K_M.gguf 는 PC 학습이 끝나 Hugging Face에 올라온 뒤 같은 방법으로
 
 # 모델별 별칭 링크 (한 번만)
 cd /home/pi/.model/llm
