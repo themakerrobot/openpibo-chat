@@ -64,7 +64,7 @@ bash pi_bench.sh 지금쓰는.gguf themaker-0.8b-Q4_K_M.gguf               # 메
 - `-c 2048 -np 1 --cache-ram 0`: 램 2GB에 맞게.
 - 앱은 켤 때 시스템 글과 도구 목록(약 530토큰)을 미리 읽혀 둡니다. 그 뒤에는 새로 한 말만 읽습니다.
 - openpibo의 Device·카메라·NeoPixel은 root가 필요해 `sudo`로 실행합니다.
-- 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-handoff.md`.
+- 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-tools-handoff.md`(파이보), `docs/pibrain-tools-handoff.md`(파이브레인), 모델 고르기 블록은 `docs/model-select-handoff.md`.
 
 ## 라이선스
 
