@@ -37,9 +37,8 @@
 | `themaker-ko` | `themaker-ko.gguf` → `themaker-0.8b-Q4_K_M.gguf` (321MB) | 한국어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 | `themaker-en` | `themaker-en.gguf` → `themaker-en-0.8b-Q4_K_M.gguf` (PC에서 학습 중) | 영어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 
-모델 파일은 Hugging Face 공개 저장소 `leeyunjai/themaker`의 `.model/llm/`에 있습니다 (기기 이미지가 `/home/pi/.model`을
-받는 곳과 같음, 파이보 `IMAGE.md` 125행). 학습 PC(`circulus@192.168.68.118`)의 `~/openpibo-chat/out/`에도 있습니다.
-`themaker-en`은 PC 학습이 끝나야 생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
+모델 파일은 **사용자가 따로 옮겨 둡니다** (`/home/pi/.model/llm/`). 이 세션은 모델 파일을 받거나 옮기지 않고,
+있는지만 확인합니다. `themaker-en`은 PC 학습이 끝나야 생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
 
 ---
 
@@ -126,13 +125,10 @@ free -m
 sudo cp /etc/systemd/system/llama-server.service ~/llama-server.service.bak
 ls -la /home/pi/.model/llm/ > ~/model-llm-ls.bak
 
-# 모델 파일 받기: Hugging Face에서 (git clone 말고 download, IMAGE.md와 같은 방식)
-huggingface-cli download leeyunjai/themaker .model/llm/themaker-0.8b-Q4_K_M.gguf --local-dir /tmp/hf-themaker
-sudo mv /tmp/hf-themaker/.model/llm/themaker-0.8b-Q4_K_M.gguf /home/pi/.model/llm/
-# 또는 학습 PC에서: scp circulus@192.168.68.118:openpibo-chat/out/themaker-0.8b-Q4_K_M.gguf /tmp/
-# 이미 ~/pibo-take/에 받아 둔 기기는 그 파일을 옮기면 됨 (sha256 2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c)
-sha256sum /home/pi/.model/llm/themaker-0.8b-Q4_K_M.gguf
-# themaker-en-0.8b-Q4_K_M.gguf 는 PC 학습이 끝나 Hugging Face에 올라온 뒤 같은 방법으로
+# 모델 파일은 사용자가 따로 옮겨 둠: 받거나 옮기지 말고 있는지만 확인
+ls -la /home/pi/.model/llm/
+sha256sum /home/pi/.model/llm/themaker-0.8b-Q4_K_M.gguf   # 2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c 이어야 함
+# 없으면 멈추고 사용자에게 알림 (themaker-en은 아직 없어도 됨)
 
 # 모델별 별칭 링크 (한 번만)
 cd /home/pi/.model/llm
@@ -193,6 +189,7 @@ sudo systemctl daemon-reload
 - llama-server를 두 개 동시에 띄우지 않습니다 (램 2GB).
 - 서비스 파일과 젬마 모델 파일을 백업 없이 지우거나 덮어쓰지 않습니다. `llama-server.service`는 `disable` 하지 않습니다.
 - 4장(이미지 작업)은 사용자 확인 전에 하지 않습니다.
+- 모델 파일(`*.gguf`)을 받거나 옮기거나 지우지 않습니다. 사용자가 따로 옮깁니다.
 - 파이보에서 빌드할 일이 생기면 `-j2`로 합니다 (`-j4` 금지).
 
 ---
