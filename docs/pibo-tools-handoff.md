@@ -54,10 +54,10 @@
 | 파이보 | Raspberry Pi 4B, 램 2GB, IP `192.168.68.121`, 사용자 `pi` |
 | 학습 PC | Ubuntu, IP `192.168.68.118`, 사용자 `circulus`, 저장소 `~/openpibo-chat` |
 | llama.cpp | `/home/pi/.llama.cpp` (그 자리에서 다시 빌드한 새 빌드). `--jinja`가 있어야 도구 호출을 읽음 |
-| 모델 파일 | 사용자가 `/home/pi/.model/llm/`에 따로 옮겨 둠. `themaker-0.8b-Q4_K_M.gguf` sha256 `2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c`. 영어판 `themaker-en-0.8b-Q4_K_M.gguf`는 PC 학습 뒤 |
+| 모델 파일 | 사용자가 `/home/pi/.model/llm/`에 따로 옮겨 둠. `themaker-0.8b-Q4_K_M.gguf` sha256 `2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c`. 영어판 `themaker-en-0.8b-Q4_K_M.gguf` sha256 `39bf09302eb91777f7b4e9909feafc41ce13e1b183a5e7efff5afaceabca1570` |
 | 파이썬 | `sudo ~/.pyenv/bin/python3` (openpibo가 여기 있고, Device·카메라는 root 필요) |
 | 실측 (같은 크기 모델) | 서버 최대 515MB, 대화 한 번 11.5초, 읽기 초당 16.7토큰, 말하기 6.3토큰 (젬마3 1B: 872MB, 21.5초) |
-| 채점 (PC) | 한국어 대화 4.61점(5점 만점), 도구를 맞게 부름 99% (불빛 99%, 보기 100%, 움직이기 100%), 부르면 안 될 때 안 부름 94% |
+| 채점 (PC) | 영어 모델: 영어 대화 4.71/4.87점(젬마3 4.52/4.68), 도구를 맞게 부름 100%, 부르면 안 될 때 안 부름 100%. 한국어 모델: 한국어 대화 4.61점(5점 만점), 도구를 맞게 부름 99% (불빛 99%, 보기 100%, 움직이기 100%), 부르면 안 될 때 안 부름 94% |
 
 ---
 

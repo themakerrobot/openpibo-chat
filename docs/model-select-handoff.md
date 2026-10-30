@@ -35,7 +35,7 @@
 | --- | --- | --- | --- |
 | `gemma3` | `gemma3.gguf` → `gemma-3-1b-it-Q4_K_M.gguf` (지금 있음, 약 806MB) | 한국어·영어 | 블록이 준 것 |
 | `themaker-ko` | `themaker-ko.gguf` → `themaker-0.8b-Q4_K_M.gguf` (321MB) | 한국어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
-| `themaker-en` | `themaker-en.gguf` → `themaker-en-0.8b-Q4_K_M.gguf` (PC에서 학습 중) | 영어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
+| `themaker-en` | `themaker-en.gguf` → `themaker-en-0.8b-Q4_K_M.gguf` (331MB, sha256 `39bf09302eb9…`) | 영어 | 없으면 GGUF 템플릿이 학습 때의 글을 넣음 |
 
 모델 파일은 **사용자가 따로 옮겨 둡니다** (`/home/pi/.model/llm/`). 이 세션은 모델 파일을 받거나 옮기지 않고,
 있는지만 확인합니다. `themaker-en`은 PC 학습이 끝나야 생깁니다. 파일이 아직 없으면 그 모델만 "준비 안 됨" 오류를 내게 하고 나머지는 먼저 만듭니다.
@@ -135,6 +135,7 @@ cd /home/pi/.model/llm
 sudo ln -s gemma-3-1b-it-Q4_K_M.gguf gemma3.gguf
 sudo ln -s themaker-0.8b-Q4_K_M.gguf themaker-ko.gguf
 sudo ln -s themaker-en-0.8b-Q4_K_M.gguf themaker-en.gguf      # 파일이 오기 전엔 깨진 링크 (set_llm_model이 파일 없음으로 알림)
+sha256sum /home/pi/.model/llm/themaker-en-0.8b-Q4_K_M.gguf     # 39bf09302eb91777f7b4e9909feafc41ce13e1b183a5e7efff5afaceabca1570
 ```
 
 `/etc/systemd/system/llama-server@.service`는 `systemctl cat llama-server`의 내용을 그대로 복사해 만듭니다.

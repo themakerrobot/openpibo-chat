@@ -52,10 +52,10 @@
 | 파이브레인 | 서보·배터리·마이크 없음 (그래서 움직이기 없음, 음성 인식 없음 → 글자 입력). NeoPixel LED 1개(GPIO12, root 필요). IP는 확인 필요 |
 | 학습 PC | Ubuntu, IP `192.168.68.118`, 사용자 `circulus`, 저장소 `~/openpibo-chat` |
 | llama.cpp | `/home/pi/.llama.cpp` (새 빌드). `--jinja`가 있어야 도구 호출을 읽음. 파이브레인 기기의 서비스·빌드 상태는 실기기로 아직 안 봄 (확인 필요) |
-| 모델 파일 | 사용자가 `/home/pi/.model/llm/`에 따로 옮겨 둠. `themaker-0.8b-Q4_K_M.gguf` sha256 `2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c`. 영어판은 PC 학습 뒤 |
+| 모델 파일 | 사용자가 `/home/pi/.model/llm/`에 따로 옮겨 둠. `themaker-0.8b-Q4_K_M.gguf` sha256 `2a8799ec40d2f9a3facc035d7ab7eabc0fcc61b5e5637d7ddbb9ea453b21970c`. 영어판 `themaker-en-0.8b-Q4_K_M.gguf` sha256 `39bf09302eb91777f7b4e9909feafc41ce13e1b183a5e7efff5afaceabca1570` |
 | 파이썬 | `sudo ~/.pyenv/bin/python3` (openpibo가 여기 있다고 가정, 확인 필요) |
 | 글자 대화 웹 | `chat/run_chat.py` (50030). 지금은 도구 없이 글자 대화만 |
-| 채점 (PC) | 한국어 대화 4.61점(5점 만점), 도구를 맞게 부름 99%, 부르면 안 될 때 안 부름 94% |
+| 채점 (PC) | 영어 모델: 영어 대화 4.71/4.87점(젬마3 4.52/4.68), 도구를 맞게 부름 100%, 부르면 안 될 때 안 부름 100%. 한국어 모델: 한국어 대화 4.61점(5점 만점), 도구를 맞게 부름 99%, 부르면 안 될 때 안 부름 94% |
 
 ---
 
