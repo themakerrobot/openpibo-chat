@@ -64,6 +64,8 @@ bash pi_bench.sh 지금쓰는.gguf themaker-0.8b-Q4_K_M.gguf               # 메
 - `-c 2048 -np 1 --cache-ram 0`: 램 2GB에 맞게.
 - 앱은 켤 때 시스템 글과 도구 목록(약 530토큰)을 미리 읽혀 둡니다. 그 뒤에는 새로 한 말만 읽습니다.
 - openpibo의 Device·카메라·NeoPixel은 root가 필요해 `sudo`로 실행합니다.
+- 다른 PC(윈도우 등) 브라우저로 시험: 학습 PC에서 `python web_chat.py` → `http://<학습 PC IP>:8500`.
+  더메이커 한국어·영어·젬마3를 골라 대화하고, 기기 앱과 같은 규칙(멈춰, 이동 막기)으로 도구를 화면에 보여 줌.
 - 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-tools-handoff.md`(파이보), `docs/pibrain-tools-handoff.md`(파이브레인), 모델 고르기 블록은 `docs/model-select-handoff.md`.
 
 ## 라이선스

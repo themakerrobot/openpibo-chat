@@ -827,3 +827,47 @@ def test_english_app_says_its_fixed_lines_in_english(monkeypatch):
     assert pibo.look() == "an apple and a cup"
     monkeypatch.setattr(app, "ask", lambda *a, **k: reply("Let me take a look.", "look"))
     assert app.turn("x", [], "What do you see?", pibo, "s") == "Let me take a look. I can see an apple and a cup."
+
+
+# ------------------------------------------------------------- 시험용 웹 화면
+
+def test_web_chat_follows_the_app_rules_and_shows_tools(monkeypatch):
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import pibo_chat as app
+    import web_chat
+
+    replies = iter([reply("빨간색으로 바꿀게요!", "light", color="빨강"),
+                    reply("신나게 춤춰 볼게요!", "move", action="춤"),
+                    reply("Turning on the red light.", "light", color="빨강")])
+    sent = []
+    monkeypatch.setattr(app, "ask", lambda url, msgs, tools, **k: sent.append((url, msgs[0]["content"], tools))
+                        or next(replies))
+    chat = web_chat.Chat({"themaker-ko": "http://ko", "themaker-en": "http://en"})
+    out = chat.reply("s1", "themaker-ko", "pibo", "빨간 불 켜 줘", True)
+    assert out["reply"] == "빨간색으로 바꿀게요!" and out["actions"] == ["불빛 빨강"]
+    out = chat.reply("s1", "themaker-ko", "pibrain", "춤춰 줘", True)          # 파이브레인은 못 움직임
+    assert out["reply"] == app.Pibo.cant_move and out["actions"] == []
+    assert len(chat.sessions["s1"]["history"]) == 4
+    out = chat.reply("s1", "themaker-en", "pibo", "Turn on the red light", True)  # 모델을 바꾸면 기억을 비움
+    assert out["actions"] == ["불빛 빨강"] and len(chat.sessions["s1"]["history"]) == 2
+    assert sent[2][0] == "http://en" and sent[2][1].startswith("You are TheMaker")
+    out = chat.reply("s1", "themaker-ko", "pibo", "멈춰", True)                  # 모델에 묻지 않음
+    assert out["actions"] == ["멈춤"] and len(sent) == 3
+    assert "error" in chat.reply("s1", "gemma3", "pibo", "안녕", True)          # 띄우지 않은 모델
+
+    web = ThreadingHTTPServer(("127.0.0.1", 0), web_chat.handler_for(chat, '<option value="themaker-ko">x</option>'))
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{web.server_address[1]}"
+    try:
+        page = urllib.request.urlopen(base + "/").read().decode()
+        assert "더메이커 시험" in page and 'value="themaker-ko"' in page
+        req = urllib.request.Request(base + "/api/chat", json.dumps(
+            {"sid": "s2", "model": "themaker-ko", "device": "pibo", "text": "멈춰"}).encode(),
+            {"Content-Type": "application/json"})
+        assert json.loads(urllib.request.urlopen(req).read())["reply"] == "네, 멈출게요."
+    finally:
+        web.shutdown()
+        web.server_close()
