@@ -871,3 +871,54 @@ def test_web_chat_follows_the_app_rules_and_shows_tools(monkeypatch):
     finally:
         web.shutdown()
         web.server_close()
+
+
+def test_windows_page_follows_the_app_rules(tmp_path):
+    """make_web의 페이지 규칙(브라우저 JS)을 node로 돌려 봄: 기기 앱과 같은 대답·도구."""
+    import re
+    import shutil
+    import subprocess
+
+    import make_web
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    page = make_web.build_page()
+    logic = re.search(r'<script id="logic">(.*?)</script>', page, re.S).group(1)
+    assert make_web.constants()["systems"]["ko"] == SYSTEM
+    test = logic + r"""
+const replies = [
+  {content: "빨간색으로 바꿀게요!", tool_calls: [{function: {name: "light", arguments: '{"color":"빨강"}'}}]},
+  {content: "뒤로 갈게요.", tool_calls: [{function: {name: "move", arguments: '{"action":"뒤로"}'}}]},
+  {content: "서운했겠어요."},
+  {content: "춤출게요!", tool_calls: [{function: {name: "move", arguments: '{"action":"춤"}'}}]},
+  {content: "Let me take a look.", tool_calls: [{function: {name: "look", arguments: "{}"}}]},
+];
+const sent = [];
+globalThis.fetch = async (url, opt) => { sent.push(JSON.parse(opt.body));
+  return {ok: true, json: async () => ({choices: [{message: replies.shift()}]})}; };
+(async () => {
+  const h = [], ko = {url: "", lang: "ko", canMove: true, tools: true};
+  const out = [];
+  out.push(await turn(ko, h, "빨간 불 켜 줘"));
+  out.push(await turn(ko, h, "우리 반 친구가 인사를 잘 안 해"));
+  out.push(await turn(ko, h, "멈춰"));
+  out.push(await turn(Object.assign({}, ko, {canMove: false}), h, "춤춰 줘"));
+  out.push(await turn({url: "", lang: "en", canMove: true, tools: true}, [], "What do you see?"));
+  console.log(JSON.stringify({out, sent: sent.map(b => [b.messages[0].content.slice(0, 12), !!b.tools,
+    b.temperature]), history: h.length}));
+})();
+"""
+    f = tmp_path / "t.js"
+    f.write_text(test, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(f)], capture_output=True, text=True, check=True).stdout)
+    out = got["out"]
+    assert out[0] == {"said": "빨간색으로 바꿀게요!", "did": ["불빛 빨강"], "notes": []}
+    assert out[1]["said"] == "서운했겠어요." and out[1]["did"] == [] and out[1]["notes"][0].startswith("막음")
+    assert out[2] == {"said": "네, 멈출게요.", "did": ["멈춤"], "notes": []}            # 모델에 묻지 않음
+    assert out[3]["said"].startswith("저는 몸이 없어서") and out[3]["did"] == []          # 파이브레인
+    assert out[4]["said"] == "Let me take a look. I can see an apple and a cup."
+    assert len(got["sent"]) == 5 and got["sent"][2][2] == 1.0                           # 막힌 뒤 한 번 더
+    assert got["sent"][0][0] == SYSTEM[:12] and got["sent"][4][0] == "You are TheM" and got["sent"][0][1]
+    assert got["history"] == 8

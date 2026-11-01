@@ -16,3 +16,5 @@ data/*
 *.zip
 *.xlsx
 *.tsv
+# make_web.py가 만드는 페이지 (tools.py에서 다시 만듦)
+web/

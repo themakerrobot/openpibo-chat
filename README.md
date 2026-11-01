@@ -66,6 +66,9 @@ bash pi_bench.sh 지금쓰는.gguf themaker-0.8b-Q4_K_M.gguf               # 메
 - openpibo의 Device·카메라·NeoPixel은 root가 필요해 `sudo`로 실행합니다.
 - 다른 PC(윈도우 등) 브라우저로 시험: 학습 PC에서 `python web_chat.py` → `http://<학습 PC IP>:8500`.
   더메이커 한국어·영어·젬마3를 골라 대화하고, 기기 앱과 같은 규칙(멈춰, 이동 막기)으로 도구를 화면에 보여 줌.
+- 파이썬이 없는 윈도우 PC: 학습 PC에서 `python make_web.py --package out/themaker-win` → `out/themaker-win.zip`
+  (llama.cpp 윈도우판 + 모델 + 웹 페이지 하나 + run-ko.bat/run-en.bat). 윈도우에서 풀고 bat을 누르면 브라우저가 열림.
+  데이터 출처 고지는 학습 PC의 `data/NOTICE.txt`(git에 안 올림)를 README.txt 끝에 붙임.
 - 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-tools-handoff.md`(파이보), `docs/pibrain-tools-handoff.md`(파이브레인), 모델 고르기 블록은 `docs/model-select-handoff.md`.
 
 ## 라이선스
