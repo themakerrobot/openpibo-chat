@@ -18,3 +18,5 @@ data/*
 *.tsv
 # make_web.py가 만드는 페이지 (tools.py에서 다시 만듦)
 web/
+# 모델 파일은 어디에도 올리지 않음 (Pages 포함)
+*.gguf

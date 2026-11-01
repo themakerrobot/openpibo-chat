@@ -922,3 +922,48 @@ globalThis.fetch = async (url, opt) => { sent.push(JSON.parse(opt.body));
     assert len(got["sent"]) == 5 and got["sent"][2][2] == 1.0                           # 막힌 뒤 한 번 더
     assert got["sent"][0][0] == SYSTEM[:12] and got["sent"][4][0] == "You are TheM" and got["sent"][0][1]
     assert got["history"] == 8
+
+
+def test_webrunner_tools_match_the_model_and_calculate_safely(tmp_path):
+    """webrunner/index.html의 더메이커 도구·시스템 글이 tools.py와 같고, 계산기·도구 실행이 맞는지."""
+    import re
+    import shutil
+    import subprocess
+
+    from tools import SYSTEMS, TOOLS
+
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    assert page.index('src="coi-serviceworker.js"') < page.index("<meta")       # head에서 가장 먼저
+    themaker = json.loads(re.search(r"^const THEMAKER = (\{.*\});$", page, re.M).group(1))
+    assert themaker == {"systems": SYSTEMS, "tools": TOOLS}
+    assert "@wllama/wllama@3.8.1/esm/index.js" in page and "api.openai.com" not in page
+    assert (ROOT / "webrunner" / "coi-serviceworker.js").exists() and (ROOT / "webrunner" / ".nojekyll").exists()
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + r"""
+(async () => {
+  const out = {
+    mul: calculate("1234 * 5678"), x: calculate("1234 x 5678"), prec: calculate("2+3*4^2/(1-3)"),
+    neg: calculate("-(3 - 10) % 4"), bad: (() => { try { calculate("alert(1)"); } catch (e) { return e.message; } })(),
+    div0: (() => { try { calculate("1/0"); } catch (e) { return e.message; } })(),
+    calc: await executeTool("basic", "calculator", {expression: "1234*5678"}),
+    wave: await executeTool("basic", "pibo_action", {action: "wave"}),
+    jump: await executeTool("basic", "pibo_action", {action: "jump"}),
+    missing: await executeTool("basic", "nope", {}),
+    light: await executeTool("themaker", "light", {color: "빨강"}),
+    purple: await executeTool("themaker", "light", {color: "보라색"}),
+    enSystem: TOOLSETS.themaker_en.system.slice(0, 15), follow: [TOOLSETS.basic.followUp, TOOLSETS.themaker.followUp],
+  };
+  console.log(JSON.stringify(out));
+})();
+"""
+    f = tmp_path / "t.js"
+    f.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(f)], capture_output=True, text=True, check=True).stdout)
+    assert got["mul"] == got["x"] == 7006652 and got["prec"] == -22 and got["neg"] == 3
+    assert "만 쓸 수 있어요" in got["bad"] and "0으로" in got["div0"]
+    assert got["calc"]["result"] == 7006652 and got["wave"]["ok"] is True and got["wave"]["action"] == "wave"
+    assert "목록에 없음" in got["jump"]["error"] and "없는 도구" in got["missing"]["error"]
+    assert got["light"]["color"] == "빨강" and "목록에 없음" in got["purple"]["error"]
+    assert got["enSystem"] == "You are TheMake" and got["follow"] == [True, False]

@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<!-- 가장 먼저: GitHub Pages는 헤더를 못 바꾸므로 서비스 워커로 COOP/COEP를 붙여 SharedArrayBuffer(멀티스레드)를 켭니다 -->
+<script src="coi-serviceworker.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GGUF 웹 실행기</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#dde1e6; --ink:#1f2328; --mute:#6b7280; --user:#dcecff;
+          --call:#fff6dd; --result:#e8f6ee; --err:#fde8e8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --card:#1f2228; --line:#30353d; --ink:#e6e8eb; --mute:#9aa3ad; --user:#1d3a5c;
+            --call:#3a3220; --result:#1e3a2b; --err:#4a2020; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  header, .panel { background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+  label { font-size:14px; }
+  input[type=number] { width:80px; }
+  #status { font-size:13px; color:var(--mute); margin-top:6px; }
+  #info { font-size:13px; color:var(--mute); }
+  main { max-width:820px; margin:0 auto; padding:12px 16px 150px; }
+  .msg { margin:8px 0; padding:8px 12px; border-radius:10px; white-space:pre-wrap; word-break:break-word; max-width:90%; }
+  .msg .who { font-size:11px; color:var(--mute); display:block; margin-bottom:2px; }
+  .user { background:var(--user); margin-left:auto; }
+  .assistant { background:var(--card); border:1px solid var(--line); }
+  .tool_call { background:var(--call); font-family: ui-monospace, Consolas, monospace; font-size:13px; }
+  .tool_result { background:var(--result); font-family: ui-monospace, Consolas, monospace; font-size:13px; }
+  .error { background:var(--err); }
+  footer { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line); padding:10px 16px; }
+  footer form { display:flex; gap:8px; max-width:820px; margin:0 auto; }
+  textarea { flex:1; min-height:44px; max-height:140px; padding:8px; font-size:16px; border:1px solid var(--line);
+             border-radius:8px; background:var(--card); color:var(--ink); resize:vertical; }
+  button, select { padding:8px 12px; font-size:14px; }
+  #system { width:100%; min-height:40px; margin-top:6px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GGUF 웹 실행기 <small style="font-weight:normal;color:var(--mute)">브라우저 안에서만 실행, 서버 없음</small></h1>
+  <div class="row">
+    <label>모델 파일 <input type="file" id="files" accept=".gguf" multiple></label>
+    <label>n_ctx <input type="number" id="nctx" value="4096" min="512" step="512"></label>
+    <label><input type="checkbox" id="gpu" checked> WebGPU 쓰기</label>
+    <label><input type="checkbox" id="nothink" checked> 생각 끄기</label>
+  </div>
+  <div id="status">모델 파일(.gguf)을 고르세요. 여러 조각으로 나뉜 파일은 모두 함께 고릅니다.</div>
+  <div id="info"></div>
+</header>
+<div class="panel">
+  <div class="row">
+    <label>도구 <select id="toolset">
+      <option value="basic">기본 도구 (calculator, get_time, pibo_action)</option>
+      <option value="themaker">더메이커 한국어 (light, look, move, 학습한 시스템 글)</option>
+      <option value="themaker_en">더메이커 영어 (같은 도구, 영어 시스템 글)</option>
+      <option value="none">도구 없음</option>
+    </select></label>
+    <label>temperature <input type="number" id="temp" value="0.3" min="0" max="2" step="0.1"></label>
+    <label>max_tokens <input type="number" id="maxtok" value="512" min="16" step="16"></label>
+    <button id="reset" type="button">새 대화</button>
+  </div>
+  <textarea id="system" placeholder="시스템 글 (비우면 보내지 않음)"></textarea>
+</div>
+<main id="log"></main>
+<footer>
+  <form id="form">
+    <textarea id="prompt" placeholder="말을 입력하세요 (Enter 보내기, Shift+Enter 줄바꿈)" disabled></textarea>
+    <button id="run" disabled>실행</button>
+    <button id="stop" type="button" disabled>중지</button>
+  </form>
+</footer>
+
+<!-- 도구: 정의와 실행을 여기 한 곳에 모읍니다 (일반 스크립트: 시험에서 node로도 읽음) -->
+<script id="tools">
+// 파이보 HTTP API (나중에 연결). null이면 실행하지 않고 흉내만 냅니다. 예: "http://192.168.0.10:8080/api/action"
+const PIBO_ACTION_ENDPOINT = null;
+
+// 더메이커(themaker-ko/en) 모델이 학습한 시스템 글과 도구 목록: openpibo-chat의 tools.py와 글자까지 같아야 합니다
+// (tests/test_basic.py가 확인). 이 모델은 도구를 부를 때 앞에 짧은 말을 하고, 결과를 다시 받지 않게 배웠습니다.
+const THEMAKER = {"systems": {"ko": "너는 서큘러스에서 만든, 초등학생부터 고등학생까지 학생들과 이야기하는 교육용 AI 더메이커야. 열네 살 친구처럼 밝고 친근하게, 존댓말로 짧게 말해. 이모지나 기호는 쓰지 말고, 정말 모르는 건 모른다고 해.", "en": "You are TheMaker, an educational AI made by Circulus that talks with students from elementary to high school. Talk like a bright, kind 14-year-old friend, in short and easy English. Don't use emojis or symbols, and if you really don't know something, say you don't know."}, "tools": [{"type": "function", "function": {"name": "light", "description": "불빛 색을 바꾸거나 끕니다.", "parameters": {"type": "object", "properties": {"color": {"type": "string", "enum": ["빨강", "주황", "노랑", "초록", "파랑", "하늘", "보라", "분홍", "하양", "끄기"]}}, "required": ["color"]}}}, {"type": "function", "function": {"name": "look", "description": "카메라로 앞에 있는 것을 봅니다.", "parameters": {"type": "object", "properties": {}}}}, {"type": "function", "function": {"name": "move", "description": "몸을 움직입니다.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["인사", "춤", "손흔들기", "박수", "하이파이브", "끄덕이기", "도리도리", "앞으로", "뒤로", "왼쪽", "오른쪽"]}}, "required": ["action"]}}}]};
+
+// 계산기: 숫자와 + - * / % ^ ( ) 만 받아서 직접 풉니다 (eval을 쓰지 않음)
+function calculate(expression) {
+  const src = String(expression).replace(/[×xX]/g, "*").replace(/÷/g, "/").replace(/,/g, "").replace(/\*\*/g, "^");
+  if (!/^[0-9+\-*/%^().\s]+$/.test(src)) throw new Error("숫자와 + - * / % ^ ( ) 만 쓸 수 있어요");
+  const tokens = src.match(/\d+(\.\d+)?|\.\d+|[-+*/%^()]/g) || [];
+  let i = 0;
+  const peek = () => tokens[i], take = () => tokens[i++];
+  function primary() {
+    const t = take();
+    if (t === "(") { const v = expr(); if (take() !== ")") throw new Error("괄호가 맞지 않아요"); return v; }
+    if (t === "-") return -power();
+    if (t === "+") return power();
+    if (t !== undefined && /^[\d.]/.test(t)) return parseFloat(t);
+    throw new Error("수식이 끊겼어요");
+  }
+  function power() { const b = primary(); return peek() === "^" ? (take(), Math.pow(b, power())) : b; }
+  function term() {
+    let v = power();
+    while (["*", "/", "%"].includes(peek())) {
+      const op = take(), r = power();
+      if ((op === "/" || op === "%") && r === 0) throw new Error("0으로 나눌 수 없어요");
+      v = op === "*" ? v * r : op === "/" ? v / r : v % r;
+    }
+    return v;
+  }
+  function expr() { let v = term(); while (["+", "-"].includes(peek())) { v = take() === "+" ? v + term() : v - term(); } return v; }
+  const value = expr();
+  if (i !== tokens.length) throw new Error("수식을 끝까지 읽지 못했어요");
+  if (!Number.isFinite(value)) throw new Error("계산 결과가 숫자가 아니에요");
+  return value;
+}
+
+// 도구 묶음: 이름 → {tools: [OpenAI 형식 정의], run: {이름: 실행 함수}, system (고르면 시스템 글 칸에 넣음), followUp}
+// followUp: 도구 결과를 role "tool"로 넣고 다시 물을지 (더메이커는 앞에 한 말로 끝내도록 배워서 false)
+// 도구를 더하려면: tools에 정의를 넣고 run에 같은 이름의 함수를 넣습니다.
+const TOOLSETS = {
+  basic: {
+    followUp: true,
+    system: "",
+    tools: [
+      {type: "function", function: {name: "calculator", description: "수식을 계산합니다. 예: 1234*5678",
+        parameters: {type: "object", properties: {expression: {type: "string", description: "계산할 수식"}},
+                     required: ["expression"]}}},
+      {type: "function", function: {name: "get_time", description: "지금 날짜와 시각을 알려 줍니다.",
+        parameters: {type: "object", properties: {}}}},
+      {type: "function", function: {name: "pibo_action", description: "로봇 파이보가 동작을 합니다.",
+        parameters: {type: "object", properties: {action: {type: "string", enum: ["wave", "nod", "dance", "stop"],
+          description: "wave 손 흔들기, nod 끄덕이기, dance 춤, stop 멈추기"}}, required: ["action"]}}},
+    ],
+    run: {
+      calculator: ({expression}) => ({expression, result: calculate(expression)}),
+      get_time: () => {
+        const d = new Date();
+        return {iso: d.toISOString(), local: d.toLocaleString("ko-KR"), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone};
+      },
+      pibo_action: async ({action}) => {
+        if (!["wave", "nod", "dance", "stop"].includes(action)) throw new Error("모르는 동작: " + action);
+        if (!PIBO_ACTION_ENDPOINT) return {ok: true, action, note: "흉내만 냄 (PIBO_ACTION_ENDPOINT 없음)"};
+        const r = await fetch(PIBO_ACTION_ENDPOINT, {method: "POST", headers: {"Content-Type": "application/json"},
+                                                     body: JSON.stringify({action})});
+        return {ok: r.ok, action, status: r.status};
+      },
+    },
+  },
+  themaker: {
+    followUp: false,
+    system: THEMAKER.systems.ko,
+    tools: THEMAKER.tools,
+    run: {
+      light: ({color}) => ({ok: true, color, note: "흉내만 냄"}),
+      look: () => ({ok: true, seen: ["컵", "사과"], note: "카메라 흉내"}),
+      move: ({action}) => ({ok: true, action, note: "흉내만 냄"}),
+    },
+  },
+  none: {followUp: false, system: "", tools: [], run: {}},
+};
+TOOLSETS.themaker_en = Object.assign({}, TOOLSETS.themaker, {system: THEMAKER.systems.en});
+
+function checkArgs(def, args) {
+  const p = def.function.parameters || {};
+  for (const k of p.required || []) if (!(k in args)) return k + " 빠짐";
+  for (const [k, v] of Object.entries(args)) {
+    const spec = (p.properties || {})[k];
+    if (!spec) return "모르는 인자 " + k;
+    if (spec.enum && !spec.enum.includes(v)) return k + "=" + v + " 은 목록에 없음";
+  }
+  return null;
+}
+
+// 도구 실행: 목록에 없거나 인자가 틀리면 실행하지 않고 오류를 결과로 돌려줍니다
+async function executeTool(setName, name, args) {
+  const set = TOOLSETS[setName];
+  const def = set.tools.find(t => t.function.name === name);
+  if (!def || !set.run[name]) return {error: "없는 도구: " + name};
+  const bad = checkArgs(def, args || {});
+  if (bad) return {error: bad};
+  try { return await set.run[name](args || {}); } catch (e) { return {error: e.message}; }
+}
+</script>
+
+<script type="module">
+// wllama V3 (llama.cpp WASM). 버전을 고정해 둡니다 (3.8.1: esm/wasm-from-cdn.js가 패키지에 없어 wasm 주소를 직접 씀)
+import { Wllama } from "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/index.js";
+const WASM = { default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/wasm/wllama.wasm" };
+const MAX_ITERATIONS = 5;
+
+const $ = id => document.getElementById(id);
+const log = $("log");
+let wllama = null, busy = false, aborter = null;
+let messages = [];   // 대화 기억 (OpenAI 형식)
+
+function setStatus(text, isError) {
+  $("status").textContent = text;
+  $("status").style.color = isError ? "#c0392b" : "";
+}
+function addMessage(kind, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + kind;
+  const who = {user: "나", assistant: "모델", tool_call: "도구 호출", tool_result: "도구 결과", error: "오류"}[kind];
+  d.innerHTML = '<span class="who"></span><span class="body"></span>';
+  d.querySelector(".who").textContent = who;
+  d.querySelector(".body").textContent = typeof text === "string" ? text : JSON.stringify(text, null, 1);
+  log.appendChild(d);
+  d.scrollIntoView({block: "end"});
+  return d.querySelector(".body");
+}
+function showError(where, err) {
+  console.error(where, err);
+  setStatus(where + ": " + (err && err.message || err), true);
+  addMessage("error", where + ": " + (err && err.message || err));
+}
+function setBusy(on) {
+  busy = on;
+  $("run").disabled = on || !wllama;
+  $("prompt").disabled = !wllama;
+  $("stop").disabled = !on;
+  $("files").disabled = on;
+}
+function applyToolset() {
+  $("system").value = TOOLSETS[$("toolset").value].system;
+}
+
+// ---- 모델 불러오기: 다시 고르면 기존 것을 exit() 하고 새로 만듭니다
+$("files").onchange = async () => {
+  const files = Array.from($("files").files || []).sort((a, b) => a.name.localeCompare(b.name));
+  if (!files.length) return;
+  setBusy(true);
+  $("prompt").disabled = true;
+  $("info").textContent = "";
+  try {
+    if (wllama) { setStatus("이전 모델을 내리는 중…"); await wllama.exit(); wllama = null; }
+    const mb = files.reduce((s, f) => s + f.size, 0) / 2 ** 20;
+    setStatus(`불러오는 중… ${files.map(f => f.name).join(", ")} (${mb.toFixed(0)}MB)`);
+    const t0 = performance.now();
+    const w = new Wllama(WASM);
+    w.setCompat("default");
+    const useGpu = $("gpu").checked;
+    await w.loadModel(files, { n_ctx: Number($("nctx").value) || 4096, n_gpu_layers: useGpu ? 999 : 0, jinja: true });
+    wllama = w;
+    const sec = ((performance.now() - t0) / 1000).toFixed(1);
+    const gpu = useGpu && w.isSupportWebGPU() ? "WebGPU 켬 (브라우저 지원함)" : useGpu ? "CPU (이 브라우저는 WebGPU 미지원)" : "CPU (WebGPU 끔)";
+    $("info").textContent = `스레드 ${w.getNumThreads()}개 (${w.isMultithread() ? "멀티스레드" : "싱글스레드"}) · ${gpu}` +
+      ` · crossOriginIsolated=${self.crossOriginIsolated} · 불러오기 ${sec}초`;
+    setStatus("준비됨: " + files[0].name);
+    messages = [];
+    log.innerHTML = "";
+  } catch (err) {
+    wllama = null;
+    showError("불러오기 실패", err);
+  } finally {
+    setBusy(false);
+  }
+};
+
+// ---- 대화 한 번: 도구를 부르면 실행하고(최대 5회), followUp이면 결과를 넣어 다시 묻습니다
+async function runTurn(text) {
+  const setName = $("toolset").value, set = TOOLSETS[setName];
+  const system = $("system").value.trim();
+  const sendMsgs = () => (system ? [{role: "system", content: system}] : []).concat(messages);
+  messages.push({role: "user", content: text});
+  addMessage("user", text);
+  aborter = new AbortController();
+  setBusy(true);
+  try {
+    for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
+      setStatus(`생성 중… (${iter}번째)`);
+      const params = {
+        messages: sendMsgs(), max_tokens: Number($("maxtok").value) || 512,
+        temperature: Number($("temp").value), stream: true, abortSignal: aborter.signal,
+      };
+      if (set.tools.length) { params.tools = set.tools; params.tool_choice = "auto"; }
+      if ($("nothink").checked) params.chat_template_kwargs = {enable_thinking: false};
+      const stream = await wllama.createChatCompletion(params);
+      let content = "", finish = null, body = null;
+      const calls = {};   // index → {id, name, arguments}
+      for await (const chunk of stream) {
+        const choice = chunk.choices && chunk.choices[0];
+        if (!choice) continue;
+        finish = choice.finish_reason ?? finish;
+        const delta = choice.delta || {};
+        if (delta.content) {
+          content += delta.content;
+          if (!body) body = addMessage("assistant", "");
+          body.textContent = content;
+          body.scrollIntoView({block: "end"});
+        }
+        for (const tc of delta.tool_calls || []) {
+          const e = calls[tc.index] || (calls[tc.index] = {id: "", name: "", arguments: ""});
+          if (tc.id) e.id = tc.id;
+          if (tc.function && tc.function.name) e.name += tc.function.name;
+          if (tc.function && tc.function.arguments) e.arguments += tc.function.arguments;
+        }
+      }
+      content = content.trim();
+      if (body) body.textContent = content;
+      const list = Object.values(calls);
+      if (finish !== "tool_calls" || !list.length) {
+        if (!content) addMessage("assistant", "(내용 없음)");
+        messages.push({role: "assistant", content});
+        break;
+      }
+      list.forEach((tc, k) => { if (!tc.id) tc.id = `call_${Date.now()}_${k}`; });
+      if (set.followUp) {
+        messages.push({role: "assistant", content: content || null,
+          tool_calls: list.map(tc => ({id: tc.id, type: "function", function: {name: tc.name, arguments: tc.arguments}}))});
+      } else {
+        // 더메이커 방식: 기억에는 실제로 한 말만 남기고 도구 결과로 다시 묻지 않음 (기기 앱과 같게)
+        messages.push({role: "assistant", content});
+      }
+      for (const tc of list) {
+        let args;
+        try { args = JSON.parse(tc.arguments || "{}"); } catch { args = {}; }
+        addMessage("tool_call", {id: tc.id, name: tc.name, arguments: args});
+        setStatus("도구 실행 중: " + tc.name);
+        const result = await executeTool(setName, tc.name, args);
+        addMessage("tool_result", {tool_call_id: tc.id, name: tc.name, result});
+        if (set.followUp) messages.push({role: "tool", tool_call_id: tc.id, content: JSON.stringify(result)});
+      }
+      if (!set.followUp) break;
+      if (iter === MAX_ITERATIONS) addMessage("error", `도구 호출이 ${MAX_ITERATIONS}번을 넘어 멈췄어요`);
+    }
+    setStatus("준비됨");
+  } catch (err) {
+    if (err && (err.name === "AbortError" || /abort/i.test(err.message || ""))) {
+      setStatus("중지됨");
+      addMessage("error", "중지됨");
+    } else {
+      showError("생성 실패", err);
+    }
+  } finally {
+    aborter = null;
+    setBusy(false);
+    $("prompt").focus();
+  }
+}
+
+$("form").onsubmit = e => {
+  e.preventDefault();
+  const text = $("prompt").value.trim();
+  if (!text || busy || !wllama) return;
+  $("prompt").value = "";
+  runTurn(text);
+};
+$("prompt").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("form").requestSubmit(); }
+});
+$("stop").onclick = () => { if (aborter) aborter.abort(); };
+$("reset").onclick = () => { messages = []; log.innerHTML = ""; setStatus(wllama ? "준비됨 (새 대화)" : $("status").textContent); };
+$("toolset").onchange = () => { applyToolset(); messages = []; log.innerHTML = ""; };
+applyToolset();
+if (!self.crossOriginIsolated) $("info").textContent = "멀티스레드 준비 중 (처음 접속하면 한 번 새로고침됩니다)";
+</script>
+</body>
+</html>

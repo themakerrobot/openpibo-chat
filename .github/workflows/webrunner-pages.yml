@@ -1,0 +1,36 @@
+# webrunner/ 폴더만 GitHub Pages로 배포합니다 (저장소의 다른 파일·문서는 올리지 않음).
+# 저장소 Settings → Pages → Source를 "GitHub Actions"로 두면 됩니다.
+name: webrunner-pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["webrunner/**", ".github/workflows/webrunner-pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 모델 파일이 섞이지 않았는지 확인
+        run: |
+          if find webrunner -name '*.gguf' | grep -q .; then echo "webrunner/ 안에 .gguf가 있어요"; exit 1; fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: webrunner
+      - id: deployment
+        uses: actions/deploy-pages@v4

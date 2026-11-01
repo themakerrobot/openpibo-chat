@@ -69,6 +69,8 @@ bash pi_bench.sh 지금쓰는.gguf themaker-0.8b-Q4_K_M.gguf               # 메
 - 파이썬이 없는 윈도우 PC: 학습 PC에서 `python make_web.py --package out/themaker-win` → `out/themaker-win.zip`
   (llama.cpp 윈도우판 + 모델 + 웹 페이지 하나 + run-ko.bat/run-en.bat). 윈도우에서 풀고 bat을 누르면 브라우저가 열림.
   데이터 출처 고지는 학습 PC의 `data/NOTICE.txt`(git에 안 올림)를 README.txt 끝에 붙임.
+- 브라우저 온디바이스 실행기 `webrunner/` (GitHub Pages): GGUF를 골라 브라우저 안(wllama, WASM)에서 대화·도구 호출.
+  배포는 `.github/workflows/webrunner-pages.yml`이 `webrunner/`만 올림. 자세한 것은 `webrunner/README.md`.
 - 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-tools-handoff.md`(파이보), `docs/pibrain-tools-handoff.md`(파이브레인), 모델 고르기 블록은 `docs/model-select-handoff.md`.
 
 ## 라이선스
