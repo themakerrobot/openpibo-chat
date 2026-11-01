@@ -265,6 +265,7 @@ async function runTurn(text) {
   addMessage("user", text);
   aborter = new AbortController();
   setBusy(true);
+  const done = new Set();   // 이번 차례에 이미 실행한 도구 호출 (이름+인자)
   try {
     for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
       setStatus(`생성 중… (${iter}번째)`);
@@ -304,6 +305,13 @@ async function runTurn(text) {
         break;
       }
       list.forEach((tc, k) => { if (!tc.id) tc.id = `call_${Date.now()}_${k}`; });
+      // 결과를 받고도 같은 도구를 같은 인자로 또 부르면 (도구 결과로 다시 묻는 걸 배우지 않은 모델) 거기서 끝냄
+      if (list.every(tc => done.has(tc.name + tc.arguments))) {
+        addMessage("error", "같은 도구를 같은 인자로 또 불러 멈췄어요 (이 모델은 도구 결과를 받고 이어 말하는 걸 배우지 않았을 수 있음)");
+        messages.push({role: "assistant", content});
+        break;
+      }
+      list.forEach(tc => done.add(tc.name + tc.arguments));
       if (set.followUp) {
         messages.push({role: "assistant", content: content || null,
           tool_calls: list.map(tc => ({id: tc.id, type: "function", function: {name: tc.name, arguments: tc.arguments}}))});
