@@ -67,6 +67,19 @@ SYSTEM_EN = ("You are TheMaker, an educational AI made by Circulus that talks wi
 SYSTEMS = {"ko": SYSTEM, "en": SYSTEM_EN}
 
 
+def system_code(device: str) -> str:
+    """코딩 도우미(themaker-code)의 시스템 글. 기기마다 블록과 함수가 달라 기기 이름을 넣습니다."""
+    last = (ord(device[-1]) - 0xAC00) % 28 if "가" <= device[-1:] <= "힣" else 0
+    ro = "로" if last in (0, 8) else "으로"          # 받침 없거나 ㄹ이면 '로'
+    return (f"너는 서큘러스에서 만든 교육용 AI 더메이커야. {device}{ro} 블록 코딩과 파이썬을 배우는 "
+            "초등학생부터 고등학생까지를 돕는 코딩 도우미야. 친구처럼 존댓말로 짧고 쉽게 설명하고, "
+            f"코드는 꼭 필요할 때만 짧게 보여 줘. {device}에 없는 기능이나 모르는 함수는 지어내지 말고 모른다고 해.")
+
+
+#: 코딩 도우미가 아는 기기
+CODE_DEVICES = ["파이보", "파이브레인"]
+
+
 def has_batchim(word: str) -> bool:
     """마지막 글자에 받침이 있는지 (한글이 아니면 없음으로)."""
     c = word.strip()[-1:] or "가"

@@ -967,3 +967,62 @@ def test_webrunner_tools_match_the_model_and_calculate_safely(tmp_path):
     assert "목록에 없음" in got["jump"]["error"] and "없는 도구" in got["missing"]["error"]
     assert got["light"]["color"] == "빨강" and "목록에 없음" in got["purple"]["error"]
     assert got["enSystem"] == "You are TheMake" and got["follow"] == [True, False]
+
+
+# ------------------------------------------------------------- 코딩 도우미
+
+def code_api():
+    return {"파이보": {"imports": {"Device": ["openpibo.device", "Device"], "Motion": ["openpibo.motion", "Motion"]},
+                     "instances": {"device": "Device", "motion": "Motion"},
+                     "methods": {"Device": ["eye_on", "eye_off"], "Motion": ["set_motion"]}},
+            "파이브레인": {"imports": {"Device": ["openpibo.device", "DeviceByPiBrain"]},
+                       "instances": {"device": "Device"}, "methods": {"Device": ["led_on", "led_off"]}}}
+
+
+def test_code_answers_only_use_what_the_device_has():
+    from prompts_code import answer_problem, code_problem
+
+    api = code_api()
+    ok = "from openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n"
+    assert code_problem(ok, api["파이보"]) is None
+    assert code_problem(ok.replace("eye_on", "eye_color"), api["파이보"]) == "없는 메서드 Device.eye_color"
+    assert code_problem("from openpibo.motion import Motion\n", api["파이브레인"]) == "없는 모듈 openpibo.motion"
+    assert code_problem("from openpibo.device import DeviceByPiBrain as Device\nd = Device()\nd.led_on(1,2,3)",
+                        api["파이브레인"]) is None                                    # 다른 이름으로 만들어도 따라감
+    assert code_problem("d = Device()\nd.eye_on(1,2,3)", api["파이브레인"]) == "없는 메서드 Device.eye_on"
+    assert code_problem("def x(:\n", api["파이보"]).startswith("코드 문법 오류")
+    good = "「RGB 눈 불빛 바꾸기」 블록을 쓰면 돼요. 파이썬은 이렇게 해요.\n```python\n" + ok + "```"
+    assert answer_problem(good, api["파이보"]) is None
+    assert answer_problem(good.replace("돼요", "돼"), api["파이보"]) == "반말"
+    assert answer_problem(good + " 😀", api["파이보"]).startswith("이모지")
+    assert answer_problem("가" * 701, api["파이보"]).endswith("넘음")
+
+
+def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
+    import code_data
+    from tools import system_code
+
+    units = {f"파이보:func:Device.eye_on{k}": {"id": f"파이보:func:Device.eye_on{k}", "device": "파이보", "kind": "func",
+             "module": "openpibo.device", "class": "Device", "alias": "Device", "instance": "device",
+             "method": "eye_on", "signature": "eye_on(*color)", "doc": "LED를 켭니다."} for k in range(2)}
+    code = "```python\nfrom openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n```"
+    pairs = [{"q": f"눈 빨갛게 하려면? {k}", "a": f"이렇게 해요 {k}.\n{code}"} for k in range(5)]
+    pairs.append({"q": "없는 함수", "a": "이렇게 해요.\n" + code.replace("eye_on", "eye_magic")})
+    asked = []
+
+    def fake(prompts, tokens):
+        asked.append(len(prompts))
+        if "검사해요" in prompts[0]:
+            return [json.dumps({"marks": [{"grounded": 5, "clear": 5, "code_ok": True}] * 4 +
+                                         [{"grounded": 3, "clear": 5, "code_ok": True}]})] * len(prompts)
+        return [json.dumps({"pairs": pairs}, ensure_ascii=False)] * len(prompts)
+
+    log = tmp_path / "log.jsonl"
+    done = code_data.run(fake, units, code_api(), log)
+    train, held, kept, why = code_data.results(units, done)
+    assert asked == [2, 2] and why["없는 메서드"] == 2 and why["grounded 3점"] == 2
+    assert kept == {"파이보": 6} and len(held) == 2                    # 설명마다 4쌍 → 1쌍 채점용
+    assert all(e["messages"][0]["content"] == system_code("파이보") for e in train + held)
+    asked.clear()
+    code_data.run(fake, units, code_api(), log)                        # 다시 돌리면 묻지 않음
+    assert asked == []

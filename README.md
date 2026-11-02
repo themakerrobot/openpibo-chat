@@ -71,6 +71,8 @@ bash pi_bench.sh 지금쓰는.gguf themaker-0.8b-Q4_K_M.gguf               # 메
   데이터 출처 고지는 학습 PC의 `data/NOTICE.txt`(git에 안 올림)를 README.txt 끝에 붙임.
 - 브라우저 온디바이스 실행기 `webrunner/` (GitHub Pages): GGUF를 골라 브라우저 안(wllama, WASM)에서 대화·도구 호출.
   배포는 `.github/workflows/webrunner-pages.yml`이 `webrunner/`만 올림. 자세한 것은 `webrunner/README.md`.
+- 코딩 도우미(만드는 중): `code_docs.py`가 기기 저장소의 블록(학생 블록 상자에 보이는 것)과 openpibo 함수를 뽑고,
+  `code_data.py`가 그 설명만 근거로 선생이 문답을 만들어 코드를 함수 목록과 대조·검사. 시스템 글은 `tools.system_code(기기)`.
 - 기기 앱에 붙이는 방법과 확인할 것은 `docs/pibo-tools-handoff.md`(파이보), `docs/pibrain-tools-handoff.md`(파이브레인), 모델 고르기 블록은 `docs/model-select-handoff.md`.
 
 ## 라이선스
