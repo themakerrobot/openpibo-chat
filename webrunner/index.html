@@ -7,71 +7,210 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GGUF 웹 실행기</title>
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --line:#dde1e6; --ink:#1f2328; --mute:#6b7280; --user:#dcecff;
-          --call:#fff6dd; --result:#e8f6ee; --err:#fde8e8; }
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --line: #e4e6eb; --ink: #1b1d22; --mute: #6a7180; --soft: #f0f2f5;
+    --accent: #3b6cf6; --accent-ink: #ffffff; --accent-soft: #e8eefe;
+    --ok: #138a52; --ok-soft: #e6f5ed; --warn: #a76a00; --warn-soft: #fff4dd; --err: #c4362f; --err-soft: #fdeceb;
+    --radius: 14px; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+    --mono: ui-monospace, "SF Mono", Consolas, "D2Coding", monospace;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#16181c; --card:#1f2228; --line:#30353d; --ink:#e6e8eb; --mute:#9aa3ad; --user:#1d3a5c;
-            --call:#3a3220; --result:#1e3a2b; --err:#4a2020; }
+    :root {
+      --bg: #111317; --panel: #1a1d23; --line: #2b2f37; --ink: #e8eaee; --mute: #9199a6; --soft: #22262d;
+      --accent: #6b8cff; --accent-ink: #0d1020; --accent-soft: #23304f;
+      --ok: #4cc98a; --ok-soft: #17322a; --warn: #e0a84a; --warn-soft: #3a2f18; --err: #ff7b72; --err-soft: #3b1d1c;
+      --shadow: none;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
-  header, .panel { background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; }
-  h1 { font-size:18px; margin:0 0 8px; }
-  .row { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
-  label { font-size:14px; }
-  input[type=number] { width:80px; }
-  #status { font-size:13px; color:var(--mute); margin-top:6px; }
-  #info { font-size:13px; color:var(--mute); }
-  main { max-width:820px; margin:0 auto; padding:12px 16px 150px; }
-  .msg { margin:8px 0; padding:8px 12px; border-radius:10px; white-space:pre-wrap; word-break:break-word; max-width:90%; }
-  .msg .who { font-size:11px; color:var(--mute); display:block; margin-bottom:2px; }
-  .user { background:var(--user); margin-left:auto; }
-  .assistant { background:var(--card); border:1px solid var(--line); }
-  .tool_call { background:var(--call); font-family: ui-monospace, Consolas, monospace; font-size:13px; }
-  .tool_result { background:var(--result); font-family: ui-monospace, Consolas, monospace; font-size:13px; }
-  .error { background:var(--err); }
-  footer { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line); padding:10px 16px; }
-  footer form { display:flex; gap:8px; max-width:820px; margin:0 auto; }
-  textarea { flex:1; min-height:44px; max-height:140px; padding:8px; font-size:16px; border:1px solid var(--line);
-             border-radius:8px; background:var(--card); color:var(--ink); resize:vertical; }
-  button, select { padding:8px 12px; font-size:14px; }
-  #system { width:100%; min-height:40px; margin-top:6px; font-size:13px; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-size: 15px; line-height: 1.55;
+         font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+
+  /* 윗줄 */
+  .topbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px;
+            padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .logo { width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--accent-ink);
+          display: grid; place-items: center; font-weight: 700; font-size: 15px; flex: none; }
+  .brand h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  .brand small { color: var(--mute); font-size: 12px; white-space: nowrap; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+          font-size: 13px; background: var(--soft); color: var(--mute); max-width: 52vw; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap; }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+  .pill.ready { background: var(--ok-soft); color: var(--ok); }
+  .pill.busy { background: var(--warn-soft); color: var(--warn); }
+  .pill.error { background: var(--err-soft); color: var(--err); }
+  .icon-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 6px 10px;
+              cursor: pointer; }
+  #toggleSettings { display: none; }
+
+  /* 배치: 넓으면 왼쪽 설정 + 오른쪽 대화 */
+  .layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 51px); }
+  .settings { border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 16px; }
+  .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .settings { display: none; border-right: 0; border-bottom: 1px solid var(--line); max-height: 70vh; }
+    .settings.open { display: block; }
+    #toggleSettings { display: inline-block; }
+    .brand small { display: none; }
+  }
+
+  /* 설정 */
+  .section { margin-bottom: 18px; }
+  .section h2 { font-size: 12px; letter-spacing: .04em; color: var(--mute); margin: 0 0 8px; font-weight: 600; }
+  .drop { display: block; border: 1.5px dashed var(--line); border-radius: var(--radius); padding: 16px; text-align: center;
+          cursor: pointer; background: var(--soft); transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop b { display: block; font-size: 14px; }
+  .drop span { font-size: 12px; color: var(--mute); }
+  .drop input { display: none; }
+  .meta { margin-top: 8px; font-size: 12px; color: var(--mute); word-break: break-all; }
+  .meta .tag { display: inline-block; margin: 4px 4px 0 0; padding: 2px 8px; border-radius: 999px; background: var(--soft);
+               color: var(--ink); }
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; font-size: 14px; }
+  .field input[type=number] { width: 92px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+                              background: var(--panel); text-align: right; }
+  .switch { position: relative; width: 38px; height: 22px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch i { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background .15s; cursor: pointer; }
+  .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+                     background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .switch input:checked + i { background: var(--accent); }
+  .switch input:checked + i::after { transform: translateX(16px); }
+  .choices { display: grid; gap: 6px; }
+  .choice { display: flex; gap: 10px; align-items: flex-start; padding: 9px 11px; border: 1px solid var(--line);
+            border-radius: 11px; cursor: pointer; background: var(--panel); }
+  .choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .choice input { margin-top: 4px; accent-color: var(--accent); }
+  .choice b { display: block; font-size: 14px; }
+  .choice span { font-size: 12px; color: var(--mute); }
+  textarea#system { width: 100%; min-height: 84px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+                    background: var(--panel); font-size: 13px; resize: vertical; }
+  .hint { font-size: 12px; color: var(--mute); margin-top: 4px; }
+
+  /* 대화 */
+  #log { flex: 1; overflow-y: auto; padding: 22px 18px 12px; }
+  .thread { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+  .msg { display: flex; gap: 10px; align-items: flex-start; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+            flex: none; background: var(--accent-soft); color: var(--accent); }
+  .bubble { padding: 9px 13px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; max-width: 85%;
+            background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .msg.user { flex-direction: row-reverse; }
+  .msg.user .bubble { background: var(--accent); color: var(--accent-ink); border-color: transparent; border-top-right-radius: 4px; }
+  .msg.user .avatar { display: none; }
+  .msg.assistant .bubble { border-top-left-radius: 4px; }
+  .msg.tool_call, .msg.tool_result, .msg.error { margin-left: 38px; }
+  .card { border-radius: 11px; padding: 7px 11px; font-size: 13px; max-width: 85%; border: 1px solid var(--line); background: var(--soft); }
+  .card .label { font-size: 11px; font-weight: 700; letter-spacing: .03em; display: block; margin-bottom: 2px; }
+  .card .bubble { all: unset; display: block; font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+  .tool_call .card { background: var(--warn-soft); border-color: transparent; } .tool_call .label { color: var(--warn); }
+  .tool_result .card { background: var(--ok-soft); border-color: transparent; } .tool_result .label { color: var(--ok); }
+  .error .card { background: var(--err-soft); border-color: transparent; } .error .label { color: var(--err); }
+  .error .card .bubble { font-family: inherit; }
+  .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--mute); }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .empty { max-width: 560px; margin: 8vh auto 0; text-align: center; color: var(--mute); }
+  .empty h3 { color: var(--ink); font-size: 18px; margin: 0 0 6px; }
+  .steps { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 18px; font-size: 13px; }
+  .steps span { padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
+  .examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .examples button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 12px;
+                     cursor: pointer; font-size: 13px; }
+  .examples button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .examples button:disabled { opacity: .5; cursor: default; }
+
+  /* 입력 */
+  .composer { padding: 10px 18px 16px; background: linear-gradient(to top, var(--bg) 70%, transparent); }
+  .composer form { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; padding: 8px;
+                   background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+  .composer form:focus-within { border-color: var(--accent); }
+  #prompt { flex: 1; border: 0; outline: 0; resize: none; background: transparent; padding: 6px 8px; max-height: 160px;
+            min-height: 36px; font-size: 15px; }
+  .send { border: 0; border-radius: 12px; padding: 8px 16px; font-weight: 600; cursor: pointer;
+          background: var(--accent); color: var(--accent-ink); }
+  .send:disabled { opacity: .45; cursor: default; }
+  #stop { background: var(--err); color: #fff; }
+  #stop[hidden], #run[hidden] { display: none; }
+  .foot { max-width: 760px; margin: 6px auto 0; font-size: 11.5px; color: var(--mute); text-align: center; }
 </style>
 </head>
 <body>
-<header>
-  <h1>GGUF 웹 실행기 <small style="font-weight:normal;color:var(--mute)">브라우저 안에서만 실행, 서버 없음</small></h1>
-  <div class="row">
-    <label>모델 파일 <input type="file" id="files" accept=".gguf" multiple></label>
-    <label>n_ctx <input type="number" id="nctx" value="4096" min="512" step="512"></label>
-    <label><input type="checkbox" id="gpu" checked> WebGPU 쓰기</label>
-    <label><input type="checkbox" id="nothink" checked> 생각 끄기</label>
+<div class="topbar">
+  <div class="brand">
+    <div class="logo">G</div>
+    <div><h1>GGUF 웹 실행기</h1><small>브라우저 안에서만 실행 · 서버 없음</small></div>
   </div>
-  <div id="status">모델 파일(.gguf)을 고르세요. 여러 조각으로 나뉜 파일은 모두 함께 고릅니다.</div>
-  <div id="info"></div>
-</header>
-<div class="panel">
-  <div class="row">
-    <label>도구 <select id="toolset">
-      <option value="basic">기본 도구 (calculator, get_time, pibo_action)</option>
-      <option value="themaker">더메이커 한국어 (light, look, move, 학습한 시스템 글)</option>
-      <option value="themaker_en">더메이커 영어 (같은 도구, 영어 시스템 글)</option>
-      <option value="none">도구 없음</option>
-    </select></label>
-    <label>temperature <input type="number" id="temp" value="0.3" min="0" max="2" step="0.1"></label>
-    <label>max_tokens <input type="number" id="maxtok" value="512" min="16" step="16"></label>
-    <button id="reset" type="button">새 대화</button>
-  </div>
-  <textarea id="system" placeholder="시스템 글 (비우면 보내지 않음)"></textarea>
+  <div class="spacer"></div>
+  <span class="pill" id="status">모델 없음</span>
+  <button class="icon-btn" id="toggleSettings" type="button">설정</button>
 </div>
-<main id="log"></main>
-<footer>
-  <form id="form">
-    <textarea id="prompt" placeholder="말을 입력하세요 (Enter 보내기, Shift+Enter 줄바꿈)" disabled></textarea>
-    <button id="run" disabled>실행</button>
-    <button id="stop" type="button" disabled>중지</button>
-  </form>
-</footer>
+
+<div class="layout">
+  <aside class="settings" id="settings">
+    <div class="section">
+      <h2>모델</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="files" accept=".gguf" multiple>
+        <b>GGUF 파일 고르기</b>
+        <span>또는 끌어다 놓기 · 나뉜 파일은 함께</span>
+      </label>
+      <div class="meta" id="info"></div>
+    </div>
+    <div class="section">
+      <h2>불러오기 설정</h2>
+      <div class="field"><span>n_ctx</span><input type="number" id="nctx" value="4096" min="512" step="512"></div>
+      <div class="field"><span>WebGPU 쓰기</span><label class="switch"><input type="checkbox" id="gpu" checked><i></i></label></div>
+      <div class="hint">설정을 바꾸면 모델을 다시 골라야 적용됩니다.</div>
+    </div>
+    <div class="section">
+      <h2>도구</h2>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="toolset" value="basic" checked>
+          <div><b>기본 도구</b><span>calculator · get_time · pibo_action</span></div></label>
+        <label class="choice"><input type="radio" name="toolset" value="themaker">
+          <div><b>더메이커 한국어</b><span>light · look · move + 학습한 시스템 글</span></div></label>
+        <label class="choice"><input type="radio" name="toolset" value="themaker_en">
+          <div><b>더메이커 영어</b><span>같은 도구 + 영어 시스템 글</span></div></label>
+        <label class="choice"><input type="radio" name="toolset" value="none">
+          <div><b>도구 없음</b><span>대화만</span></div></label>
+      </div>
+      <select id="toolset" hidden>
+        <option value="basic">basic</option><option value="themaker">themaker</option>
+        <option value="themaker_en">themaker_en</option><option value="none">none</option>
+      </select>
+    </div>
+    <div class="section">
+      <h2>생성</h2>
+      <div class="field"><span>temperature</span><input type="number" id="temp" value="0.3" min="0" max="2" step="0.1"></div>
+      <div class="field"><span>max_tokens</span><input type="number" id="maxtok" value="512" min="16" step="16"></div>
+      <div class="field"><span>생각 끄기</span><label class="switch"><input type="checkbox" id="nothink" checked><i></i></label></div>
+    </div>
+    <div class="section">
+      <h2>시스템 글</h2>
+      <textarea id="system" placeholder="비우면 보내지 않습니다"></textarea>
+    </div>
+    <button class="icon-btn" id="reset" type="button" style="width:100%">새 대화</button>
+  </aside>
+
+  <section class="chat">
+    <div id="log"><div class="thread" id="thread"></div></div>
+    <div class="composer">
+      <form id="form">
+        <textarea id="prompt" rows="1" placeholder="모델을 먼저 고르세요" disabled></textarea>
+        <button class="send" id="run" disabled>보내기</button>
+        <button class="send" id="stop" type="button" hidden disabled>중지</button>
+      </form>
+      <div class="foot">Enter 보내기 · Shift+Enter 줄바꿈 · 모델과 대화는 이 브라우저 밖으로 나가지 않습니다</div>
+    </div>
+  </section>
+</div>
 
 <!-- 도구: 정의와 실행을 여기 한 곳에 모읍니다 (일반 스크립트: 시험에서 node로도 읽음) -->
 <script id="tools">
@@ -187,54 +326,106 @@ async function executeTool(setName, name, args) {
 import { Wllama } from "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/index.js";
 const WASM = { default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/wasm/wllama.wasm" };
 const MAX_ITERATIONS = 5;
+//: 처음 화면의 예시 질문 (도구 묶음마다)
+const EXAMPLES = {
+  basic: ["1234 곱하기 5678은?", "지금 몇 시야?", "파이보 손 흔들어", "대한민국의 수도는 어디야?"],
+  themaker: ["빨간 불 켜 줘", "앞에 뭐 있어?", "춤춰 줘", "난 빨간색이 좋아", "너 누구야?"],
+  themaker_en: ["Turn on the red light, please", "Can you dance for me?", "What do you see?", "Who are you?"],
+  none: ["안녕? 너는 누구야?", "오늘 기분이 좀 안 좋아"],
+};
 
 const $ = id => document.getElementById(id);
-const log = $("log");
+const thread = $("thread"), logBox = $("log");
 let wllama = null, busy = false, aborter = null;
 let messages = [];   // 대화 기억 (OpenAI 형식)
 
-function setStatus(text, isError) {
+function setStatus(text, state) {   // state: ready | busy | error | (없음)
   $("status").textContent = text;
-  $("status").style.color = isError ? "#c0392b" : "";
+  $("status").className = "pill" + (state ? " " + state : "");
 }
-function addMessage(kind, text) {
-  const d = document.createElement("div");
-  d.className = "msg " + kind;
-  const who = {user: "나", assistant: "모델", tool_call: "도구 호출", tool_result: "도구 결과", error: "오류"}[kind];
-  d.innerHTML = '<span class="who"></span><span class="body"></span>';
-  d.querySelector(".who").textContent = who;
-  d.querySelector(".body").textContent = typeof text === "string" ? text : JSON.stringify(text, null, 1);
-  log.appendChild(d);
-  d.scrollIntoView({block: "end"});
-  return d.querySelector(".body");
+function scrollDown() { logBox.scrollTop = logBox.scrollHeight; }
+function toolsetName() { return document.querySelector('input[name="toolset"]:checked').value; }
+
+function addMessage(kind, value) {
+  clearEmpty();
+  const row = document.createElement("div");
+  row.className = "msg " + kind;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (kind === "user" || kind === "assistant") {
+    row.innerHTML = '<div class="avatar">AI</div><div class="bubble"></div>';
+  } else {
+    const label = {tool_call: "도구 호출", tool_result: "도구 결과", error: "알림"}[kind];
+    row.innerHTML = '<div class="card"><span class="label"></span><div class="bubble"></div></div>';
+    row.querySelector(".label").textContent = label;
+  }
+  const body = row.querySelector(".bubble");
+  body.classList.add("body");
+  body.textContent = text;
+  thread.appendChild(row);
+  scrollDown();
+  return body;
 }
+function showEmpty() {
+  thread.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "empty";
+  box.id = "empty";
+  box.innerHTML = '<h3></h3><p></p><div class="steps"><span>① 모델 파일 고르기</span><span>② 도구 고르기</span>' +
+    '<span>③ 말하기</span></div><div class="examples"></div>';
+  box.querySelector("h3").textContent = wllama ? "무엇이든 물어보세요" : "GGUF 모델을 골라 시작하세요";
+  box.querySelector("p").textContent = wllama ? "아래 예시를 누르면 바로 보냅니다." :
+    "모델은 이 브라우저 안에서만 돌고, 어디에도 올라가지 않습니다.";
+  const ex = box.querySelector(".examples");
+  for (const q of EXAMPLES[toolsetName()]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = q;
+    b.disabled = !wllama || busy;
+    b.onclick = () => { if (wllama && !busy) runTurn(q); };
+    ex.appendChild(b);
+  }
+  thread.appendChild(box);
+}
+function clearEmpty() { const e = $("empty"); if (e) e.remove(); }
 function showError(where, err) {
   console.error(where, err);
-  setStatus(where + ": " + (err && err.message || err), true);
-  addMessage("error", where + ": " + (err && err.message || err));
+  const msg = where + ": " + (err && err.message || err);
+  setStatus(msg, "error");
+  addMessage("error", msg);
 }
 function setBusy(on) {
   busy = on;
   $("run").disabled = on || !wllama;
-  $("prompt").disabled = !wllama;
+  $("run").hidden = on;
+  $("stop").hidden = !on;
   $("stop").disabled = !on;
+  $("prompt").disabled = !wllama;
+  $("prompt").placeholder = wllama ? "말을 입력하세요" : "모델을 먼저 고르세요";
   $("files").disabled = on;
+  document.querySelectorAll(".examples button").forEach(b => b.disabled = on || !wllama);
 }
 function applyToolset() {
-  $("system").value = TOOLSETS[$("toolset").value].system;
+  $("toolset").value = toolsetName();
+  $("system").value = TOOLSETS[toolsetName()].system;
+  messages = [];
+  showEmpty();
+}
+function setInfo(tags) {
+  $("info").innerHTML = "";
+  for (const t of tags) { const s = document.createElement("span"); s.className = "tag"; s.textContent = t; $("info").appendChild(s); }
 }
 
 // ---- 모델 불러오기: 다시 고르면 기존 것을 exit() 하고 새로 만듭니다
-$("files").onchange = async () => {
-  const files = Array.from($("files").files || []).sort((a, b) => a.name.localeCompare(b.name));
-  if (!files.length) return;
+async function loadFiles(list) {
+  const files = Array.from(list || []).filter(f => /\.gguf$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
+  if (!files.length) { setStatus(".gguf 파일이 아니에요", "error"); return; }
   setBusy(true);
   $("prompt").disabled = true;
-  $("info").textContent = "";
+  setInfo([]);
   try {
-    if (wllama) { setStatus("이전 모델을 내리는 중…"); await wllama.exit(); wllama = null; }
+    if (wllama) { setStatus("이전 모델을 내리는 중…", "busy"); await wllama.exit(); wllama = null; }
     const mb = files.reduce((s, f) => s + f.size, 0) / 2 ** 20;
-    setStatus(`불러오는 중… ${files.map(f => f.name).join(", ")} (${mb.toFixed(0)}MB)`);
+    setStatus(`불러오는 중… ${mb.toFixed(0)}MB`, "busy");
     const t0 = performance.now();
     const w = new Wllama(WASM);
     w.setCompat("default");
@@ -242,23 +433,30 @@ $("files").onchange = async () => {
     await w.loadModel(files, { n_ctx: Number($("nctx").value) || 4096, n_gpu_layers: useGpu ? 999 : 0, jinja: true });
     wllama = w;
     const sec = ((performance.now() - t0) / 1000).toFixed(1);
-    const gpu = useGpu && w.isSupportWebGPU() ? "WebGPU 켬 (브라우저 지원함)" : useGpu ? "CPU (이 브라우저는 WebGPU 미지원)" : "CPU (WebGPU 끔)";
-    $("info").textContent = `스레드 ${w.getNumThreads()}개 (${w.isMultithread() ? "멀티스레드" : "싱글스레드"}) · ${gpu}` +
-      ` · crossOriginIsolated=${self.crossOriginIsolated} · 불러오기 ${sec}초`;
-    setStatus("준비됨: " + files[0].name);
+    const gpu = useGpu && w.isSupportWebGPU() ? "WebGPU 켬" : useGpu ? "CPU (WebGPU 미지원)" : "CPU (WebGPU 끔)";
+    setInfo([files.map(f => f.name).join(" + "), `${mb.toFixed(0)}MB`, `스레드 ${w.getNumThreads()}개`,
+             w.isMultithread() ? "멀티스레드" : "싱글스레드", gpu, `불러오기 ${sec}초`,
+             self.crossOriginIsolated ? "crossOriginIsolated" : "격리 안 됨"]);
+    setStatus("준비됨 · " + files[0].name.replace(/\.gguf$/i, ""), "ready");
     messages = [];
-    log.innerHTML = "";
   } catch (err) {
     wllama = null;
     showError("불러오기 실패", err);
   } finally {
     setBusy(false);
+    if (wllama) showEmpty();
+    if (window.matchMedia("(max-width: 900px)").matches) $("settings").classList.remove("open");
   }
-};
+}
+$("files").onchange = () => loadFiles($("files").files);
+const drop = $("drop");
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { if (!busy) loadFiles(e.dataTransfer.files); });
 
 // ---- 대화 한 번: 도구를 부르면 실행하고(최대 5회), followUp이면 결과를 넣어 다시 묻습니다
 async function runTurn(text) {
-  const setName = $("toolset").value, set = TOOLSETS[setName];
+  const setName = toolsetName(), set = TOOLSETS[setName];
   const system = $("system").value.trim();
   const sendMsgs = () => (system ? [{role: "system", content: system}] : []).concat(messages);
   messages.push({role: "user", content: text});
@@ -266,9 +464,10 @@ async function runTurn(text) {
   aborter = new AbortController();
   setBusy(true);
   const done = new Set();   // 이번 차례에 이미 실행한 도구 호출 (이름+인자)
+  const t0 = performance.now();
   try {
     for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
-      setStatus(`생성 중… (${iter}번째)`);
+      setStatus(iter === 1 ? "생성 중…" : `생성 중… (${iter}번째)`, "busy");
       const params = {
         messages: sendMsgs(), max_tokens: Number($("maxtok").value) || 512,
         temperature: Number($("temp").value), stream: true, abortSignal: aborter.signal,
@@ -285,9 +484,9 @@ async function runTurn(text) {
         const delta = choice.delta || {};
         if (delta.content) {
           content += delta.content;
-          if (!body) body = addMessage("assistant", "");
+          if (!body) { body = addMessage("assistant", ""); body.classList.add("typing"); }
           body.textContent = content;
-          body.scrollIntoView({block: "end"});
+          scrollDown();
         }
         for (const tc of delta.tool_calls || []) {
           const e = calls[tc.index] || (calls[tc.index] = {id: "", name: "", arguments: ""});
@@ -297,7 +496,7 @@ async function runTurn(text) {
         }
       }
       content = content.trim();
-      if (body) body.textContent = content;
+      if (body) { body.textContent = content; body.classList.remove("typing"); }
       const list = Object.values(calls);
       if (finish !== "tool_calls" || !list.length) {
         if (!content) addMessage("assistant", "(내용 없음)");
@@ -322,19 +521,20 @@ async function runTurn(text) {
       for (const tc of list) {
         let args;
         try { args = JSON.parse(tc.arguments || "{}"); } catch { args = {}; }
-        addMessage("tool_call", {id: tc.id, name: tc.name, arguments: args});
-        setStatus("도구 실행 중: " + tc.name);
+        addMessage("tool_call", `${tc.name}(${JSON.stringify(args)})`);
+        setStatus("도구 실행 중: " + tc.name, "busy");
         const result = await executeTool(setName, tc.name, args);
-        addMessage("tool_result", {tool_call_id: tc.id, name: tc.name, result});
+        addMessage("tool_result", result);
         if (set.followUp) messages.push({role: "tool", tool_call_id: tc.id, content: JSON.stringify(result)});
       }
       if (!set.followUp) break;
       if (iter === MAX_ITERATIONS) addMessage("error", `도구 호출이 ${MAX_ITERATIONS}번을 넘어 멈췄어요`);
     }
-    setStatus("준비됨");
+    setStatus(`준비됨 · ${((performance.now() - t0) / 1000).toFixed(1)}초`, "ready");
   } catch (err) {
+    document.querySelectorAll(".typing").forEach(b => b.classList.remove("typing"));
     if (err && (err.name === "AbortError" || /abort/i.test(err.message || ""))) {
-      setStatus("중지됨");
+      setStatus("중지됨", "ready");
       addMessage("error", "중지됨");
     } else {
       showError("생성 실패", err);
@@ -351,16 +551,27 @@ $("form").onsubmit = e => {
   const text = $("prompt").value.trim();
   if (!text || busy || !wllama) return;
   $("prompt").value = "";
+  $("prompt").style.height = "";
   runTurn(text);
 };
 $("prompt").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("form").requestSubmit(); }
 });
+$("prompt").addEventListener("input", () => {   // 글이 길어지면 칸을 늘림
+  $("prompt").style.height = "auto";
+  $("prompt").style.height = Math.min($("prompt").scrollHeight, 160) + "px";
+});
 $("stop").onclick = () => { if (aborter) aborter.abort(); };
-$("reset").onclick = () => { messages = []; log.innerHTML = ""; setStatus(wllama ? "준비됨 (새 대화)" : $("status").textContent); };
-$("toolset").onchange = () => { applyToolset(); messages = []; log.innerHTML = ""; };
+$("reset").onclick = () => { messages = []; showEmpty(); if (wllama) setStatus("준비됨 · 새 대화", "ready"); };
+document.querySelectorAll('input[name="toolset"]').forEach(r => r.onchange = applyToolset);
+$("toolset").onchange = () => {   // 숨긴 select로 고를 때도 같게 (시험용)
+  document.querySelector(`input[name="toolset"][value="${$("toolset").value}"]`).checked = true;
+  applyToolset();
+};
+$("toggleSettings").onclick = () => $("settings").classList.toggle("open");
 applyToolset();
-if (!self.crossOriginIsolated) $("info").textContent = "멀티스레드 준비 중 (처음 접속하면 한 번 새로고침됩니다)";
+if (!self.crossOriginIsolated) setStatus("멀티스레드 준비 중 (처음엔 한 번 새로고침됩니다)", "busy");
+else setStatus("모델 없음");
 </script>
 </body>
 </html>
