@@ -7,7 +7,8 @@
 
 1. 만들기 (생각 켬): 설명 하나와 그 기기의 블록 목록을 보고 문답 7쌍. 글자 검사(반말, 이모지, 길이, 코드 문법,
    없는 모듈·클래스·메서드, 블록 상자에 없는 「블록」)에 걸린 문답은 뺍니다.
-2. 검사 (생각 켬): 설명과 맞는지·쉬운지 4점 미만이거나 코드가 틀리면 뺍니다.
+2. 검사 (생각 켬, 문답마다 따로): 설명에 없는 구체적인 사실이 있거나, 설명과 맞는지·쉬운지 4점 미만이거나,
+   코드가 틀리거나, 다른 블록 이야기면 뺍니다.
 3. 설명마다 남은 문답이 4쌍 이상이면 하나를 채점용(--heldout)으로 뗍니다. 같은 설명의 두 문답을 이어 붙인
    두 번 주고받기 대화도 일부 만듭니다. 파이브레인에 없는 움직이기를 물으면 없다고 하는 대화를 더합니다.
 
@@ -24,14 +25,15 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from prompts_code import CHECK_VERSION, VERSION, check_prompt, decide_check, decide_gen, dump, gen_prompt, passes
+from prompts_code import (CHECK_VERSION, VERSION, check_prompts, decide_check, decide_check_one, decide_gen, dump,
+                          gen_prompt, passes)
 from tools import system_code
 
 UNITS = Path("data/code-units.jsonl")
 API = Path("data/code-api.json")
 CHUNK = 1000
 #: 단계마다 최대 토큰 (생각 포함). 검사는 문답마다 설명에 없는 말을 적어 길어짐 (3072면 잘렸음)
-STAGES = {"gen": 4096, "check": 5120}
+STAGES = {"gen": 4096, "check": 3072}
 #: 두 번 주고받기로 이어 붙일 설명의 몫
 CHAIN_SHARE = 0.3
 
@@ -76,7 +78,7 @@ def load_log(path: Path, units: dict, api: dict) -> dict:
             if g is None or not g["pairs"] or r.get("for") != pairs_key(g["pairs"]):
                 del done[i, stage]
             else:
-                r["marks"] = decide_check(r["raw"], len(g["pairs"]))
+                r["marks"] = marks_of(r["raw"], len(g["pairs"]))
     return done
 
 
@@ -88,10 +90,17 @@ def run(llm_ask, units: dict, api: dict, log_path: Path, timing: dict | None = N
         print(f"{stage}: {len(todo)}개 할 차례", flush=True)
         for start in range(0, len(todo), CHUNK):
             part = todo[start:start + CHUNK]
-            prompts = [gen_prompt(units[i], api[units[i]["device"]]) if stage == "gen" else
-                       check_prompt(units[i], done[i, "gen"]["pairs"], api[units[i]["device"]]) for i in part]
+            if stage == "gen":
+                prompts = [gen_prompt(units[i], api[units[i]["device"]]) for i in part]
+            else:                                         # 문답마다 따로 묻고 설명마다 다시 묶음
+                groups = [check_prompts(units[i], done[i, "gen"]["pairs"]) for i in part]
+                prompts = [x for g in groups for x in g]
             t = time.time()
             answers = llm_ask(prompts, tokens)
+            if stage == "check":
+                flat, answers = iter(answers), []
+                for g in groups:
+                    answers.append([next(flat) for _ in g])
             if timing is not None:
                 n, sec = timing.get(stage, [0, 0.0])
                 timing[stage] = [n + len(part), sec + time.time() - t]
@@ -102,11 +111,18 @@ def run(llm_ask, units: dict, api: dict, log_path: Path, timing: dict | None = N
                         r["pairs"], r["why"] = decide_gen(text, units[i], api[units[i]["device"]])
                     else:
                         r["for"] = pairs_key(done[i, "gen"]["pairs"])
-                        r["marks"] = decide_check(text, len(done[i, "gen"]["pairs"]))
+                        r["marks"] = marks_of(text, len(done[i, "gen"]["pairs"]))
                     done[i, stage] = r
                     log.write(dump(r) + "\n")
             print(f"{stage} {start + len(part)}/{len(todo)}", flush=True)
     return done
+
+
+def marks_of(raw, n: int) -> list[dict | None]:
+    """검사 원문 → 문답마다 점수. 문답마다 따로 물은 답(목록)과 예전의 한꺼번에 물은 답(글 하나) 둘 다."""
+    if isinstance(raw, list):
+        return [decide_check_one(x) for x in raw] if len(raw) == n else [None] * n
+    return decide_check(raw, n)
 
 
 def example(u: dict, turns: list[dict], k) -> dict:

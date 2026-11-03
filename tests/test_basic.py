@@ -1051,16 +1051,15 @@ def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
 
     def fake(prompts, tokens):
         asked.append(len(prompts))
-        if "검사해요" in prompts[0]:
-            return [json.dumps({"marks": [{"unsupported": [], "grounded": 5, "clear": 5, "on_topic": True,
-                                           "code_ok": True}] * 4 +
-                                         [{"unsupported": [], "grounded": 3, "clear": 5, "code_ok": True}]})] * len(prompts)
+        if "검사해요" in prompts[0]:                     # 문답마다 따로: 넷째까지 5점, 다섯째는 3점
+            return [json.dumps({"unsupported": [], "grounded": 3 if "하려면? 4" in p else 5,
+                                "clear": 5, "on_topic": True, "code_ok": True}) for p in prompts]
         return [json.dumps({"pairs": pairs}, ensure_ascii=False)] * len(prompts)
 
     log = tmp_path / "log.jsonl"
     done = code_data.run(fake, units, code_api(), log)
     train, held, kept, why = code_data.results(units, done)
-    assert asked == [2, 2] and why["없는 메서드"] == 2 and why["grounded 3점"] == 2
+    assert asked == [2, 10] and why["없는 메서드"] == 2 and why["grounded 3점"] == 2
     assert kept == {"파이보": 6} and len(held) == 2                    # 설명마다 4쌍 → 1쌍 채점용
     assert all(e["messages"][0]["content"] == system_code("파이보") for e in train + held)
     asked.clear()

@@ -23,7 +23,7 @@ MAX_ANSWER = 700
 PAIRS = 7
 #: 선생에게 주는 글의 판: 글을 바꾸면 올려서 기록된 답을 버리고 다시 묻게 함 (만들기·검사 따로)
 VERSION = 2
-CHECK_VERSION = 3
+CHECK_VERSION = 4
 #: openpibo 말고 써도 되는 파이썬 모듈
 STDLIB = {"time", "random", "math", "os", "datetime", "json"}
 
@@ -59,8 +59,8 @@ JSON 하나로만 답해요. 출력 형식: {{"pairs": [{{"q": "학생 질문", 
 [{device} 블록 상자에 있는 블록 (카테고리: 블록 이름)]
 {blocks}"""
 
-CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답을 검사해요. 작은 모델이 그대로 배우므로 조금이라도 틀리거나
-어색하면 낮게 줘요.
+CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답 하나를 검사해요. 작은 모델이 그대로 배우므로 틀린 사실이 있으면
+낮게 줘요.
 
 {style}
 
@@ -68,16 +68,20 @@ CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답을 검사�
 {doc}
 
 [문답]
-{pairs}
+학생: {q}
+더메이커: {a}
 
-문답마다 대답을 한 문장씩 설명과 대조해요. 설명에서 찾을 수 없는 말(돌려주는 값의 종류나 범위, 인자, 블록 이름,
-동작, 조언)은 모두 unsupported에 짧게 적어요 (한 개에 20자 안쪽). 같은 순서로 JSON 하나로만 답해요.
-- unsupported: 설명에서 찾을 수 없는 말들 (없으면 [])
-- grounded: 대답이 설명과 맞는가 (1~5). unsupported가 하나라도 있으면 2점 이하
+대답을 설명과 대조해요. 설명에서 찾을 수 없는 **구체적인 사실**(값, 값의 범위·형식, 돌려주는 값, 인자, 동작,
+오류가 나는 상황)만 unsupported에 짧게 적어요 (한 개에 20자 안쪽).
+unsupported에 넣지 않는 것: 「」로 부른 블록 이름(블록 상자에 있는지는 따로 확인했음), "확인해 보세요"·"연결해서
+쓰세요" 같은 일반적인 조언과 격려, 칸이나 인자가 없다는 것처럼 설명에서 바로 알 수 있는 것.
+JSON 하나로만 답해요.
+- unsupported: 설명에서 찾을 수 없는 구체적인 사실들 (없으면 [])
+- grounded: 대답이 설명과 맞는가 (1~5). unsupported가 있으면 2점 이하
 - clear: 학생이 알아듣게 짧고 쉬운가, 질문에 맞게 대답했는가 (1~5)
 - on_topic: 질문이 이 설명의 블록·함수에 대한 것인가 (true/false)
 - code_ok: 코드가 있으면 인자의 이름·순서·값 모양까지 설명대로라서 그대로 돌릴 수 있는가 (코드가 없으면 true)
-출력 형식: {{"marks": [{{"unsupported": [], "grounded": 0, "clear": 0, "on_topic": true, "code_ok": true}}]}}"""
+출력 형식: {{"unsupported": [], "grounded": 0, "clear": 0, "on_topic": true, "code_ok": true}}"""
 
 PASS = 4
 CODE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
@@ -132,10 +136,9 @@ def gen_prompt(u: dict, api: dict) -> str:
                       doc=unit_doc(u), blocks=block_list(api))
 
 
-def check_prompt(u: dict, pairs: list[dict], api: dict) -> str:
-    text = "\n\n".join(f"{k}. 학생: {p['q']}\n   더메이커: {p['a']}" for k, p in enumerate(pairs, 1))
-    # 블록 목록은 넣지 않음 (블록 이름은 글자 검사가 대조): 답이 길어져 잘리지 않게
-    return CHECK.format(style=CODE_STYLE, doc=unit_doc(u), pairs=text)
+def check_prompts(u: dict, pairs: list[dict]) -> list[str]:
+    """문답마다 따로 검사 (한꺼번에 하면 생각이 길어져 잘림). 블록 이름은 글자 검사가 대조하므로 목록은 넣지 않음."""
+    return [CHECK.format(style=CODE_STYLE, doc=unit_doc(u), q=p["q"], a=p["a"]) for p in pairs]
 
 
 def prose(answer: str) -> str:
@@ -293,6 +296,14 @@ def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
         seen.add(q)
         kept.append({"q": q, "a": a.strip()})
     return kept, why
+
+
+def decide_check_one(text: str) -> dict | None:
+    """문답 하나의 검사 답 → 점수 (못 읽으면 None, 깨진 JSON은 값마다 읽어 냄)."""
+    d = first_json(text)
+    if isinstance(d, dict) and "grounded" in d:
+        return d
+    return decide_check('{"marks": [' + text, 1)[0] if '"unsupported"' in text else None
 
 
 def decide_check(text: str, n: int) -> list[dict | None]:
