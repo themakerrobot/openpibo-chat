@@ -187,6 +187,24 @@ def evaluate(path: Path, index: Index) -> dict:
     return {"질문": n, "1등": round(top1 / max(n, 1), 3), f"상위 {TOP_K}개": round(topk / max(n, 1), 3)}
 
 
+def misses(path: Path, index: Index, by_id: dict) -> str:
+    """정답 설명이 상위 TOP_K에 없던 채점 질문: 질문, 정답, 찾은 것 (사전 SYNONYMS를 보강할 때 봄)."""
+    lines = []
+    for line in path.read_text().splitlines():
+        ex = json.loads(line)
+        if not ex.get("unit") or ":none:" in ex["unit"]:
+            continue
+        q = first_question(ex)
+        found = index.search(q, ex["device"], TOP_K)
+        if ex["unit"] in [u["id"] for u in found]:
+            continue
+        gold = by_id.get(ex["unit"], {})
+        lines += [f"--- {ex['device']} | {q}",
+                  f"  정답: {ex['unit'].split(':', 2)[-1]} {gold.get('name') or gold.get('signature') or ''}",
+                  "  찾음: " + " / ".join(u["id"].split(":", 2)[-1] for u in found)]
+    return "\n".join(lines) + f"\n\n못 찾은 질문: {sum(x.startswith('---') for x in lines)}개\n"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--units", default=str(UNITS))
@@ -194,12 +212,19 @@ def main():
     p.add_argument("--train", metavar="학습 대화")
     p.add_argument("--out")
     p.add_argument("--ask", nargs=2, metavar=("기기", "질문"))
+    p.add_argument("--misses", metavar="채점 대화", help="정답을 못 찾은 질문 목록 (--out에 씀)")
     args = p.parse_args()
     units = load_units(Path(args.units))
     index = Index(units)
     if args.ask:
         for u in index.search(args.ask[1], args.ask[0]):
             print("---", u["id"]); print(ref_text(u))
+    if args.misses:
+        text = misses(Path(args.misses), index, {u["id"]: u for u in units})
+        Path(args.out or "samples/rag-misses.txt").parent.mkdir(exist_ok=True)
+        Path(args.out or "samples/rag-misses.txt").write_text(text)
+        print(text.strip().splitlines()[-1], "→", args.out or "samples/rag-misses.txt", flush=True)
+        return
     if args.eval:
         print("찾기:", json.dumps(evaluate(Path(args.eval), index), ensure_ascii=False), flush=True)
     if args.train:

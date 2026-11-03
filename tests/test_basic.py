@@ -387,7 +387,8 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "data-code-units", "data-code", "data-code-rag", "data-themaker-code",
                      "train-code", "small-code", "gguf-code", "score-code",
                      "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b",
-                     "score-code-chat", "score-code-judge"]
+                     "score-code-chat", "score-code-judge", "base-code-2b", "score-code-base-2b",
+                     "base-code-4b", "score-code-base-4b", "score-code-judge-base", "data-code-rag-misses"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
                                   "data/pibo.jsonl", "--skip", *run_all.SKIP], [])

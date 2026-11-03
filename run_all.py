@@ -136,6 +136,18 @@ def steps():
         ("score-code-chat", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker-ko-chat", "--lang", "code"],
          ["gguf", "data-code"]),
         ("score-code-judge", ["score.py", "judge", "--lang", "code"], ["score-code", "score-code-2b", "score-code-chat"]),
+        # 견줌 2: 학습하지 않은 바탕 모델 2B·4B를 같은 RAG로 (학습이 도움이 되는지, 4B면 얼마나 나은지)
+        *[step for size, mb in (("2b", "2B"), ("4b", "4B")) for step in (
+            (f"base-code-{size}", ["fetch_base.py", "--repo", f"unsloth/Qwen3.5-{mb}-GGUF",
+                                   "--file", f"Qwen3.5-{mb}-Q4_K_M.gguf", "--out", f"baseline/qwen3.5-{size}-Q4_K_M.gguf"], []),
+            (f"score-code-base-{size}", ["score.py", "answer", "--gguf", f"baseline/qwen3.5-{size}-Q4_K_M.gguf",
+                                         "--name", f"qwen3.5-{size}-base", "--lang", "code"],
+             [f"base-code-{size}", "data-code"]))],
+        ("score-code-judge-base", ["score.py", "judge", "--lang", "code"],
+         ["score-code-base-2b", "score-code-base-4b", "score-code-judge"]),
+        # 찾기에서 정답을 못 찾은 질문 목록 (사전 보강용)
+        ("data-code-rag-misses", ["code_rag.py", "--misses", "data/heldout-code.jsonl", "--out", "samples/rag-misses.txt"],
+         ["data-code"]),
     ]
 
 
