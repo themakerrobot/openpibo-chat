@@ -133,6 +133,9 @@ def apply(lines: list[str], n_identity: int = 1000, seed: int = 7,
                         else (NAME, SELF_ROBOT, rename_text))
     for line in lines:
         ex = json.loads(line)
+        if ex.get("source") == "code":           # 코딩 도우미 대화는 기기별 시스템 글(tools.system_code) 그대로
+            out.append(line)
+            continue
         for m in ex["messages"]:
             if m["role"] == "system":
                 m["content"] = system

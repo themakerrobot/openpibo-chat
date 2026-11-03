@@ -38,13 +38,19 @@ def first_sentence(text: str) -> str:
     return re.split(r"(?<=[.!?])\s", text.strip(), maxsplit=1)[0]
 
 
-def merge(paths: list[str]) -> tuple[list[str], Counter, Counter]:
-    """(합친 줄들, 데이터마다 남은 수, 뺀 까닭마다 수)."""
+def merge(paths: list[str], chat_limit: int | None = None) -> tuple[list[str], Counter, Counter]:
+    """(합친 줄들, 데이터마다 남은 수, 뺀 까닭마다 수). chat_limit을 주면 코딩·도구 대화가 아닌 일반 대화는
+    이만큼만 (줄마다 늘 같은 순서로 골라서): 코딩 도우미에 말투만 남길 때."""
     out, seen, kept, why, replies = [], set(), Counter(), Counter(), Counter()
     for path in paths:
-        for line in Path(path).read_text().splitlines():
-            if not line.strip():
-                continue
+        lines = [x for x in Path(path).read_text().splitlines() if x.strip()]
+        if chat_limit is not None:
+            is_special = [(lambda e: e.get("source") == "code" or e.get("kind") == "tool")(json.loads(x)) for x in lines]
+            special = [x for x, s in zip(lines, is_special, strict=True) if s]
+            chats = sorted((x for x, s in zip(lines, is_special, strict=True) if not s),
+                           key=lambda x: hashlib.md5(x.encode()).hexdigest())[:chat_limit]
+            lines = special + chats
+        for line in lines:
             if line in seen:
                 why["같은 줄이 또 나옴"] += 1
                 continue
@@ -54,7 +60,7 @@ def merge(paths: list[str]) -> tuple[list[str], Counter, Counter]:
                 kept["tools"] += 1
                 out.append(line)
                 continue
-            if gets_tools(line):
+            if ex.get("source") != "code" and gets_tools(line):
                 ex["tools"] = True
                 line = json.dumps(ex, ensure_ascii=False)
             mine = [same(m["content"]) for m in ex["messages"]
@@ -73,10 +79,11 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("data", nargs="+")
     p.add_argument("--lang", choices=["ko", "en"], default="ko", help="en이면 영어 모델용")
+    p.add_argument("--chat-limit", type=int, help="일반 대화는 이만큼만 (코딩 도우미에 말투만 남길 때)")
     p.add_argument("--no-persona", action="store_true",
                    help="시스템 글·이름 맞추기와 자기소개를 하지 않음")
     args = p.parse_args()
-    lines, kept, why = merge(args.data)
+    lines, kept, why = merge(args.data, args.chat_limit)
     print(f"합침: {len(lines)}개 ({', '.join(f'{k} {v}' for k, v in sorted(kept.items()))})",
           flush=True)
     print("뺀 것: " + (", ".join(f"{k} {v}" for k, v in why.most_common()) or "없음"), flush=True)

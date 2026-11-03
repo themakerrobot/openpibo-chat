@@ -121,6 +121,8 @@ def main():
     p.add_argument("--max-len", type=int, default=1536)
     p.add_argument("--allow-cpu", action="store_true", help="GPU 없이 (시험용, 아주 느림)")
     p.add_argument("--extra", help="직접 쓴 대화 (기본: --data 옆의 extra.txt)")
+    p.add_argument("--optim", default="adamw_torch",
+                   help="옵티마이저 (transformers 이름). 메모리가 모자라면 저절로 adafactor로 바꿔 다시 함")
     p.add_argument("--lang", choices=["ko", "en"], default="ko", help="직접 쓴 대화의 시스템 글")
     args = p.parse_args()
 
@@ -164,8 +166,14 @@ def main():
             args.base, **({"dtype": torch.bfloat16} if new else {"torch_dtype": torch.bfloat16}))
 
     model = load()
-    batch, accum = args.batch, args.accum
+    # 메모리가 모자라 바꾼 설정은 남겨 두고, 다시 돌릴 때 그대로 써야 체크포인트에서 이어 갈 수 있음
+    settings = out / "train-settings.json"
+    saved = json.loads(settings.read_text()) if settings.exists() else {}
+    batch, accum = saved.get("batch", args.batch), saved.get("accum", args.accum)
+    optim = saved.get("optim", args.optim)
+    out.mkdir(parents=True, exist_ok=True)
     while True:
+        settings.write_text(json.dumps({"batch": batch, "accum": accum, "optim": optim}))
         steps = math.ceil(len(rows) / (batch * accum)) * args.epochs
         warmup = max(1, int(0.03 * steps))   # warmup_ratio는 5.x에서 없어져 걸음 수로
         targs = TrainingArguments(
@@ -174,21 +182,26 @@ def main():
             lr_scheduler_type="cosine", warmup_steps=warmup, weight_decay=0.0,
             bf16=torch.cuda.is_available(), gradient_checkpointing=True, logging_steps=20,
             save_steps=500, save_total_limit=2, report_to=[], dataloader_num_workers=2,
-            seed=0, remove_unused_columns=False)
+            seed=0, remove_unused_columns=False, optim=optim)
         trainer = Trainer(model=model, args=targs, train_dataset=rows, data_collator=collate)
         resume = last_checkpoint(out)
         if resume:
             print(f"{resume}에서 이어서", flush=True)
-        print(f"배치 {batch} × 누적 {accum} (한 걸음에 {batch * accum}개)", flush=True)
+        print(f"배치 {batch} × 누적 {accum} (한 걸음에 {batch * accum}개), 옵티마이저 {optim}", flush=True)
         try:
             trainer.train(resume_from_checkpoint=resume)
             break
         except torch.OutOfMemoryError:
-            if batch == 1:
+            if batch > 1:
+                # 메모리가 모자라면 배치를 반으로, 누적을 두 배로: 한 걸음에 보는 양은 같게
+                batch, accum = batch // 2, accum * 2
+                print(f"GPU 메모리 부족: 배치 {batch}로 줄여 처음부터 다시", flush=True)
+            elif optim != "adafactor":
+                # 배치 1로도 모자라면 옵티마이저 메모리가 큰 것 (2B AdamW는 상태만 약 14GB): Adafactor로
+                optim, batch, accum = "adafactor", args.batch, args.accum
+                print("GPU 메모리 부족: 옵티마이저를 adafactor로 바꿔 처음부터 다시", flush=True)
+            else:
                 raise
-            # 메모리가 모자라면 배치를 반으로, 누적을 두 배로: 한 걸음에 보는 양은 같게
-            batch, accum = batch // 2, accum * 2
-            print(f"GPU 메모리 부족: 배치 {batch}로 줄여 처음부터 다시", flush=True)
             del trainer
             gc.collect()
             torch.cuda.empty_cache()

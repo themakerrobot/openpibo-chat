@@ -36,6 +36,14 @@ GGUF = f"out/{NAME}-Q4_K_M.gguf"
 NAME_EN = "themaker-en-0.8b"
 DATA_EN = "data/train-themaker-en.jsonl"
 GGUF_EN = f"out/{NAME_EN}-Q4_K_M.gguf"
+#: 코딩 도우미 (실험): 같은 데이터로 0.8B(기기)와 2B(노트북)를 학습해 견줌
+BASE_2B = "Qwen/Qwen3.5-2B"   # Apache-2.0
+NAME_CODE, NAME_CODE_2B = "themaker-code-0.8b", "themaker-code-2b"
+DATA_CODE = "data/train-themaker-code.jsonl"
+GGUF_CODE, GGUF_CODE_2B = f"out/{NAME_CODE}-Q4_K_M.gguf", f"out/{NAME_CODE_2B}-Q4_K_M.gguf"
+#: 블록·함수를 뽑을 기기 저장소 (PC의 환경 변수로 바꿈)
+CODE_REPOS = {"파이보": os.environ.get("CODE_PIBO", "~/openpibo-os.pibo"),
+              "파이브레인": os.environ.get("CODE_PIBRAIN", "~/openpibo-os.pibrain")}
 #: 쓰지 않을 원본 (원본 파일의 source 이름, PC의 환경 변수 SKIP으로, 띄어쓰기로 여럿)
 SKIP = os.environ.get("SKIP", "").split()
 #: 견줄 예전 모델 (지금 파이보에 올린 것)
@@ -45,6 +53,8 @@ BEFORE = "baseline/before-Q4_K_M.gguf"
 def steps():
     """(단계 이름, 명령, 먼저 끝나야 하는 단계들)."""
     run, run_en = f"runs/{NAME}", f"runs/{NAME_EN}"
+    code = [("", BASE, f"runs/{NAME_CODE}", NAME_CODE, GGUF_CODE),
+            ("-2b", BASE_2B, f"runs/{NAME_CODE_2B}", NAME_CODE_2B, GGUF_CODE_2B)]
     return [
         # 원본 대화(data/source.jsonl, 채점용 data/source-heldout.jsonl: PC에만 있음)의 상대 말을
         # 선생이 파이보 말투로 바꿔 쓰고, 다시 검사해 좋은 것만
@@ -100,6 +110,27 @@ def steps():
         ("score-en-themaker", ["score.py", "answer", "--gguf", GGUF_EN, "--name", "themaker-en",
                                "--lang", "en"], ["gguf-en", "data-en-heldout", "data-tools-en-heldout"]),
         ("score-en-judge", ["score.py", "judge", "--lang", "en"], ["score-en-before", "score-en-themaker"]),
+        # ---- 코딩 도우미 (실험): 기기 저장소의 블록·openpibo 함수 설명을 근거로 선생이 문답을 만들고 검사
+        ("data-code-units", ["code_docs.py", *[x for dev, path in CODE_REPOS.items()
+                                                for x in ("--repo", f"{dev}={Path(path).expanduser()}")]], []),
+        ("data-code", ["code_data.py", "--out", "data/code.jsonl", "--heldout", "data/heldout-code.jsonl"],
+         ["data-code-units"]),
+        # 코딩 문답 + 일반 대화 4천 개(말투·정체 유지)
+        ("data-themaker-code", ["merge_data.py", "--out", DATA_CODE, "--chat-limit", "4000", "data/code.jsonl",
+                                "data/pibo.jsonl"], ["data-code", "data-pibo"]),
+        *[step for suffix, base, run_c, name, gguf in code for step in (
+            (f"train-code{suffix}", ["train.py", "--base", base, "--data", DATA_CODE, "--out", run_c, "--lr", "2e-5",
+                                     "--batch", "2", "--accum", "16"], ["data-themaker-code"]),
+            (f"small-code{suffix}", ["prune_vocab.py", "--model", f"{run_c}/final", "--out", f"{run_c}/small",
+                                     "--data", DATA_CODE], [f"train-code{suffix}"]),
+            (f"gguf-code{suffix}", ["export.py", "--model", f"{run_c}/small", "--name", name, "--quant", "Q4_K_M",
+                                    "--imatrix", DATA_CODE, "--lang", "code"], [f"small-code{suffix}"]),
+            (f"score-code{suffix}", ["score.py", "answer", "--gguf", gguf, "--name", name, "--lang", "code"],
+             [f"gguf-code{suffix}", "data-code"]))],
+        # 견줌: 코딩을 배우지 않은 대화 모델
+        ("score-code-chat", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker-ko-chat", "--lang", "code"],
+         ["gguf", "data-code"]),
+        ("score-code-judge", ["score.py", "judge", "--lang", "code"], ["score-code", "score-code-2b", "score-code-chat"]),
     ]
 
 
@@ -242,16 +273,25 @@ def report():
         lines.append(f"- {name}: {mark}")
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
-    for folder, gguf in (("results", GGUF), ("results-en", GGUF_EN)):
+    for folder, ggufs in (("results", [GGUF]), ("results-en", [GGUF_EN]),
+                          ("results-code", [GGUF_CODE, GGUF_CODE_2B])):
         score = HERE / folder / "score.md"
         if score.exists():
             lines += ["", f"## 채점 ({folder}/score.md)", "", score.read_text()]
+        lines += check_lines(ggufs)
+    (HERE / "REPORT.md").write_text("\n".join(lines) + "\n")
+
+
+def check_lines(ggufs: list[str]) -> list[str]:
+    """GGUF마다 변환 뒤 확인 질문의 대답 (out/<이름>-check.json)."""
+    lines = []
+    for gguf in ggufs:
         check = HERE / gguf.replace(".gguf", "-check.json")
         if check.exists():
             d = json.loads(check.read_text())
             lines += ["", f"## {Path(d['file']).name} ({d['MB']} MB)", "", "```",
                       json.dumps(d["check"], ensure_ascii=False, indent=1), "```"]
-    (HERE / "REPORT.md").write_text("\n".join(lines) + "\n")
+    return lines
 
 
 def main():

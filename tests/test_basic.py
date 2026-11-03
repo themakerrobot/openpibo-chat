@@ -383,7 +383,11 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "train", "small", "gguf", "score-before", "score-themaker", "score-judge",
                      "data-en", "data-en-heldout", "data-tools-en", "data-tools-en-heldout",
                      "data-themaker-en", "train-en", "small-en", "gguf-en", "score-en-before",
-                     "score-en-themaker", "score-en-judge"]
+                     "score-en-themaker", "score-en-judge",
+                     "data-code-units", "data-code", "data-themaker-code",
+                     "train-code", "small-code", "gguf-code", "score-code",
+                     "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b",
+                     "score-code-chat", "score-code-judge"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
                                   "data/pibo.jsonl", "--skip", *run_all.SKIP], [])
@@ -403,6 +407,11 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     assert "--lang" in cmds["gguf-en"][0] and run_all.GGUF_EN == "out/themaker-en-0.8b-Q4_K_M.gguf"
     for step in ("score-en-before", "score-en-themaker", "score-en-judge", "data-tools-en"):
         assert cmds[step][0][cmds[step][0].index("--lang") + 1] == "en"
+    # 코딩 도우미: 같은 데이터로 0.8B와 2B, 코딩 채점에 대화 모델도 견줌
+    assert "Qwen/Qwen3.5-2B" in cmds["train-code-2b"][0] and run_all.DATA_CODE in cmds["train-code-2b"][0]
+    assert cmds["train-code"][1] == cmds["train-code-2b"][1] == ["data-themaker-code"]
+    assert cmds["gguf-code-2b"][0][cmds["gguf-code-2b"][0].index("--lang") + 1] == "code"
+    assert cmds["score-code-judge"][1] == ["score-code", "score-code-2b", "score-code-chat"]
 
 
 def test_status_shows_the_running_step(tmp_path, monkeypatch):

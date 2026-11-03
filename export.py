@@ -31,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from tools import SYSTEM, SYSTEM_EN, SYSTEMS
+from tools import SYSTEM, SYSTEM_EN, SYSTEMS, system_code
 
 LLAMA = Path(os.environ.get("LLAMA_CPP", "~/llama.cpp")).expanduser()
 OUT = Path("out")
@@ -278,16 +278,25 @@ CHECKS_EN = [("대화", SYSTEM_EN, "I had a fight with my friend at school", Fal
              ("부르면 안 됨", SYSTEM_EN, "I like red the most", True)]
 
 
+#: 코딩 도우미(themaker-code)용
+CHECKS_CODE = [("눈 불빛", system_code("파이보"), "눈을 빨갛게 하려면 어떻게 해?", False),
+               ("블록 설명", system_code("파이보"), "클릭했을때 블록은 뭐야?", False),
+               ("파이썬", system_code("파이보"), "파이썬으로 사진 찍는 코드 알려 줘", False),
+               ("파이브레인 불빛", system_code("파이브레인"), "불빛을 파랗게 바꾸는 블록 알려 줘", False),
+               ("없는 기능", system_code("파이브레인"), "파이브레인 춤추게 하려면?", False),
+               ("시스템 글 없음", None, "너는 누구야?", False)]
+
+
 def check(gguf: Path, lang: str = "ko") -> dict:
     """대화 몇 개를 llama-server로 물어봅니다 (생각 끄기를 따로 보내지 않고, 앱처럼)."""
     from tools import TOOLS, calls_of
 
     out = {}
     with server(gguf, 8399) as url:
-        for key, system, text, tools in (CHECKS_EN if lang == "en" else CHECKS):
+        for key, system, text, tools in {"en": CHECKS_EN, "code": CHECKS_CODE}.get(lang, CHECKS):
             msgs = ([{"role": "system", "content": system}] if system else []) + \
                 [{"role": "user", "content": text}]
-            body = {"messages": msgs, "temperature": 0, "max_tokens": 150}
+            body = {"messages": msgs, "temperature": 0, "max_tokens": 400 if lang == "code" else 150}
             if tools:
                 body["tools"] = TOOLS
             msg = post(f"{url}/v1/chat/completions", body)["choices"][0]["message"]
@@ -306,8 +315,8 @@ def main():
     p.add_argument("--quant", default="Q4_K_M")
     p.add_argument("--imatrix", metavar="DATA",
                    help="이 학습 데이터로 imatrix를 재서 양자화 (llama-imatrix)")
-    p.add_argument("--lang", choices=["ko", "en"], default="ko",
-                   help="en이면 영어 모델: 기본 시스템 글 SYSTEM_EN, 영어 확인 질문")
+    p.add_argument("--lang", choices=["ko", "en", "code"], default="ko",
+                   help="en이면 영어 모델(기본 시스템 글 SYSTEM_EN), code면 코딩 도우미(파이보 코딩 시스템 글)")
     p.add_argument("--retemplate", metavar="GGUF", nargs="+",
                    help="이미 만든 GGUF의 대화 템플릿만 기기용으로 (다시 변환하지 않음)")
     args = p.parse_args()
@@ -324,7 +333,7 @@ def main():
     if q.exists():
         retemplate(q)                        # 예전에 만든 파일: 템플릿만 바꿈
     if not q.exists():
-        fix_template(Path(args.model), SYSTEMS[args.lang])
+        fix_template(Path(args.model), system_code("파이보") if args.lang == "code" else SYSTEMS[args.lang])
         convert(Path(args.model), f16)
         imat = imatrix(f16, Path(args.model), args.imatrix) if args.imatrix else None
         subprocess.run([str(LLAMA / "build" / "bin" / "llama-quantize"),

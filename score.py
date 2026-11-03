@@ -65,26 +65,73 @@ Judge the last reply and answer with one JSON only.
 Output format: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
 
 
+#: 코딩 도우미(themaker-code) 채점: 대답이 블록·함수 설명과 맞는지 (설명은 data/code-units.jsonl에서)
+JUDGE_CODE = """아래는 {device} 블록 코딩과 파이썬을 돕는 코딩 도우미 더메이커와 학생의 대화이고, 마지막 대답을 채점합니다.
+{style}
+
+[근거 설명]
+{doc}
+
+{dialog}
+더메이커(채점할 대답): {reply}
+
+마지막 대답을 근거 설명과 대조해 JSON 하나로만 답하세요.
+- korean: 한국어가 자연스럽고 존댓말을 지켰는가 (1~5)
+- fit: 근거 설명과 맞고 질문에 맞게 대답했는가 (1~5). 설명에 없는 블록·함수·인자·값을 지어냈으면 1점
+- short: 짧고 화면에서 읽기 좋은가 (1~5)
+- engage: 학생이 알아듣게 쉬운가 (1~5)
+- wrong: 틀린 사실이나 돌아가지 않는 코드가 하나라도 있으면 true
+- repeat: 앞 대화에서 한 말을 거의 그대로 되풀이했으면 true (앞 대화가 없으면 false)
+출력 형식: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
+
+
 def set_lang(lang: str) -> None:
-    """en이면 영어 모델의 채점 대화(data/heldout-en.jsonl 등)와 결과 폴더(results-en)로."""
+    """en이면 영어 모델의 채점 대화(data/heldout-en.jsonl 등)와 결과 폴더(results-en)로, code면 코딩 도우미
+    (data/heldout-code.jsonl, results-code, 도구 채점 없음)."""
     global RESULTS, HELDOUT, TOOLS_HELDOUT, LANG
     LANG = lang
     if lang == "en":
         RESULTS, HELDOUT = Path("results-en"), Path("data/heldout-en.jsonl")
         TOOLS_HELDOUT = Path("data/heldout-tools-en.jsonl")
+    elif lang == "code":
+        RESULTS, HELDOUT = Path("results-code"), Path("data/heldout-code.jsonl")
+        TOOLS_HELDOUT = Path("data/heldout-tools-code.jsonl")     # 없음: 도구 채점은 건너뜀
 
 
-def problem(text: str) -> str | None:
+def problem(text: str, q: dict | None = None) -> str | None:
     if LANG == "en":
         from prompts_en import en_problem
         return en_problem(text, 400)
+    if LANG == "code":                             # 반말·이모지·없는 블록·모듈·메서드·인자
+        from prompts_code import answer_problem
+        return answer_problem(text, code_api()[(q or {}).get("device", "파이보")])
     return pibo_problem(text, 400)
+
+
+_CODE: dict = {}
+
+
+def code_api() -> dict:
+    if "api" not in _CODE:
+        _CODE["api"] = json.loads(Path("data/code-api.json").read_text())
+    return _CODE["api"]
+
+
+def code_doc(unit_id: str) -> str:
+    from prompts_code import unit_doc
+
+    if "units" not in _CODE:
+        _CODE["units"] = {u["id"]: u for u in map(json.loads, Path("data/code-units.jsonl").read_text().splitlines())}
+    u = _CODE["units"].get(unit_id)
+    return unit_doc(u) if u else "(설명 없음: 이 기기에 없는 기능을 물은 것)"
 
 
 def with_system(messages: list[dict]) -> list[dict]:
     """시스템 글은 지금 것(tools.SYSTEM)으로: 채점 대화를 만든 뒤 시스템 글을 바꿨어도 기기 앱과 같게."""
     from tools import SYSTEMS
 
+    if LANG == "code":                             # 코딩 도우미는 기기마다 시스템 글이 달라 대화에 적힌 그대로
+        return messages
     return [dict(m, content=SYSTEMS[LANG]) if m["role"] == "system" else m for m in messages]
 
 
@@ -94,7 +141,8 @@ def questions() -> list[dict]:
     for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
         ex["messages"] = with_system(ex["messages"])
-        out.append({"set": "첫마디", "messages": ex["messages"][:2]})
+        out.append({"set": "첫마디", "messages": ex["messages"][:2], "unit": ex.get("unit"),
+                    "device": ex.get("device")})
         users = [j for j, m in enumerate(ex["messages"]) if m["role"] == "user"]
         if len(users) >= 3:
             cut = users[(len(users) + 1) // 2]      # 가운데쯤의 학생 말까지 (앞 대화는 그대로)
@@ -149,7 +197,8 @@ def answer(gguf: str, name: str) -> None:
             if n % 100 == 0:
                 print(f"{n}/{len(qs)}", flush=True)
             msg = post(f"{url}/v1/chat/completions",
-                       {"messages": q["messages"], **SAMPLING, "seed": 0, "max_tokens": 200}
+                       {"messages": q["messages"], **SAMPLING, "seed": 0,
+                        "max_tokens": 400 if LANG == "code" else 200}
                        )["choices"][0]["message"]
             answers.append((msg.get("content") or "").strip())
         tools = tool_answer(url)
@@ -162,7 +211,7 @@ def answer(gguf: str, name: str) -> None:
 def dialog(q: dict) -> str:
     lines = []
     for m in q["messages"][1:]:
-        who = ("Student: ", "TheMaker: ") if LANG == "en" else ("학생: ", "파이보: ")
+        who = {"en": ("Student: ", "TheMaker: "), "code": ("학생: ", "더메이커: ")}.get(LANG, ("학생: ", "파이보: "))
         lines.append(who[m["role"] != "user"] + m["content"])
     return "\n".join(lines)
 
@@ -187,10 +236,16 @@ def judge() -> None:
             continue
         answers = json.loads(f.read_text())["answers"]
         llm = llm or load_teacher()
-        judge_, style = (JUDGE_EN, EN_STYLE) if LANG == "en" else (JUDGE, PIBO_STYLE)
-        convs = [[{"role": "user", "content": judge_.format(style=style, dialog=dialog(q),
-                                                            reply=a or "(말 없음)")}]
-                 for q, a in zip(qs, answers, strict=True)]
+        if LANG == "code":
+            from prompts_code import CODE_STYLE
+            convs = [[{"role": "user", "content": JUDGE_CODE.format(
+                device=q.get("device") or "파이보", style=CODE_STYLE, doc=code_doc(q.get("unit") or ""),
+                dialog=dialog(q), reply=a or "(말 없음)")}] for q, a in zip(qs, answers, strict=True)]
+        else:
+            judge_, style = (JUDGE_EN, EN_STYLE) if LANG == "en" else (JUDGE, PIBO_STYLE)
+            convs = [[{"role": "user", "content": judge_.format(style=style, dialog=dialog(q),
+                                                                reply=a or "(말 없음)")}]
+                     for q, a in zip(qs, answers, strict=True)]
         outs = llm.chat(convs, thinking_params(1536), chat_template_kwargs={"enable_thinking": True},
                         use_tqdm=False)
         scored.write_text(json.dumps([marks(o.outputs[0].text) for o in outs], ensure_ascii=False))
@@ -211,6 +266,8 @@ def report() -> str:
             "앞 말 되풀이 (선생)", "앞 말 되풀이 (글자)", "같은 대답", "기호·반말", "평균 글자 수"]
     if LANG == "en":
         head[3], head[11] = "영어", "기호·영어 아닌 글자"
+    elif LANG == "code":
+        head[4], head[6], head[11] = "설명과 맞음", "쉬움", "없는 블록·함수·반말"
     rows = ["| " + " | ".join(head) + " |", "|" + " --- |" * len(head)]
     for f in sorted(RESULTS.glob("answers-*.json")):
         name = f.stem.removeprefix("answers-")
@@ -236,7 +293,7 @@ def report() -> str:
             shapes = Counter(same(answers[i]) for i in idx)
             dup = sum(shapes[same(answers[i])] > 1 for i in idx) / len(idx)
             echoed = sum(echo(qs[i], answers[i]) for i in idx) / len(idx)
-            bad = sum(bool(problem(answers[i])) for i in idx) / len(idx)
+            bad = sum(bool(problem(answers[i], qs[i])) for i in idx) / len(idx)
             length = statistics.mean(len(answers[i]) for i in idx)
             rows.append(f"| {name} | {which} ({len(idx)}) | {total} | {' | '.join(parts)} | "
                         f"{rate('wrong')} | {rate('repeat')} | {echoed:.0%} | {dup:.0%} | {bad:.0%} | "
@@ -281,7 +338,8 @@ def main():
     p.add_argument("what", choices=["answer", "judge", "report"])
     p.add_argument("--gguf")
     p.add_argument("--name")
-    p.add_argument("--lang", choices=["ko", "en"], default="ko", help="en이면 영어 모델 채점")
+    p.add_argument("--lang", choices=["ko", "en", "code"], default="ko",
+                   help="en이면 영어 모델, code면 코딩 도우미 채점")
     args = p.parse_args()
     set_lang(args.lang)
     if args.what == "answer":
