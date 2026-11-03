@@ -25,6 +25,13 @@ UNITS = Path("data/code-units.jsonl")
 API = Path("data/code-api.json")
 FROM = re.compile(r"^from (openpibo\.[\w.]+) import (\w+)(?: as (\w+))?$")
 NEW = re.compile(r"^(\w+) = (\w+)\(\);?$")
+#: 블록 안내서(docs/source/blocks/guide.md)의 블록 그림 줄과 그 아래 설명 한 단락
+GUIDE = re.compile(r'<img src="img/(\w+)\.png" alt="([^"]*)"[^>]*>\s*\n\s*\n([^\n<#][^\n]*(?:\n[^\n<#][^\n]*)*)')
+#: 설명만으로는 무엇을 하는지 알 수 없는 블록에 사람이 붙인 설명
+NOTES = {
+    "flag_event": ("코드를 실행하는 시작 블록이에요. 이 블록 아래에 이어 붙인 블록들이 위에서부터 차례로 실행돼요. "
+                   "값을 넣는 칸은 없고, 이 블록 자체는 파이썬 코드를 만들지 않아요."),
+}
 
 
 def blocks_of(repo: Path) -> list[dict]:
@@ -76,8 +83,33 @@ def methods_of(repo: Path, module: str, cls: str) -> list[dict]:
     return []
 
 
+def guide_of(repo: Path) -> dict[str, tuple[str, str]]:
+    """블록 이름 → (안내서의 블록 모양, 설명)."""
+    path = repo / "docs" / "source" / "blocks" / "guide.md"
+    if not path.exists():
+        return {}
+    return {m.group(1): (m.group(2).strip(), " ".join(m.group(3).split()))
+            for m in GUIDE.finditer(path.read_text(encoding="utf-8"))}
+
+
+def short_name(text: str) -> str:
+    """블록 글에서 칸과 아이콘을 뺀 부름 이름 (「RGB 눈 불빛 바꾸기」)."""
+    return " ".join(re.sub(r"\([^)]*\)|□", " ", text).split())
+
+
 def extract(device: str, repo: Path) -> tuple[list[dict], dict]:
-    blocks = blocks_of(repo)
+    guide = guide_of(repo)
+    blocks = []
+    for b in blocks_of(repo):
+        if b["type"] in guide:
+            b["shape"], b["guide"] = guide[b["type"]]
+        if b["type"] in NOTES:
+            b["note"] = NOTES[b["type"]]
+        if not b.get("code") and not b.get("note"):      # 무엇이 되는지 모르는 블록은 문답을 만들지 않음
+            print(f"{device}: {b['type']} 블록은 만드는 코드가 없어 뺌", flush=True)
+            continue
+        b["name"] = b.get("shape") or short_name(b["text"])     # 안내서의 블록 모양 (칸의 기본값 포함)
+        blocks.append(b)
     imports, instances = {}, {}
     for b in blocks:
         for line in b["imports"]:
@@ -95,7 +127,10 @@ def extract(device: str, repo: Path) -> tuple[list[dict], dict]:
         for m in ms:
             units.append({"id": f"{device}:func:{cls}.{m['method']}", "device": device, "kind": "func",
                           "module": module, "class": cls, "alias": alias, "instance": inst, **m})
-    api = {"imports": imports, "instances": instances, "methods": methods}
+    by_cat: dict[str, list[str]] = {}
+    for b in blocks:
+        by_cat.setdefault(b.get("category") or "", []).append(b["name"])
+    api = {"imports": imports, "instances": instances, "methods": methods, "blocks": by_cat}
     return units, api
 
 

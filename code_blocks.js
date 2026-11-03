@@ -71,10 +71,28 @@ try {
 function msg(s) {   // '%{BKY_X}' → 한국어 글
   return String(s || "").replace(/%\{BKY_([A-Z0-9_]+)\}/g, (m, k) => Blockly.Msg[k] !== undefined ? Blockly.Msg[k] : m);
 }
-function fakeBlock(def) {
+// 블록 글: %1, %2 … 를 칸 종류에 맞게 (아이콘은 빼고 이름이 있으면 (이름), 값 칸은 □)
+function blockText(def) {
+  const args = def.args0 || [];
+  return msg(def.message0).replace(/%(\d+)/g, (m, n) => {
+    const a = args[Number(n) - 1];
+    if (!a) return "□";
+    if (a.type === "field_image") return a.alt ? `(${a.alt})` : "";
+    if (a.type === "input_dummy") return "";
+    return "□";
+  }).replace(/\s+/g, " ").trim();
+}
+function fakeBlock(def, chosen) {
+  const options = Object.assign({}, chosen || {});
+  for (const a of def.args0 || []) {       // 고르는 칸은 첫 실제 값 (코드가 값에 따라 갈리는 블록도 예가 나오게)
+    if (a && Array.isArray(a.options) && !(a.name in options)) {
+      const o = a.options.find(o => Array.isArray(o) && o[1] !== "");
+      if (o) options[a.name] = o[1];
+    }
+  }
   return {
     type: def.type, id: "b",
-    getFieldValue: name => `<${name}>`,
+    getFieldValue: name => (name in options ? options[name] : `<${name}>`),
     getInputTargetBlock: () => null, getInput: () => null, getField: () => null,
     getChildren: () => [], getNextBlock: () => null, getSurroundParent: () => null,
     itemCount_: 2, elseifCount_: 0, elseCount_: 0,
@@ -92,20 +110,30 @@ for (const def of blocks) {
     if (a.value !== undefined) f.value = a.value;
     return f;
   });
-  let code = null, imports = [];
+  let code = null, imports = [], byOption;
   const fn = forBlock[def.type];
-  if (typeof fn === "function") {
+  const gen = chosen => {
     defs = {};
-    try {
-      const r = fn.call(fakeBlock(def), fakeBlock(def));
-      code = Array.isArray(r) ? r[0] : r;
-      imports = Object.values(defs);
-    } catch (e) { code = null; }
+    try { const r = fn.call(null, fakeBlock(def, chosen)); return [Array.isArray(r) ? r[0] : r, Object.values(defs)]; }
+    catch (e) { return [null, []]; }
+  };
+  if (typeof fn === "function") {
+    [code, imports] = gen();
+    // 첫 고르는 칸의 값에 따라 코드가 달라지면 값마다 (예: 이미지 바꾸기 [만화 ▾] → 다른 함수)
+    const dd = (def.args0 || []).find(a => a && Array.isArray(a.options));
+    if (dd) {
+      const seen = {};
+      for (const o of dd.options.filter(o => Array.isArray(o) && o[1] !== "").slice(0, 8)) {
+        const [c] = gen({[dd.name]: o[1]});
+        if (c !== null) seen[msg(o[0])] = c;
+      }
+      if (new Set(Object.values(seen)).size > 1) byOption = {field: dd.name, codes: seen};
+    }
   }
   out.push({
-    type: def.type, category: shown[def.type], text: msg(def.message0).replace(/%\d+/g, "□").replace(/\s+/g, " ").trim(),
+    type: def.type, category: shown[def.type], text: blockText(def),
     tooltip: msg(def.tooltip), fields, output: def.output !== undefined ? def.output : undefined,
-    statement: !!(def.previousStatement || def.nextStatement), code, imports,
+    statement: !!(def.previousStatement || def.nextStatement), code, imports, byOption,
   });
 }
 process.stdout.write(JSON.stringify(out, null, 1));

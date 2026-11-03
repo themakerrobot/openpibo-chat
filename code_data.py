@@ -5,8 +5,8 @@
     python code_data.py --out data/try-code.jsonl --heldout data/try-heldout-code.jsonl --limit 30   # 먼저 조금
     python code_data.py --dropped grounded > samples/drop-code.txt
 
-1. 만들기 (생각 켬): 설명 하나에 문답 7쌍. 글자 검사(반말, 이모지, 길이, 코드 문법, 없는 모듈·클래스·메서드)에
-   걸린 문답은 뺍니다.
+1. 만들기 (생각 켬): 설명 하나와 그 기기의 블록 목록을 보고 문답 7쌍. 글자 검사(반말, 이모지, 길이, 코드 문법,
+   없는 모듈·클래스·메서드, 블록 상자에 없는 「블록」)에 걸린 문답은 뺍니다.
 2. 검사 (생각 켬): 설명과 맞는지·쉬운지 4점 미만이거나 코드가 틀리면 뺍니다.
 3. 설명마다 남은 문답이 4쌍 이상이면 하나를 채점용(--heldout)으로 뗍니다. 같은 설명의 두 문답을 이어 붙인
    두 번 주고받기 대화도 일부 만듭니다. 파이브레인에 없는 움직이기를 물으면 없다고 하는 대화를 더합니다.
@@ -85,8 +85,8 @@ def run(llm_ask, units: dict, api: dict, log_path: Path, timing: dict | None = N
         print(f"{stage}: {len(todo)}개 할 차례", flush=True)
         for start in range(0, len(todo), CHUNK):
             part = todo[start:start + CHUNK]
-            prompts = [gen_prompt(units[i]) if stage == "gen" else check_prompt(units[i], done[i, "gen"]["pairs"])
-                       for i in part]
+            prompts = [gen_prompt(units[i], api[units[i]["device"]]) if stage == "gen" else
+                       check_prompt(units[i], done[i, "gen"]["pairs"], api[units[i]["device"]]) for i in part]
             t = time.time()
             answers = llm_ask(prompts, tokens)
             if timing is not None:

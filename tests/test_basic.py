@@ -974,9 +974,12 @@ def test_webrunner_tools_match_the_model_and_calculate_safely(tmp_path):
 def code_api():
     return {"파이보": {"imports": {"Device": ["openpibo.device", "Device"], "Motion": ["openpibo.motion", "Motion"]},
                      "instances": {"device": "Device", "motion": "Motion"},
-                     "methods": {"Device": ["eye_on", "eye_off"], "Motion": ["set_motion"]}},
+                     "methods": {"Device": ["eye_on", "eye_off"], "Motion": ["set_motion"]},
+                     "blocks": {"장치": ["RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "색상 ([■]) 눈 불빛 바꾸기"],
+                                "소리": ["오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기"], "시작": ["클릭했을때"]}},
             "파이브레인": {"imports": {"Device": ["openpibo.device", "DeviceByPiBrain"]},
-                       "instances": {"device": "Device"}, "methods": {"Device": ["led_on", "led_off"]}}}
+                       "instances": {"device": "Device"}, "methods": {"Device": ["led_on", "led_off"]},
+                       "blocks": {"장치": ["RGB 불빛 바꾸기"]}}}
 
 
 def test_code_answers_only_use_what_the_device_has():
@@ -996,6 +999,15 @@ def test_code_answers_only_use_what_the_device_has():
     assert answer_problem(good.replace("돼요", "돼"), api["파이보"]) == "반말"
     assert answer_problem(good + " 😀", api["파이보"]).startswith("이모지")
     assert answer_problem("가" * 701, api["파이보"]).endswith("넘음")
+    # 지어낸 것: 없는 모듈(pybo), 블록 상자에 없는 블록, 글 속 코드 조각의 없는 메서드
+    assert code_problem("import pybo\npybo.when_clicked('적')", api["파이보"]) == "없는 모듈 pybo"
+    assert code_problem("import time\ntime.sleep(1)", api["파이보"]) is None
+    assert answer_problem("「점수 올리기」 블록을 이어요.", api["파이보"]) == "없는 블록 「점수 올리기」"
+    assert answer_problem("「눈 불빛 바꾸기」 블록을 써요.", api["파이보"]) is None          # 블록 이름의 일부
+    assert answer_problem("「오디오 크기로 재생하기」 블록에 80을 넣어요.", api["파이보"]) is None    # 칸을 빼고 말해도
+    assert answer_problem("「오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기」를 써요.", api["파이보"]) is None
+    assert answer_problem("`pybo.when_clicked('객체')`처럼 써요.", api["파이보"]) == "없는 모듈 pybo"
+    assert answer_problem("`device.eye_on(1, 2, 3)`처럼 써요.", api["파이브레인"]) == "없는 메서드 Device.eye_on"
 
 
 def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
