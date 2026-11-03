@@ -1119,3 +1119,13 @@ def test_broken_check_answers_are_read_mark_by_mark():
     assert marks[2] is None
     good = '{"marks": [{"unsupported": [], "grounded": 5, "clear": 5, "on_topic": true, "code_ok": true}]}'
     assert decide_check(good, 1)[0]["grounded"] == 5 and decide_check(good, 2) == [None, None]
+
+
+
+def test_questions_must_say_what_they_ask_about():
+    from prompts_code import VAGUE
+
+    for q in ("이 블록 뭐야?", "이거 어디 있어?", "그 함수 인자 알려 줘", "이 블록은 어떻게 써?", "이게 뭐야"):
+        assert VAGUE.search(q), q
+    for q in ("사진 찍기 블록은 뭐야?", "눈을 빨갛게 하려면?", "eye_on 함수 인자 알려 줘", "이미지 바꾸기 블록 어디 있어?"):
+        assert not VAGUE.search(q), q

@@ -22,7 +22,7 @@ MAX_ANSWER = 700
 #: 설명 하나에서 만드는 문답 수
 PAIRS = 7
 #: 선생에게 주는 글의 판: 글을 바꾸면 올려서 기록된 답을 버리고 다시 묻게 함 (만들기·검사 따로)
-VERSION = 2
+VERSION = 3
 CHECK_VERSION = 5
 #: openpibo 말고 써도 되는 파이썬 모듈
 STDLIB = {"time", "random", "math", "os", "datetime", "json"}
@@ -49,6 +49,8 @@ GEN = """아래는 {device} 블록 코딩 도구의 {what} 설명이에요. 이 
 4. 값의 범위, 넣는 순서, 자주 하는 실수 (설명에 있을 때만)
 5. 짧은 예제 코드나 블록 순서 (다른 블록을 함께 쓸 때는 아래 블록 목록에 있는 블록만)
 질문은 모두 이 {what}에 대한 것만 만들어요 (다른 블록은 함께 쓰는 예에서만, 블록 목록에 있는 것만).
+질문은 혼자 읽어도 무엇을 묻는지 알 수 있게 써요: 블록 이름이나 함수 이름, 또는 하고 싶은 일을 꼭 넣어요.
+"이 블록", "이거", "그 함수", "여기"처럼 가리키는 말로만 묻지 않아요 (예: "이 블록 뭐야?" 대신 "사진 찍기 블록은 뭐야?").
 질문은 학생 말투(반말, 짧게)로, 서로 다른 말로 써요. 설명이 모자라 대답할 수 없는 질문은 만들지 않아요.
 설명이 짧으면 문답을 {n}쌍보다 적게 만들어도 돼요.
 JSON 하나로만 답해요. 출력 형식: {{"pairs": [{{"q": "학생 질문", "a": "더메이커 대답"}}]}}
@@ -277,6 +279,10 @@ def answer_problem(answer, api: dict) -> str | None:
     return None
 
 
+#: 앞뒤 맥락이 있어야 알 수 있는 질문 ("이 블록 뭐야?"): 쓸 때는 질문으로 설명을 찾으므로 못 씀
+VAGUE = re.compile(r"(이|그|저)\s*(블록|함수|코드|칸|거|것|기능)|이거|이건|이걸|그거|그건|여기|이게")
+
+
 def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
     """선생이 만든 문답 → (남은 문답들, 뺀 까닭마다 수)."""
     d = first_json(text)
@@ -291,6 +297,9 @@ def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
         q, a = p["q"].strip(), p.get("a")
         if q in seen:
             why["같은 질문"] = why.get("같은 질문", 0) + 1
+            continue
+        if VAGUE.search(q):
+            why["가리키는 말로 된 질문"] = why.get("가리키는 말로 된 질문", 0) + 1
             continue
         if problem := answer_problem(a, api):
             key = " ".join(problem.split(" ")[:2]) if problem.startswith(("없는", "코드", "인자", "학생을")) else problem
