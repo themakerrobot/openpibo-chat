@@ -24,13 +24,14 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from prompts_code import VERSION, check_prompt, decide_check, decide_gen, dump, gen_prompt, passes
+from prompts_code import CHECK_VERSION, VERSION, check_prompt, decide_check, decide_gen, dump, gen_prompt, passes
 from tools import system_code
 
 UNITS = Path("data/code-units.jsonl")
 API = Path("data/code-api.json")
 CHUNK = 1000
-STAGES = {"gen": 4096, "check": 3072}
+#: 단계마다 최대 토큰 (생각 포함). 검사는 문답마다 설명에 없는 말을 적어 길어짐 (3072면 잘렸음)
+STAGES = {"gen": 4096, "check": 5120}
 #: 두 번 주고받기로 이어 붙일 설명의 몫
 CHAIN_SHARE = 0.3
 
@@ -51,7 +52,8 @@ def key_of(u: dict) -> str:
 
 
 def pairs_key(pairs) -> str:
-    return hashlib.md5(dump(pairs).encode()).hexdigest()[:12]
+    """검사할 문답과 검사 글의 판(prompts_code.CHECK_VERSION): 둘 중 하나가 바뀌면 검사를 다시 함."""
+    return hashlib.md5((dump(pairs) + f"#c{CHECK_VERSION}").encode()).hexdigest()[:12]
 
 
 def load_log(path: Path, units: dict, api: dict) -> dict:

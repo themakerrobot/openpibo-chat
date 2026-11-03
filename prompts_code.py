@@ -21,8 +21,9 @@ from teacher import first_json
 MAX_ANSWER = 700
 #: 설명 하나에서 만드는 문답 수
 PAIRS = 7
-#: 선생에게 주는 글(GEN·CHECK)의 판: 글을 바꾸면 올려서 기록된 답을 버리고 다시 묻게 함
+#: 선생에게 주는 글의 판: 글을 바꾸면 올려서 기록된 답을 버리고 다시 묻게 함 (만들기·검사 따로)
 VERSION = 2
+CHECK_VERSION = 3
 #: openpibo 말고 써도 되는 파이썬 모듈
 STDLIB = {"time", "random", "math", "os", "datetime", "json"}
 
@@ -66,14 +67,11 @@ CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답을 검사�
 [설명]
 {doc}
 
-[{device} 블록 상자에 있는 블록 (카테고리: 블록 이름)]
-{blocks}
-
 [문답]
 {pairs}
 
 문답마다 대답을 한 문장씩 설명과 대조해요. 설명에서 찾을 수 없는 말(돌려주는 값의 종류나 범위, 인자, 블록 이름,
-동작, 조언)은 모두 unsupported에 그대로 적어요. 같은 순서로 JSON 하나로만 답해요.
+동작, 조언)은 모두 unsupported에 짧게 적어요 (한 개에 20자 안쪽). 같은 순서로 JSON 하나로만 답해요.
 - unsupported: 설명에서 찾을 수 없는 말들 (없으면 [])
 - grounded: 대답이 설명과 맞는가 (1~5). unsupported가 하나라도 있으면 2점 이하
 - clear: 학생이 알아듣게 짧고 쉬운가, 질문에 맞게 대답했는가 (1~5)
@@ -84,7 +82,9 @@ CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답을 검사�
 PASS = 4
 CODE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
 INLINE = re.compile(r"`([^`\n]+)`")
-QUOTED = re.compile(r"「([^」]+)」")
+QUOTED = re.compile(r"「([^」]+)」|〈([^〉]+)〉|『([^』]+)』")
+#: 학생을 높이는 말 ("-시-"): 친구 말투가 아님 ("~하세요"처럼 부탁하는 끝은 둠)
+HONORIFIC = re.compile(r"[가-힣](시면|셨|십시|시겠|시죠|신다)|하신|보신|주신|계신")
 EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
 
 
@@ -134,7 +134,8 @@ def gen_prompt(u: dict, api: dict) -> str:
 
 def check_prompt(u: dict, pairs: list[dict], api: dict) -> str:
     text = "\n\n".join(f"{k}. 학생: {p['q']}\n   더메이커: {p['a']}" for k, p in enumerate(pairs, 1))
-    return CHECK.format(style=CODE_STYLE, doc=unit_doc(u), pairs=text, device=u["device"], blocks=block_list(api))
+    # 블록 목록은 넣지 않음 (블록 이름은 글자 검사가 대조): 답이 길어져 잘리지 않게
+    return CHECK.format(style=CODE_STYLE, doc=unit_doc(u), pairs=text)
 
 
 def prose(answer: str) -> str:
@@ -261,7 +262,10 @@ def answer_problem(answer, api: dict) -> str | None:
     for snippet in INLINE.findall(text):
         if why := inline_problem(snippet, api):
             return why
-    for name in QUOTED.findall(text):
+    if bad := HONORIFIC.search(text):
+        return f"학생을 높임 '{bad.group()}'"
+    for groups in QUOTED.findall(text):
+        name = next(g for g in groups if g)
         if not known_block(name, api):
             return f"없는 블록 「{name[:20]}」"
     return None
@@ -283,7 +287,7 @@ def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
             why["같은 질문"] = why.get("같은 질문", 0) + 1
             continue
         if problem := answer_problem(a, api):
-            key = " ".join(problem.split(" ")[:2]) if problem.startswith(("없는", "코드", "인자")) else problem
+            key = " ".join(problem.split(" ")[:2]) if problem.startswith(("없는", "코드", "인자", "학생을")) else problem
             why[key] = why.get(key, 0) + 1
             continue
         seen.add(q)

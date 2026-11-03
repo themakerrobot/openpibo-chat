@@ -1020,6 +1020,9 @@ def test_code_answers_only_use_what_the_device_has():
     assert answer_problem("「오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기」를 써요.", api["파이보"]) is None
     assert answer_problem("`pybo.when_clicked('객체')`처럼 써요.", api["파이보"]) == "없는 모듈 pybo"
     assert answer_problem("`device.eye_on(1, 2, 3)`처럼 써요.", api["파이브레인"]) == "없는 메서드 Device.eye_on"
+    assert answer_problem("〈점수 올리기〉 블록을 이어요.", api["파이보"]) == "없는 블록 「점수 올리기」"
+    assert answer_problem("출력해 보시면 알 수 있어요.", api["파이보"]) == "학생을 높임 '보시면'"
+    assert answer_problem("「눈 불빛 바꾸기」 블록을 사용하세요.", api["파이보"]) is None      # 부탁하는 끝은 둠
     # 인자: 이름·개수 (draw_bitmap(w, h, val, background=…, pixel=…))
     cam = dict(api["파이보"], imports={**api["파이보"]["imports"], "Camera": ["openpibo.vision_camera", "Camera"]},
                instances={**api["파이보"]["instances"], "camera": "Camera"})
