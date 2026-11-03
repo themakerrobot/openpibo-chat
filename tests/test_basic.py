@@ -974,11 +974,14 @@ def test_webrunner_tools_match_the_model_and_calculate_safely(tmp_path):
 def code_api():
     return {"파이보": {"imports": {"Device": ["openpibo.device", "Device"], "Motion": ["openpibo.motion", "Motion"]},
                      "instances": {"device": "Device", "motion": "Motion"},
-                     "methods": {"Device": ["eye_on", "eye_off"], "Motion": ["set_motion"]},
+                     "methods": {"Device": {"eye_on": None, "eye_off": None}, "Motion": {"set_motion": None},
+                                 "Camera": {"draw_bitmap": {"names": ["w", "h", "val", "background", "pixel"],
+                                                            "positional": 5, "required": 3,
+                                                            "varargs": False, "varkw": False}}},
                      "blocks": {"장치": ["RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "색상 ([■]) 눈 불빛 바꾸기"],
                                 "소리": ["오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기"], "시작": ["클릭했을때"]}},
             "파이브레인": {"imports": {"Device": ["openpibo.device", "DeviceByPiBrain"]},
-                       "instances": {"device": "Device"}, "methods": {"Device": ["led_on", "led_off"]},
+                       "instances": {"device": "Device"}, "methods": {"Device": {"led_on": None, "led_off": None}},
                        "blocks": {"장치": ["RGB 불빛 바꾸기"]}}}
 
 
@@ -1008,6 +1011,17 @@ def test_code_answers_only_use_what_the_device_has():
     assert answer_problem("「오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기」를 써요.", api["파이보"]) is None
     assert answer_problem("`pybo.when_clicked('객체')`처럼 써요.", api["파이보"]) == "없는 모듈 pybo"
     assert answer_problem("`device.eye_on(1, 2, 3)`처럼 써요.", api["파이브레인"]) == "없는 메서드 Device.eye_on"
+    # 인자: 이름·개수 (draw_bitmap(w, h, val, background=…, pixel=…))
+    cam = dict(api["파이보"], imports={**api["파이보"]["imports"], "Camera": ["openpibo.vision_camera", "Camera"]},
+               instances={**api["파이보"]["instances"], "camera": "Camera"})
+    assert code_problem("camera.draw_bitmap(8, 8, '1,0', pixel=(0,0,0))", cam) is None
+    assert code_problem("camera.draw_bitmap(8, 8, '1,0', color=(0,0,0))", cam) == "없는 인자 Camera.draw_bitmap(color=)"
+    assert code_problem("camera.draw_bitmap(8, 8)", cam) == "인자가 모자람 Camera.draw_bitmap(val)"
+    assert code_problem("camera.draw_bitmap(1, 2, 3, 4, 5, 6)", cam) == "인자가 많음 Camera.draw_bitmap"
+    from prompts_code import passes
+    assert passes({"unsupported": ["True 또는 False"], "grounded": 5, "clear": 5, "on_topic": True,
+                   "code_ok": True}) == "설명에 없는 말"
+    assert passes({"unsupported": [], "grounded": 5, "clear": 5, "on_topic": False, "code_ok": True}) == "다른 블록 이야기"
 
 
 def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
@@ -1025,8 +1039,9 @@ def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
     def fake(prompts, tokens):
         asked.append(len(prompts))
         if "검사해요" in prompts[0]:
-            return [json.dumps({"marks": [{"grounded": 5, "clear": 5, "code_ok": True}] * 4 +
-                                         [{"grounded": 3, "clear": 5, "code_ok": True}]})] * len(prompts)
+            return [json.dumps({"marks": [{"unsupported": [], "grounded": 5, "clear": 5, "on_topic": True,
+                                           "code_ok": True}] * 4 +
+                                         [{"unsupported": [], "grounded": 3, "clear": 5, "code_ok": True}]})] * len(prompts)
         return [json.dumps({"pairs": pairs}, ensure_ascii=False)] * len(prompts)
 
     log = tmp_path / "log.jsonl"

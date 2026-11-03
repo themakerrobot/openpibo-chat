@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from prompts_code import check_prompt, decide_check, decide_gen, dump, gen_prompt, passes
+from prompts_code import VERSION, check_prompt, decide_check, decide_gen, dump, gen_prompt, passes
 from tools import system_code
 
 UNITS = Path("data/code-units.jsonl")
@@ -46,7 +46,8 @@ NO_MOTION_A = ["파이브레인에는 모터가 없어서 움직이는 블록이
 
 
 def key_of(u: dict) -> str:
-    return hashlib.md5(dump(u).encode()).hexdigest()[:12]
+    """설명이나 선생에게 주는 글의 판(prompts_code.VERSION)이 바뀌면 다시 묻도록."""
+    return hashlib.md5((dump(u) + f"#v{VERSION}").encode()).hexdigest()[:12]
 
 
 def pairs_key(pairs) -> str:

@@ -65,6 +65,14 @@ def signature(fn: ast.FunctionDef) -> str:
     return f"{fn.name}({', '.join(parts)})"
 
 
+def params_of(fn: ast.FunctionDef) -> dict:
+    """코드 검사용 인자 정보: 이름들, 꼭 넣어야 하는 앞쪽 인자 수, *args·**kwargs가 있는지."""
+    a = fn.args
+    pos = [x.arg for x in a.posonlyargs + a.args if x.arg != "self"]
+    return {"names": pos + [x.arg for x in a.kwonlyargs], "positional": len(pos),
+            "required": len(pos) - len(a.defaults), "varargs": a.vararg is not None, "varkw": a.kwarg is not None}
+
+
 def methods_of(repo: Path, module: str, cls: str) -> list[dict]:
     """openpibo 모듈 파일에서 클래스의 공개 메서드들: [{method, signature, doc}]."""
     path = repo / Path(*module.split("."))
@@ -78,7 +86,8 @@ def methods_of(repo: Path, module: str, cls: str) -> list[dict]:
             for fn in node.body:
                 if isinstance(fn, ast.FunctionDef) and not fn.name.startswith("_"):
                     doc = re.sub(r"\n{3,}", "\n\n", (ast.get_docstring(fn) or "").strip())
-                    out.append({"method": fn.name, "signature": signature(fn), "doc": doc[:1500]})
+                    out.append({"method": fn.name, "signature": signature(fn), "doc": doc[:1500],
+                                "params": params_of(fn)})
             return out
     return []
 
@@ -122,11 +131,12 @@ def extract(device: str, repo: Path) -> tuple[list[dict], dict]:
         units.append({"id": f"{device}:block:{b['type']}", "device": device, "kind": "block", **b})
     for alias, (module, cls) in sorted(imports.items()):
         ms = methods_of(repo, module, cls)
-        methods[alias] = [m["method"] for m in ms]
+        methods[alias] = {m["method"]: m["params"] for m in ms}
         inst = next((i for i, c in instances.items() if c == alias), None)
         for m in ms:
             units.append({"id": f"{device}:func:{cls}.{m['method']}", "device": device, "kind": "func",
-                          "module": module, "class": cls, "alias": alias, "instance": inst, **m})
+                          "module": module, "class": cls, "alias": alias, "instance": inst,
+                          **{k: v for k, v in m.items() if k != "params"}})
     by_cat: dict[str, list[str]] = {}
     for b in blocks:
         by_cat.setdefault(b.get("category") or "", []).append(b["name"])

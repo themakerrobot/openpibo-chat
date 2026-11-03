@@ -21,6 +21,8 @@ from teacher import first_json
 MAX_ANSWER = 700
 #: 설명 하나에서 만드는 문답 수
 PAIRS = 7
+#: 선생에게 주는 글(GEN·CHECK)의 판: 글을 바꾸면 올려서 기록된 답을 버리고 다시 묻게 함
+VERSION = 2
 #: openpibo 말고 써도 되는 파이썬 모듈
 STDLIB = {"time", "random", "math", "os", "datetime", "json"}
 
@@ -29,7 +31,10 @@ CODE_STYLE = """더메이커는 학생과 친구처럼 이야기하는 교육용
 - 설명은 2~4문장으로 짧고 쉽게. 어려운 말은 풀어서 말해요.
 - 코드는 꼭 필요할 때만 ```python 으로 감싸서 10줄 안쪽으로 보여 줘요. 코드 첫머리에 준비 코드(import와 객체 만들기)를 넣어요.
 - 이모지는 쓰지 않아요. 블록은 「」로 감싸 블록 목록의 글자로 말해요. 칸은 빼도 돼요 (예: 「오디오 크기로 재생하기」).
-- 설명과 블록 목록에 없는 블록, 함수, 인자, 값, 모듈은 절대 지어내지 않아요."""
+- 설명과 블록 목록에 없는 블록, 함수, 인자, 값, 모듈은 절대 지어내지 않아요.
+- 돌려주는 값의 종류(True/False, 숫자, 글자 …)와 값의 범위는 설명에 적혀 있을 때만 말해요. 모르면 "값을 출력해
+  확인해 보세요"처럼 말해요.
+- 함수를 부를 때는 설명에 있는 인자 이름과 순서, 값의 모양(숫자, 글자, 쉼표로 구분한 글자 …) 그대로 써요."""
 
 GEN = """아래는 {device} 블록 코딩 도구의 {what} 설명이에요. 이 설명만 근거로, {device}로 블록 코딩과 파이썬을
 배우는 초·중·고 학생이 물을 만한 질문과 코딩 도우미 더메이커의 대답을 {n}쌍 만들어요.
@@ -42,6 +47,7 @@ GEN = """아래는 {device} 블록 코딩 도구의 {what} 설명이에요. 이 
 3. 하고 싶은 일로 묻기 (예: "눈을 빨갛게 하려면 어떻게 해?") — 이 {what}{ro} 할 수 있는 일만
 4. 값의 범위, 넣는 순서, 자주 하는 실수 (설명에 있을 때만)
 5. 짧은 예제 코드나 블록 순서 (다른 블록을 함께 쓸 때는 아래 블록 목록에 있는 블록만)
+질문은 모두 이 {what}에 대한 것만 만들어요 (다른 블록은 함께 쓰는 예에서만, 블록 목록에 있는 것만).
 질문은 학생 말투(반말, 짧게)로, 서로 다른 말로 써요. 설명이 모자라 대답할 수 없는 질문은 만들지 않아요.
 설명이 짧으면 문답을 {n}쌍보다 적게 만들어도 돼요.
 JSON 하나로만 답해요. 출력 형식: {{"pairs": [{{"q": "학생 질문", "a": "더메이커 대답"}}]}}
@@ -66,12 +72,14 @@ CHECK = """아래 설명을 근거로 만든 코딩 도우미 문답을 검사�
 [문답]
 {pairs}
 
-문답마다 하나씩, 같은 순서로 JSON 하나로만 답해요.
-- grounded: 대답이 설명과 맞는가 (1~5). 설명에 없는 기능이나, 블록 목록에 없는 블록, 설명에 없는 함수·인자·값·모듈이
-  하나라도 나오면 1점
+문답마다 대답을 한 문장씩 설명과 대조해요. 설명에서 찾을 수 없는 말(돌려주는 값의 종류나 범위, 인자, 블록 이름,
+동작, 조언)은 모두 unsupported에 그대로 적어요. 같은 순서로 JSON 하나로만 답해요.
+- unsupported: 설명에서 찾을 수 없는 말들 (없으면 [])
+- grounded: 대답이 설명과 맞는가 (1~5). unsupported가 하나라도 있으면 2점 이하
 - clear: 학생이 알아듣게 짧고 쉬운가, 질문에 맞게 대답했는가 (1~5)
-- code_ok: 코드가 있으면 그대로 돌릴 수 있게 맞는가 (코드가 없으면 true)
-출력 형식: {{"marks": [{{"grounded": 0, "clear": 0, "code_ok": true}}]}}"""
+- on_topic: 질문이 이 설명의 블록·함수에 대한 것인가 (true/false)
+- code_ok: 코드가 있으면 인자의 이름·순서·값 모양까지 설명대로라서 그대로 돌릴 수 있는가 (코드가 없으면 true)
+출력 형식: {{"marks": [{{"unsupported": [], "grounded": 0, "clear": 0, "on_topic": true, "code_ok": true}}]}}"""
 
 PASS = 4
 CODE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
@@ -188,8 +196,29 @@ def code_problem(code: str, api: dict) -> str | None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
                 isinstance(node.func.value, ast.Name) and node.func.value.id in instances:
             alias = instances[node.func.value.id]
-            if node.func.attr not in api["methods"].get(alias, []):
+            methods = api["methods"].get(alias, {})
+            if node.func.attr not in methods:
                 return f"없는 메서드 {alias}.{node.func.attr}"
+            if why := args_problem(node, methods[node.func.attr], f"{alias}.{node.func.attr}"):
+                return why
+    return None
+
+
+def args_problem(call: ast.Call, params, name: str) -> str | None:
+    """부를 때 인자가 그 메서드의 인자와 맞는지 (개수, 이름). params가 없으면(예전 목록) 넘어감."""
+    if not isinstance(params, dict):
+        return None
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
+        return None                                           # *args, **kwargs로 넘기면 셀 수 없음
+    if not params["varargs"] and len(call.args) > params["positional"]:
+        return f"인자가 많음 {name}"
+    for k in call.keywords:
+        if k.arg not in params["names"] and not params["varkw"]:
+            return f"없는 인자 {name}({k.arg}=)"
+    given = {k.arg for k in call.keywords}
+    missing = [n for n in params["names"][len(call.args):params["required"]] if n not in given]
+    if missing:
+        return f"인자가 모자람 {name}({missing[0]})"
     return None
 
 
@@ -203,8 +232,12 @@ def inline_problem(snippet: str, api: dict) -> str | None:
         return None
     obj, method = m.groups()
     if obj in api["instances"]:
-        return None if method in api["methods"].get(api["instances"][obj], []) else \
-            f"없는 메서드 {api['instances'][obj]}.{method}"
+        try:                                          # 조각이 온전한 부르기면 인자까지 대조
+            ast.parse(s)
+            return code_problem(s, api)
+        except SyntaxError:
+            return None if method in api["methods"].get(api["instances"][obj], {}) else \
+                f"없는 메서드 {api['instances'][obj]}.{method}"
     if obj in STDLIB or obj == "utils":
         return None
     return f"없는 모듈 {obj}"
@@ -250,7 +283,7 @@ def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
             why["같은 질문"] = why.get("같은 질문", 0) + 1
             continue
         if problem := answer_problem(a, api):
-            key = " ".join(problem.split(" ")[:2]) if problem.startswith(("없는", "코드")) else problem
+            key = " ".join(problem.split(" ")[:2]) if problem.startswith(("없는", "코드", "인자")) else problem
             why[key] = why.get(key, 0) + 1
             continue
         seen.add(q)
@@ -271,6 +304,10 @@ def passes(m: dict | None) -> str | None:
     """점수가 기준을 넘으면 None, 아니면 까닭."""
     if m is None:
         return "검사 답을 못 읽음"
+    if m.get("unsupported"):
+        return "설명에 없는 말"
+    if m.get("on_topic") is False:
+        return "다른 블록 이야기"
     for k in ("grounded", "clear"):
         v = m.get(k)
         if not isinstance(v, (int, float)) or isinstance(v, bool) or v < PASS:
