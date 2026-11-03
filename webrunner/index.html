@@ -120,6 +120,20 @@
   .empty h3 { color: var(--ink); font-size: 18px; margin: 0 0 6px; }
   .steps { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 18px; font-size: 13px; }
   .steps span { padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
+  .msg.cards { display: block; margin-left: 38px; }
+  .bcard { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; margin: 0 0 8px; max-width: 85%;
+           box-shadow: var(--shadow); }
+  .bcard summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 8px; align-items: center; list-style: none; }
+  .bcard summary::-webkit-details-marker { display: none; }
+  .bcard summary b { font-size: 14px; }
+  .bcard .kind { font-size: 11px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; flex: none; }
+  .bcard .tagc { font-size: 11px; color: var(--mute); flex: none; }
+  .bcard .inner { padding: 0 12px 10px; font-size: 13.5px; }
+  .bcard pre { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--soft); font-family: var(--mono);
+               font-size: 12.5px; white-space: pre-wrap; word-break: break-word; position: relative; }
+  .bcard .copy { float: right; font-size: 12px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+                 padding: 2px 8px; cursor: pointer; }
+  .cards-label { font-size: 11px; color: var(--mute); margin: 0 0 4px; }
   .examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
   .examples button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 12px;
                      cursor: pointer; font-size: 13px; }
@@ -178,13 +192,21 @@
           <div><b>더메이커 한국어</b><span>light · look · move + 학습한 시스템 글</span></div></label>
         <label class="choice"><input type="radio" name="toolset" value="themaker_en">
           <div><b>더메이커 영어</b><span>같은 도구 + 영어 시스템 글</span></div></label>
+        <label class="choice"><input type="radio" name="toolset" value="code">
+          <div><b>코딩 도우미</b><span>블록·함수 카드 + 짧은 설명 (설명 파일 필요)</span></div></label>
         <label class="choice"><input type="radio" name="toolset" value="none">
           <div><b>도구 없음</b><span>대화만</span></div></label>
       </div>
       <select id="toolset" hidden>
         <option value="basic">basic</option><option value="themaker">themaker</option>
-        <option value="themaker_en">themaker_en</option><option value="none">none</option>
+        <option value="themaker_en">themaker_en</option><option value="code">code</option><option value="none">none</option>
       </select>
+      <div id="codeBox" hidden>
+        <label class="drop" style="margin-top:10px"><input type="file" id="codeIndex" accept=".json">
+          <b>설명 파일 고르기</b><span>code-index.json (학습 PC에서 만듦)</span></label>
+        <div class="meta" id="codeInfo"></div>
+        <div class="field"><span>기기</span><select id="codeDevice"><option>파이보</option><option>파이브레인</option></select></div>
+      </div>
     </div>
     <div class="section">
       <h2>생성</h2>
@@ -298,6 +320,55 @@ const TOOLSETS = {
   none: {followUp: false, system: "", tools: [], run: {}},
 };
 TOOLSETS.themaker_en = Object.assign({}, TOOLSETS.themaker, {system: THEMAKER.systems.en});
+// 코딩 도우미: 질문으로 설명 파일(code-index.json, code_rag.py --export)에서 블록·함수를 찾아 카드로 보여 주고,
+// 그 설명을 시스템 글에 붙여 모델이 짧게 설명 (도구 없음)
+TOOLSETS.code = {followUp: false, system: "", tools: [], run: {}, code: true};
+
+// code_rag.tokens와 같게: 영어·코드는 소문자 낱말(밑줄 조각도), 한국어는 글자 두 개씩, 숫자
+function codeTokens(text) {
+  const out = [];
+  for (const raw of text.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []) {
+    const low = raw.toLowerCase();
+    out.push(low);
+    const parts = low.split("_").filter(Boolean);
+    if (parts.length > 1) out.push(...parts);
+  }
+  for (const w of text.match(/[가-힣]+/g) || []) {
+    if (w.length === 1) out.push(w); else for (let i = 0; i < w.length - 1; i++) out.push(w.slice(i, i + 2));
+  }
+  out.push(...(text.match(/[0-9]+/g) || []));
+  return out;
+}
+function codeExpand(index, query) {
+  return query + " " + Object.entries(index.synonyms).filter(([k]) => query.includes(k)).map(([, v]) => v).join(" ");
+}
+// code_rag.Index.search와 같은 BM25 (k1=1.2, b=0.75). 같은 기기의 설명 안에서만
+function codeSearch(index, query, device, k) {
+  const units = index.units.filter(u => u.device === device);
+  const n = units.length, df = index.df[device] || {}, avg = index.avg[device] || 1;
+  const q = {};
+  for (const t of codeTokens(codeExpand(index, query))) q[t] = (q[t] || 0) + 1;
+  const scored = [];
+  index.units.forEach((u, i) => {
+    if (u.device !== device) return;
+    let s = 0;
+    for (const [t, qn] of Object.entries(q)) {
+      const tf = u.tf[t];
+      if (!tf) continue;
+      const idf = Math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5));
+      s += qn * idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * u.len / avg));
+    }
+    if (s > 0) scored.push([s, i]);
+  });
+  scored.sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  return scored.slice(0, k || index.top_k).map(([, i]) => index.units[i]);
+}
+// code_rag.system_with와 같은 시스템 글: 기기 코딩 시스템 글 + [참고 설명]
+function codeSystem(index, device, refs) {
+  const ctx = refs.length ? index.header + "\n" + refs.map((u, k) => `${k + 1}. ${u.ref}`).join("\n\n")
+                          : index.header + "\n(찾은 설명 없음)";
+  return index.systems[device] + "\n\n" + ctx;
+}
 
 function checkArgs(def, args) {
   const p = def.function.parameters || {};
@@ -332,12 +403,14 @@ const EXAMPLES = {
   themaker: ["빨간 불 켜 줘", "앞에 뭐 있어?", "춤춰 줘", "난 빨간색이 좋아", "너 누구야?"],
   themaker_en: ["Turn on the red light, please", "Can you dance for me?", "What do you see?", "Who are you?"],
   none: ["안녕? 너는 누구야?", "오늘 기분이 좀 안 좋아"],
+  code: ["눈을 빨갛게 하려면 어떻게 해?", "사진 찍는 블록 알려 줘", "화면에 글자 쓰려면?", "클릭했을때 블록은 뭐야?"],
 };
 
 const $ = id => document.getElementById(id);
 const thread = $("thread"), logBox = $("log");
 let wllama = null, busy = false, aborter = null;
 let messages = [];   // 대화 기억 (OpenAI 형식)
+let codeIndex = null;   // 코딩 도우미 설명 파일
 
 function setStatus(text, state) {   // state: ready | busy | error | (없음)
   $("status").textContent = text;
@@ -406,6 +479,7 @@ function setBusy(on) {
 }
 function applyToolset() {
   $("toolset").value = toolsetName();
+  $("codeBox").hidden = toolsetName() !== "code";
   $("system").value = TOOLSETS[toolsetName()].system;
   messages = [];
   showEmpty();
@@ -455,12 +529,48 @@ const drop = $("drop");
 drop.addEventListener("drop", e => { if (!busy) loadFiles(e.dataTransfer.files); });
 
 // ---- 대화 한 번: 도구를 부르면 실행하고(최대 5회), followUp이면 결과를 넣어 다시 묻습니다
+function addCards(refs) {
+  clearEmpty();
+  const row = document.createElement("div");
+  row.className = "msg cards";
+  const label = document.createElement("div");
+  label.className = "cards-label";
+  label.textContent = refs.length ? "찾은 블록·함수 (설명 파일 그대로)" : "맞는 블록·함수를 찾지 못했어요";
+  row.appendChild(label);
+  refs.forEach((u, k) => {
+    const c = u.card, d = document.createElement("details");
+    d.className = "bcard";
+    d.open = k === 0;
+    d.innerHTML = '<summary><span class="kind"></span><b></b><span class="tagc"></span></summary>' +
+      '<div class="inner"><div class="txt"></div><pre><button class="copy" type="button">복사</button><code></code></pre></div>';
+    d.querySelector(".kind").textContent = c.kind;
+    d.querySelector("b").textContent = c.title;
+    d.querySelector(".tagc").textContent = c.tag;
+    d.querySelector(".txt").textContent = c.text;
+    d.querySelector("code").textContent = c.code;
+    if (!c.code) d.querySelector("pre").remove();
+    else d.querySelector(".copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(c.code);
+    row.appendChild(d);
+  });
+  thread.appendChild(row);
+  scrollDown();
+}
+
 async function runTurn(text) {
   const setName = toolsetName(), set = TOOLSETS[setName];
-  const system = $("system").value.trim();
+  let system = $("system").value.trim();
+  if (set.code) {                      // 찾은 설명을 카드로 바로 보여 주고, 모델에는 그 설명을 붙여 물음
+    if (!codeIndex) { addMessage("error", "코딩 도우미는 설명 파일(code-index.json)을 먼저 골라야 해요"); return; }
+    const refs = codeSearch(codeIndex, text, $("codeDevice").value);
+    system = codeSystem(codeIndex, $("codeDevice").value, refs);
+    addMessage("user", text);
+    addCards(refs);
+    messages = messages.slice(-4);     // 앞 대화는 조금만 (설명이 길어서)
+  } else {
+    addMessage("user", text);
+  }
   const sendMsgs = () => (system ? [{role: "system", content: system}] : []).concat(messages);
   messages.push({role: "user", content: text});
-  addMessage("user", text);
   aborter = new AbortController();
   setBusy(true);
   const done = new Set();   // 이번 차례에 이미 실행한 도구 호출 (이름+인자)
@@ -569,6 +679,18 @@ $("toolset").onchange = () => {   // 숨긴 select로 고를 때도 같게 (시�
   applyToolset();
 };
 $("toggleSettings").onclick = () => $("settings").classList.toggle("open");
+$("codeIndex").onchange = async () => {
+  const f = $("codeIndex").files[0];
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (!data.units || !data.systems) throw new Error("code-index.json 모양이 아니에요");
+    codeIndex = data;
+    const by = {};
+    data.units.forEach(u => by[u.device] = (by[u.device] || 0) + 1);
+    $("codeInfo").textContent = f.name + " · " + Object.entries(by).map(([d, n]) => `${d} ${n}개`).join(", ");
+  } catch (err) { codeIndex = null; showError("설명 파일을 못 읽었어요", err); }
+};
 applyToolset();
 if (!self.crossOriginIsolated) setStatus("멀티스레드 준비 중 (처음엔 한 번 새로고침됩니다)", "busy");
 else setStatus("모델 없음");

@@ -1107,6 +1107,62 @@ def test_rag_finds_the_block_from_a_students_words_and_sometimes_leaves_the_answ
     assert system.startswith(system_code("파이보")) and "[참고 설명]" in system and "eye_on" in system
 
 
+def test_webrunner_code_search_matches_python(tmp_path):
+    """웹 실행기의 코딩 도우미 찾기(JS)가 code_rag와 같은 설명을 같은 순서로, 같은 시스템 글로 고름."""
+    import re
+    import shutil
+    import subprocess
+
+    import code_rag
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": ["from openpibo.device import Device"]},
+        {"id": "파이보:block:motion_set_motion", "device": "파이보", "kind": "block", "category": "동작",
+         "name": "동작 [dance1 ▾] ([1]) 번 실행하기", "text": "동작 □ □ 번 실행하기", "tooltip": "선택한 동작을 실행합니다.",
+         "code": "motion.set_motion(<name>, <cycle>)\n", "imports": [],
+         "byOption": {"field": "name", "codes": {"dance1": "motion.set_motion('dance1', 1)"}}},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+        {"id": "파이보:api:Device.eye_on", "device": "파이보", "kind": "api", "module": "openpibo.device",
+         "class": "Device", "alias": "Device", "instance": "device", "method": "eye_on",
+         "signature": "eye_on(*color)", "doc": "눈 색을 바꿉니다.\ncolor: (r, g, b) 0~255"},
+        {"id": "파이브레인:block:led", "device": "파이브레인", "kind": "block", "category": "장치",
+         "name": "RGB 불빛 바꾸기", "text": "RGB 불빛 바꾸기", "tooltip": "불빛 색을 바꿉니다.", "code": "device.led_on()", "imports": []},
+    ]
+    index = code_rag.Index(units)
+    f = tmp_path / "code-index.json"
+    code_rag.export(units, index, f)
+    data = json.loads(f.read_text())
+    assert data["units"][1]["card"]["title"] == "「동작 [dance1 ▾] ([1]) 번 실행하기」"
+    assert "# dance1" in data["units"][1]["card"]["code"]
+    assert data["units"][3]["card"]["code"] == "from openpibo.device import Device\ndevice = Device()"
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    asks = [("파이보", "눈을 빨갛게 하려면?"), ("파이보", "춤추게 하고 싶어"), ("파이보", "eye_on 인자 알려 줘"),
+            ("파이보", "사진 찍는 블록 3개"), ("파이보", "xyz 없는 말"), ("파이브레인", "불빛 바꾸기")]
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const index = JSON.parse(require("fs").readFileSync({json.dumps(str(f))}, "utf8"));
+const asks = {json.dumps(asks, ensure_ascii=False)};
+console.log(JSON.stringify(asks.map(([d, q]) => {{
+  const refs = codeSearch(index, q, d);
+  return {{ids: refs.map(u => u.id), system: codeSystem(index, d, refs), tokens: codeTokens(q)}};
+}})));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    for (dev, q), g in zip(asks, got):
+        refs = index.search(q, dev)
+        assert g["ids"] == [u["id"] for u in refs], q
+        assert g["system"] == code_rag.system_with(dev, refs), q
+        assert g["tokens"] == code_rag.tokens(q), q
+    assert got[0]["ids"][0] == "파이보:block:device_eye_on" and got[4]["ids"] == []
+
+
 
 def test_broken_check_answers_are_read_mark_by_mark():
     from prompts_code import decide_check

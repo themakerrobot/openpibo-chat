@@ -187,6 +187,37 @@ def evaluate(path: Path, index: Index) -> dict:
     return {"질문": n, "1등": round(top1 / max(n, 1), 3), f"상위 {TOP_K}개": round(topk / max(n, 1), 3)}
 
 
+def card(u: dict) -> dict:
+    """화면에 그대로 보여 줄 블록·함수 카드 (모델을 거치지 않으므로 이름·코드가 틀리지 않음)."""
+    if u["kind"] == "block":
+        if u.get("byOption"):
+            code = "\n".join(f"# {k}\n{v.strip()}" for k, v in u["byOption"]["codes"].items())
+        else:
+            code = (u.get("code") or "").strip()
+        return {"title": f"「{u.get('name') or u['text']}」", "tag": u.get("category") or "", "kind": "블록",
+                "text": u.get("note") or u.get("guide") or u.get("tooltip") or "",
+                "code": "\n".join([*(u.get("imports") or []), code]).strip()}
+    setup = f"from {u['module']} import {u['class']}" + (f" as {u['alias']}" if u["alias"] != u["class"] else "")
+    if u.get("instance"):
+        setup += f"\n{u['instance']} = {u['alias']}()"
+    doc = "\n".join((u.get("doc") or "").split("\n")[:3])
+    return {"title": f"{u['alias']}.{u['signature']}", "tag": u["class"], "kind": "파이썬 함수", "text": doc,
+            "code": setup}
+
+
+def export(units: list[dict], index: "Index", path: Path) -> None:
+    """브라우저용 찾기 파일: 설명마다 낱말 조각·글 길이·대화에 붙일 글·카드, 기기마다 낱말 수와 시스템 글,
+    사전과 머리글. 브라우저는 점수 계산만 하므로 파이썬 찾기와 결과가 같음."""
+    data = {"version": 1, "top_k": TOP_K, "header": HEADER, "synonyms": SYNONYMS,
+            "systems": {dev: system_code(dev) for dev in index.by_device},
+            "df": {dev: dict(index.df[dev]) for dev in index.by_device},
+            "avg": index.avg,
+            "units": [{"id": u["id"], "device": u["device"], "tf": dict(index.docs[i]), "len": index.lens[i],
+                       "ref": ref_text(u), "card": card(u)} for i, u in enumerate(units)]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+
 def misses(path: Path, index: Index, by_id: dict) -> str:
     """정답 설명이 상위 TOP_K에 없던 채점 질문: 질문, 정답, 찾은 것 (사전 SYNONYMS를 보강할 때 봄)."""
     lines = []
@@ -213,12 +244,16 @@ def main():
     p.add_argument("--out")
     p.add_argument("--ask", nargs=2, metavar=("기기", "질문"))
     p.add_argument("--misses", metavar="채점 대화", help="정답을 못 찾은 질문 목록 (--out에 씀)")
+    p.add_argument("--export", metavar="파일", help="브라우저(웹 실행기)용 찾기 파일 (예: data/code-index.json)")
     args = p.parse_args()
     units = load_units(Path(args.units))
     index = Index(units)
     if args.ask:
         for u in index.search(args.ask[1], args.ask[0]):
             print("---", u["id"]); print(ref_text(u))
+    if args.export:
+        export(units, index, Path(args.export))
+        print(f"{args.export}: 설명 {len(units)}개, {Path(args.export).stat().st_size / 2**10:.0f}KB", flush=True)
     if args.misses:
         text = misses(Path(args.misses), index, {u["id"]: u for u in units})
         Path(args.out or "samples/rag-misses.txt").parent.mkdir(exist_ok=True)
