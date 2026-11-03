@@ -36,7 +36,7 @@ GGUF = f"out/{NAME}-Q4_K_M.gguf"
 NAME_EN = "themaker-en-0.8b"
 DATA_EN = "data/train-themaker-en.jsonl"
 GGUF_EN = f"out/{NAME_EN}-Q4_K_M.gguf"
-#: 코딩 도우미 (실험): 같은 데이터로 0.8B(기기)와 2B(노트북)를 학습해 견줌
+#: 코딩 도우미 (노트북용 실험, RAG): 같은 데이터로 0.8B와 2B를 학습해 견줌
 BASE_2B = "Qwen/Qwen3.5-2B"   # Apache-2.0
 NAME_CODE, NAME_CODE_2B = "themaker-code-0.8b", "themaker-code-2b"
 DATA_CODE = "data/train-themaker-code.jsonl"
@@ -110,17 +110,22 @@ def steps():
         ("score-en-themaker", ["score.py", "answer", "--gguf", GGUF_EN, "--name", "themaker-en",
                                "--lang", "en"], ["gguf-en", "data-en-heldout", "data-tools-en-heldout"]),
         ("score-en-judge", ["score.py", "judge", "--lang", "en"], ["score-en-before", "score-en-themaker"]),
-        # ---- 코딩 도우미 (실험): 기기 저장소의 블록·openpibo 함수 설명을 근거로 선생이 문답을 만들고 검사
+        # ---- 코딩 도우미 (노트북용, 실험): 기기 저장소의 블록·openpibo 함수 설명을 근거로 선생이 문답을 만들고 검사,
+        # 쓸 때는 질문으로 설명을 찾아 붙이는 RAG (code_rag.py)
         ("data-code-units", ["code_docs.py", *[x for dev, path in CODE_REPOS.items()
                                                 for x in ("--repo", f"{dev}={Path(path).expanduser()}")]], []),
         ("data-code", ["code_data.py", "--out", "data/code.jsonl", "--heldout", "data/heldout-code.jsonl"],
          ["data-code-units"]),
+        # RAG: 학습 대화마다 질문으로 찾은 [참고 설명](정답 + 헷갈리기 쉬운 것, 가끔 정답 없이)을 붙임. 찾기 정확도도 셈
+        ("data-code-rag", ["code_rag.py", "--train", "data/code.jsonl", "--out", "data/code-rag.jsonl",
+                           "--eval", "data/heldout-code.jsonl"], ["data-code"]),
         # 코딩 문답 + 일반 대화 4천 개(말투·정체 유지)
-        ("data-themaker-code", ["merge_data.py", "--out", DATA_CODE, "--chat-limit", "4000", "data/code.jsonl",
-                                "data/pibo.jsonl"], ["data-code", "data-pibo"]),
+        ("data-themaker-code", ["merge_data.py", "--out", DATA_CODE, "--chat-limit", "4000", "data/code-rag.jsonl",
+                                "data/pibo.jsonl"], ["data-code-rag", "data-pibo"]),
         *[step for suffix, base, run_c, name, gguf in code for step in (
+            # [참고 설명]이 붙어 길어서 3072토큰까지 (1536이면 앞쪽 설명이 잘림)
             (f"train-code{suffix}", ["train.py", "--base", base, "--data", DATA_CODE, "--out", run_c, "--lr", "2e-5",
-                                     "--batch", "2", "--accum", "16"], ["data-themaker-code"]),
+                                     "--batch", "2", "--accum", "16", "--max-len", "3072"], ["data-themaker-code"]),
             (f"small-code{suffix}", ["prune_vocab.py", "--model", f"{run_c}/final", "--out", f"{run_c}/small",
                                      "--data", DATA_CODE], [f"train-code{suffix}"]),
             (f"gguf-code{suffix}", ["export.py", "--model", f"{run_c}/small", "--name", name, "--quant", "Q4_K_M",

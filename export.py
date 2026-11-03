@@ -294,6 +294,11 @@ def check(gguf: Path, lang: str = "ko") -> dict:
     out = {}
     with server(gguf, 8399) as url:
         for key, system, text, tools in {"en": CHECKS_EN, "code": CHECKS_CODE}.get(lang, CHECKS):
+            if lang == "code" and system and Path("data/code-units.jsonl").exists():
+                from code_rag import Index, load_units, system_with   # RAG: 질문으로 찾은 설명을 붙여 물음
+
+                device = "파이브레인" if "파이브레인" in system else "파이보"
+                system = system_with(device, Index(load_units()).search(text, device))
             msgs = ([{"role": "system", "content": system}] if system else []) + \
                 [{"role": "user", "content": text}]
             body = {"messages": msgs, "temperature": 0, "max_tokens": 400 if lang == "code" else 150}

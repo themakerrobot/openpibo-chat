@@ -384,7 +384,7 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "data-en", "data-en-heldout", "data-tools-en", "data-tools-en-heldout",
                      "data-themaker-en", "train-en", "small-en", "gguf-en", "score-en-before",
                      "score-en-themaker", "score-en-judge",
-                     "data-code-units", "data-code", "data-themaker-code",
+                     "data-code-units", "data-code", "data-code-rag", "data-themaker-code",
                      "train-code", "small-code", "gguf-code", "score-code",
                      "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b",
                      "score-code-chat", "score-code-judge"]
@@ -412,6 +412,7 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     assert cmds["train-code"][1] == cmds["train-code-2b"][1] == ["data-themaker-code"]
     assert cmds["gguf-code-2b"][0][cmds["gguf-code-2b"][0].index("--lang") + 1] == "code"
     assert cmds["score-code-judge"][1] == ["score-code", "score-code-2b", "score-code-chat"]
+    assert "data/code-rag.jsonl" in cmds["data-themaker-code"][0] and "3072" in cmds["train-code-2b"][0]
 
 
 def test_status_shows_the_running_step(tmp_path, monkeypatch):
@@ -1065,3 +1066,42 @@ def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
     asked.clear()
     code_data.run(fake, units, code_api(), log)                        # 다시 돌리면 묻지 않음
     assert asked == []
+
+
+
+def test_rag_finds_the_block_from_a_students_words_and_sometimes_leaves_the_answer_out():
+    import random
+
+    import code_rag
+    from tools import system_code
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": ["from openpibo.device import Device"]},
+        {"id": "파이보:block:motion_set_motion", "device": "파이보", "kind": "block", "category": "동작",
+         "name": "동작 [dance1 ▾] ([1]) 번 실행하기", "text": "동작 □ □ 번 실행하기", "tooltip": "선택한 동작을 실행합니다.",
+         "code": "motion.set_motion(<name>, <cycle>)\n", "imports": []},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+        {"id": "파이브레인:block:led", "device": "파이브레인", "kind": "block", "category": "장치",
+         "name": "RGB 불빛 바꾸기", "text": "RGB 불빛 바꾸기", "tooltip": "불빛 색을 바꿉니다.", "code": "device.led_on()", "imports": []},
+    ]
+    index = code_rag.Index(units)
+    assert index.search("눈을 빨갛게 하려면?", "파이보")[0]["id"] == "파이보:block:device_eye_on"   # 사전으로 넓혀 찾음
+    assert index.search("춤추게 하고 싶어", "파이보")[0]["id"] == "파이보:block:motion_set_motion"
+    assert index.search("eye_on 인자 알려 줘", "파이보")[0]["id"] == "파이보:block:device_eye_on"
+    assert all(u["device"] == "파이브레인" for u in index.search("불빛 바꾸기", "파이브레인"))     # 같은 기기 안에서만
+    ex = {"kind": "chat", "source": "code", "device": "파이보", "unit": "파이보:block:device_eye_on",
+          "messages": [{"role": "system", "content": system_code("파이보")}, {"role": "user", "content": "눈 빨갛게?"},
+                       {"role": "assistant", "content": "「RGB 눈 불빛 바꾸기」에 255, 0, 0을 넣어요."}]}
+    by_id = {u["id"]: u for u in units}
+    outs = [code_rag.with_refs(ex, index, by_id, random.Random(s)) for s in range(60)]
+    kept = [o for o in outs if not o.get("no_gold")]
+    dropped = [o for o in outs if o.get("no_gold")]
+    assert kept and dropped and len(dropped) < len(kept)                        # 가끔 정답을 빼고
+    assert all("파이보:block:device_eye_on" in o["refs"] for o in kept)
+    assert all("파이보:block:device_eye_on" not in o["refs"] and o["messages"][-1]["content"] == code_rag.NO_GOLD_ANSWER
+               for o in dropped)
+    system = kept[0]["messages"][0]["content"]
+    assert system.startswith(system_code("파이보")) and "[참고 설명]" in system and "eye_on" in system

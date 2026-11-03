@@ -117,6 +117,14 @@ def code_api() -> dict:
     return _CODE["api"]
 
 
+def code_index():
+    if "index" not in _CODE:
+        from code_rag import Index, load_units
+
+        _CODE["index"] = Index(load_units())
+    return _CODE["index"]
+
+
 def code_doc(unit_id: str) -> str:
     from prompts_code import unit_doc
 
@@ -141,8 +149,13 @@ def questions() -> list[dict]:
     for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
         ex["messages"] = with_system(ex["messages"])
-        out.append({"set": "첫마디", "messages": ex["messages"][:2], "unit": ex.get("unit"),
-                    "device": ex.get("device")})
+        msgs = ex["messages"][:2]
+        if LANG == "code":                         # RAG: 쓸 때처럼 질문으로 설명을 찾아 시스템 글에 붙임
+            from code_rag import system_with
+
+            msgs = [{"role": "system", "content": system_with(ex["device"], code_index().search(msgs[1]["content"],
+                                                                                                 ex["device"]))}, msgs[1]]
+        out.append({"set": "첫마디", "messages": msgs, "unit": ex.get("unit"), "device": ex.get("device")})
         users = [j for j, m in enumerate(ex["messages"]) if m["role"] == "user"]
         if len(users) >= 3:
             cut = users[(len(users) + 1) // 2]      # 가운데쯤의 학생 말까지 (앞 대화는 그대로)
@@ -303,6 +316,11 @@ def report() -> str:
         "틀린 사실·되풀이·같은 대답·기호·반말은 낮을수록 좋음. 같은 대답: 서로 다른 질문에 글자 그대로 "
         "같은 대답. 앞 말 되풀이 (글자): 앞 대화의 파이보 말과 3글자 덩어리가 절반 넘게 겹침.\n")
     text += tool_report()
+    if LANG == "code":
+        from code_rag import evaluate
+
+        text += f"\n찾기 (BM25): {json.dumps(evaluate(HELDOUT, code_index()), ensure_ascii=False)} " \
+                "— 채점 질문으로 찾았을 때 정답 설명이 1등·상위 3개에 든 비율\n"
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "score.md").write_text(text)
     return text
