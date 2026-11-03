@@ -296,12 +296,28 @@ def decide_gen(text: str, u: dict, api: dict) -> tuple[list[dict], dict]:
 
 
 def decide_check(text: str, n: int) -> list[dict | None]:
-    """검사 답 → 문답마다 점수 (못 읽으면 None)."""
+    """검사 답 → 문답마다 점수 (못 읽으면 None). JSON 전체가 깨졌으면(설명에 없는 말 안의 따옴표 등) 문답마다
+    하나씩 읽어 냄: 앞에서부터 읽힌 만큼은 쓰고, 끝이 잘린 뒤쪽만 None."""
     d = first_json(text)
     marks = d.get("marks") if isinstance(d, dict) else None
-    if not isinstance(marks, list) or len(marks) != n:
-        return [None] * n
-    return [m if isinstance(m, dict) else None for m in marks]
+    if isinstance(marks, list):                  # 온전한 JSON인데 수가 다르면 어느 문답 것인지 몰라 모두 버림
+        return [m if isinstance(m, dict) else None for m in marks] if len(marks) == n else [None] * n
+    from teacher import after_think
+
+    body = after_think(text) or text
+    parts = re.split(r'(?=\{\s*"unsupported")', body)[1:]
+    out: list[dict | None] = []
+    for part in parts[:n]:
+        nums = {k: re.search(rf'"{k}"\s*:\s*(\d)', part) for k in ("grounded", "clear")}
+        bools = {k: re.search(rf'"{k}"\s*:\s*(true|false)', part) for k in ("on_topic", "code_ok")}
+        if not all(nums.values()) or not bools["code_ok"]:
+            out.append(None)
+            continue
+        empty = re.match(r'\{\s*"unsupported"\s*:\s*\[\s*\]', part) is not None
+        out.append({"unsupported": [] if empty else ["(읽어 낸 답: 설명에 없는 말 있음)"],
+                    **{k: int(v.group(1)) for k, v in nums.items()},
+                    **{k: v.group(1) == "true" for k, v in bools.items() if v}})
+    return out + [None] * (n - len(out))
 
 
 def passes(m: dict | None) -> str | None:

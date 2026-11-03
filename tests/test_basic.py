@@ -1105,3 +1105,18 @@ def test_rag_finds_the_block_from_a_students_words_and_sometimes_leaves_the_answ
                for o in dropped)
     system = kept[0]["messages"][0]["content"]
     assert system.startswith(system_code("파이보")) and "[참고 설명]" in system and "eye_on" in system
+
+
+
+def test_broken_check_answers_are_read_mark_by_mark():
+    from prompts_code import decide_check
+
+    broken = ('{"marks": [{"unsupported": [], "grounded": 5, "clear": 4, "on_topic": true, "code_ok": true}, '
+              '{"unsupported": ["값은 "True" 또는 "False""], "grounded": 2, "clear": 5, "on_topic": true, "code_ok": true}, '
+              '{"unsupported": [], "grounded": 5, "clear": 5, "on_to')                      # 따옴표가 깨지고 끝이 잘림
+    marks = decide_check(broken, 3)
+    assert marks[0] == {"unsupported": [], "grounded": 5, "clear": 4, "on_topic": True, "code_ok": True}
+    assert marks[1]["unsupported"] and marks[1]["grounded"] == 2
+    assert marks[2] is None
+    good = '{"marks": [{"unsupported": [], "grounded": 5, "clear": 5, "on_topic": true, "code_ok": true}]}'
+    assert decide_check(good, 1)[0]["grounded"] == 5 and decide_check(good, 2) == [None, None]
