@@ -1,4 +1,6 @@
-"""코딩 도우미 찾기 실험: 낱말 점수(BM25, code_rag)에 뜻 점수(임베딩)를 섞으면 정답을 더 잘 찾는지 봅니다.
+"""코딩 도우미 찾기: 낱말 점수(BM25, code_rag)에 뜻 점수(임베딩)를 섞어 찾습니다 (Hybrid, 점수 섞기 WEIGHT).
+onnxruntime이 있으면 code_rag.load_index가 이것을 쓰고(학습·채점·설명 파일), 웹 실행기도 같은 식으로 찾습니다.
+채점 질문에서 낱말만: 상위 3개 0.759 → 섞기: 0.813 (같은 기능까지 치면 0.824 → 0.872).
 
     python code_embed.py --eval data/heldout-code.jsonl          # 방법별 1등·상위 3·5개 비율 (숫자만)
     python code_embed.py --ask 파이보 "불 좀 켜고 싶어"            # 섞은 찾기로 찾아 보기

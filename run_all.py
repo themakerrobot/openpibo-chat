@@ -36,7 +36,7 @@ GGUF = f"out/{NAME}-Q4_K_M.gguf"
 NAME_EN = "themaker-en-0.8b"
 DATA_EN = "data/train-themaker-en.jsonl"
 GGUF_EN = f"out/{NAME_EN}-Q4_K_M.gguf"
-#: 코딩 도우미 (노트북용 실험, RAG): 같은 데이터로 0.8B와 2B를 학습해 견줌
+#: 코딩 도우미 (노트북용 실험, RAG): 2B만 학습 (첫 판에서 0.8B와 견줘 보고 뺌)
 BASE_2B = "Qwen/Qwen3.5-2B"   # Apache-2.0
 # 코딩 도우미는 노트북용 2B만 (0.8B는 첫 판에서 견줘 보고 뺌)
 NAME_CODE_2B = "themaker-code-2b"
