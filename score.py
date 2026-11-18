@@ -85,6 +85,30 @@ JUDGE_CODE = """아래는 {device} 블록 코딩과 파이썬을 돕는 코딩 �
 출력 형식: {{"korean": 0, "fit": 0, "short": 0, "engage": 0, "wrong": false, "repeat": false}}"""
 
 
+#: 코딩 도우미에서 틀렸다고 채점된 대답의 틀린 까닭 (score.py why --lang code). 개수만 보고서에
+WHY_TYPES = {
+    "block": "블록 이름을 틀리거나 없는 블록을 지어냄",
+    "func": "파이썬 함수·메서드 이름이나 import(모듈·클래스)를 틀리거나 지어냄",
+    "arg": "인자 개수·순서·값(색 숫자, 범위, 단위 포함)을 틀림",
+    "feature": "기기에 없는 기능을 있다고 하거나, 블록·함수가 하지 않는 동작을 한다고 함",
+    "code": "파이썬 문법이나 흐름이 틀려 그대로는 돌아가지 않음",
+    "other": "그 밖의 사실이 틀림",
+    "none": "다시 보니 틀린 데가 없음 (채점이 지나쳤음)",
+}
+WHY_CODE = """아래는 {device} 블록 코딩과 파이썬을 돕는 코딩 도우미 더메이커의 대답이고, 앞서 "틀린 사실이 있음"으로
+채점됐습니다. 근거 설명과 대조해 가장 큰 틀린 까닭 하나를 고르세요.
+
+[근거 설명]
+{doc}
+
+{dialog}
+더메이커(채점한 대답): {reply}
+
+까닭 (하나만):
+{types}
+출력 형식: {{"type": "block"}}"""
+
+
 def set_lang(lang: str) -> None:
     """en이면 영어 모델의 채점 대화(data/heldout-en.jsonl 등)와 결과 폴더(results-en)로, code면 코딩 도우미
     (data/heldout-code.jsonl, results-code, 도구 채점 없음)."""
@@ -269,6 +293,53 @@ def judge() -> None:
     print(report())
 
 
+def why() -> None:
+    """코딩: 틀렸다고 채점된 첫마디 대답마다 선생이 틀린 까닭(WHY_TYPES) 하나를 고름 → whys-<이름>.json, 개수 표."""
+    from teacher import load_teacher, thinking_params
+
+    qs = questions()
+    types = "\n".join(f"- {k}: {v}" for k, v in WHY_TYPES.items())
+    llm = None
+    for f in sorted(RESULTS.glob("answers-*.json")):
+        sf, wf = (f.with_name(f.name.replace("answers-", x)) for x in ("scores-", "whys-"))
+        if not sf.exists() or wf.exists():
+            continue
+        answers, scores = json.loads(f.read_text())["answers"], json.loads(sf.read_text())
+        todo = [i for i, q in enumerate(qs) if q["set"] == "첫마디" and scores[i].get("wrong") is True]
+        llm = llm or load_teacher()
+        convs = [[{"role": "user", "content": WHY_CODE.format(
+            device=qs[i].get("device") or "파이보", doc=code_doc(qs[i].get("unit") or ""), dialog=dialog(qs[i]),
+            reply=answers[i] or "(말 없음)", types=types)}] for i in todo]
+        outs = llm.chat(convs, thinking_params(1536), chat_template_kwargs={"enable_thinking": True},
+                        use_tqdm=False) if convs else []
+        got = {}
+        for i, o in zip(todo, outs):
+            t = (first_json(after_think(o.outputs[0].text)) or {}).get("type")
+            got[str(i)] = t if t in WHY_TYPES else "unread"
+        wf.write_text(json.dumps(got, ensure_ascii=False))
+        print(f"까닭: {f.name} {len(got)}개", flush=True)
+    print(why_report(qs))
+
+
+def why_report(qs: list[dict]) -> str:
+    """모델마다 틀린 까닭 개수를, 정답 설명이 참고에 있었을 때와 없었을 때로 나눠."""
+    keys = list(WHY_TYPES) + ["unread"]
+    head = "| 모델 | 정답 설명 | 틀린 수 | " + " | ".join(keys) + " |"
+    rows = [head, "|" + " --- |" * (len(keys) + 3)]
+    for f in sorted(RESULTS.glob("answers-*.json")):
+        wf = f.with_name(f.name.replace("answers-", "whys-"))
+        if not wf.exists():
+            continue
+        whys = json.loads(wf.read_text())
+        found = json.loads(f.read_text()).get("found") or [q.get("found") for q in qs]
+        for label, inside in (("참고에 있음", True), ("없음", False)):
+            c = Counter(t for i, t in whys.items()
+                        if found[int(i)] is not None and (qs[int(i)].get("unit") in found[int(i)]) == inside)
+            rows.append(f"| {f.stem.removeprefix('answers-')} | {label} | {sum(c.values())} | "
+                        + " | ".join(str(c[k]) for k in keys) + " |")
+    return "\n".join(rows) + "\n\n" + "\n".join(f"- {k}: {v}" for k, v in WHY_TYPES.items()) + "\n"
+
+
 def echo(q: dict, reply: str) -> bool:
     """앞 대화의 파이보 말과 글자 덩어리(3글자)가 절반 넘게 겹치는지."""
     mine = grams(reply)
@@ -388,7 +459,8 @@ def tool_report() -> str:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("what", choices=["answer", "judge", "report"])
+    p.add_argument("what", choices=["answer", "judge", "report", "why"],
+                   help="why: 코딩에서 틀린 대답의 까닭 종류를 셈 (--lang code)")
     p.add_argument("--gguf")
     p.add_argument("--name")
     p.add_argument("--lang", choices=["ko", "en", "code"], default="ko",
@@ -399,6 +471,10 @@ def main():
         answer(args.gguf, args.name)
     elif args.what == "judge":
         judge()
+    elif args.what == "why":
+        if LANG != "code":
+            p.error("why는 --lang code 에서만")
+        why()
     else:
         print(report())
 

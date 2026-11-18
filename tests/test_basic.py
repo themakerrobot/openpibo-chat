@@ -1318,3 +1318,17 @@ def test_code_report_splits_wrong_answers_by_whether_the_answer_was_in_the_refs(
     text = score.refs_report(qs)
     assert "| m | 1개 · 틀린 사실 0% · 설명과 맞음 5.00 | 1개 · 틀린 사실 100% · 설명과 맞음 2.00 | " \
            "1개 · 틀린 사실 0% · 설명과 맞음 4.00 |" in text
+
+
+def test_why_report_counts_error_types_by_refs(tmp_path, monkeypatch):
+    import score
+
+    monkeypatch.setattr(score, "RESULTS", tmp_path)
+    qs = [{"set": "첫마디", "unit": "u:a"}, {"set": "첫마디", "unit": "u:b"}, {"set": "첫마디", "unit": "u:c"}]
+    (tmp_path / "answers-m.json").write_text(json.dumps({"answers": ["", "", ""],
+                                                         "found": [["u:a"], ["u:x"], ["u:c"]]}))
+    (tmp_path / "whys-m.json").write_text(json.dumps({"0": "arg", "1": "feature", "2": "arg"}))
+    text = score.why_report(qs)
+    keys = list(score.WHY_TYPES) + ["unread"]
+    assert "| m | 참고에 있음 | 2 | " + " | ".join("2" if k == "arg" else "0" for k in keys) + " |" in text
+    assert "| m | 없음 | 1 | " + " | ".join("1" if k == "feature" else "0" for k in keys) + " |" in text
