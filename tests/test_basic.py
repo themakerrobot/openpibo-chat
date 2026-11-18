@@ -1301,3 +1301,20 @@ console.log(JSON.stringify(asks.map(([d, q], j) => [codeSearch(index, q, d, 4, v
         assert words == [u["id"] for u in code_rag.Index.search(hy, q, dev, 4)], q
     assert got[3][0] and not got[3][1]          # 낱말로는 못 찾아도 섞기는 순위를 냄
     assert all(i.startswith("파이브레인") for i in got[4][0])
+
+
+def test_code_report_splits_wrong_answers_by_whether_the_answer_was_in_the_refs(tmp_path, monkeypatch):
+    import score
+
+    monkeypatch.setattr(score, "RESULTS", tmp_path)
+    qs = [{"set": "첫마디", "unit": "파이보:block:a", "found": None},
+          {"set": "첫마디", "unit": "파이보:block:b", "found": None},
+          {"set": "첫마디", "unit": "파이보:none:x", "found": None},
+          {"set": "이어지는 대화"}]
+    (tmp_path / "answers-m.json").write_text(json.dumps(
+        {"answers": ["", "", "", ""], "found": [["파이보:block:a"], ["파이보:block:c"], [], None]}))
+    (tmp_path / "scores-m.json").write_text(json.dumps(
+        [{"wrong": False, "fit": 5}, {"wrong": True, "fit": 2}, {"wrong": False, "fit": 4}, {}]))
+    text = score.refs_report(qs)
+    assert "| m | 1개 · 틀린 사실 0% · 설명과 맞음 5.00 | 1개 · 틀린 사실 100% · 설명과 맞음 2.00 | " \
+           "1개 · 틀린 사실 0% · 설명과 맞음 4.00 |" in text

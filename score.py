@@ -149,13 +149,15 @@ def questions() -> list[dict]:
     for line in HELDOUT.read_text().splitlines():
         ex = json.loads(line)
         ex["messages"] = with_system(ex["messages"])
-        msgs = ex["messages"][:2]
+        msgs, found = ex["messages"][:2], None
         if LANG == "code":                         # RAG: 쓸 때처럼 질문으로 설명을 찾아 시스템 글에 붙임
             from code_rag import system_with
 
-            msgs = [{"role": "system", "content": system_with(ex["device"], code_index().search(msgs[1]["content"],
-                                                                                                 ex["device"]))}, msgs[1]]
-        out.append({"set": "첫마디", "messages": msgs, "unit": ex.get("unit"), "device": ex.get("device")})
+            refs = code_index().search(msgs[1]["content"], ex["device"])
+            found = [u["id"] for u in refs]
+            msgs = [{"role": "system", "content": system_with(ex["device"], refs)}, msgs[1]]
+        out.append({"set": "첫마디", "messages": msgs, "unit": ex.get("unit"), "device": ex.get("device"),
+                    "found": found})
         users = [j for j, m in enumerate(ex["messages"]) if m["role"] == "user"]
         if len(users) >= 3:
             cut = users[(len(users) + 1) // 2]      # 가운데쯤의 학생 말까지 (앞 대화는 그대로)
@@ -217,7 +219,8 @@ def answer(gguf: str, name: str) -> None:
         tools = tool_answer(url)
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / f"answers-{name}.json").write_text(json.dumps(
-        {"gguf": gguf, "answers": answers, "tools": tools}, ensure_ascii=False, indent=1))
+        {"gguf": gguf, "answers": answers, "tools": tools, "found": [q.get("found") for q in qs]},
+        ensure_ascii=False, indent=1))
     print(f"답 {len(answers)}개 → {RESULTS / f'answers-{name}.json'}", flush=True)
 
 
@@ -273,6 +276,37 @@ def echo(q: dict, reply: str) -> bool:
                for m in q["messages"] if m["role"] == "assistant")
 
 
+def refs_report(qs: list[dict]) -> str:
+    """코딩 첫마디를 정답 설명이 [참고 설명]에 있었는지로 나눠 틀린 사실·설명과 맞음 (틀림이 찾기 탓인지 모델 탓인지).
+    대답할 때 붙인 설명 목록(answers의 found)을 쓰고, 없으면(예전 결과) 지금 찾기로 다시 셈."""
+    rows = ["| 모델 | 정답 설명이 참고에 있음 | 없음 (찾기 실패) | 없는 기능을 물음 |", "| --- | --- | --- | --- |"]
+    for f in sorted(RESULTS.glob("answers-*.json")):
+        data = json.loads(f.read_text())
+        sf = f.with_name(f.name.replace("answers-", "scores-"))
+        if not sf.exists():
+            continue
+        scores = json.loads(sf.read_text())
+        found = data.get("found") or [q.get("found") for q in qs]
+        groups: dict[str, list[int]] = {"in": [], "out": [], "none": []}
+        for i, q in enumerate(qs):
+            if q["set"] != "첫마디" or not q.get("unit") or found[i] is None:
+                continue
+            key = "none" if ":none:" in q["unit"] else ("in" if q["unit"] in found[i] else "out")
+            groups[key].append(i)
+
+        def cell(idx, scores=scores):
+            wrong = [scores[i]["wrong"] for i in idx if isinstance(scores[i].get("wrong"), bool)]
+            fit = [scores[i]["fit"] for i in idx if isinstance(scores[i].get("fit"), (int, float))]
+            if not idx:
+                return "-"
+            return (f"{len(idx)}개 · 틀린 사실 {sum(wrong) / max(len(wrong), 1):.0%} · "
+                    f"설명과 맞음 {statistics.mean(fit) if fit else 0:.2f}")
+
+        rows.append(f"| {f.stem.removeprefix('answers-')} | {cell(groups['in'])} | {cell(groups['out'])} | "
+                    f"{cell(groups['none'])} |")
+    return "\n" + "\n".join(rows) + "\n\n정답 설명이 참고에 있는데도 틀리면 모델 탓, 없을 때 틀리면 찾기 탓.\n"
+
+
 def report() -> str:
     qs = questions()
     head = ["모델", "묶음", "대화 점수", "한국어", "알맞음", "짧음", "이어 가기", "틀린 사실",
@@ -317,6 +351,7 @@ def report() -> str:
         "같은 대답. 앞 말 되풀이 (글자): 앞 대화의 파이보 말과 3글자 덩어리가 절반 넘게 겹침.\n")
     text += tool_report()
     if LANG == "code":
+        text += refs_report(qs)
         from code_rag import evaluate
 
         text += f"\n찾기 ({code_index().kind}): {json.dumps(evaluate(HELDOUT, code_index()), ensure_ascii=False)} " \
