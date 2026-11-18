@@ -140,6 +140,10 @@ class Index:
             self.df[dev], self.avg[dev] = df, sum(self.lens[i] for i in idx) / max(len(idx), 1)
 
     def search(self, query: str, device: str, k: int = TOP_K) -> list[dict]:
+        return [self.units[i] for _, i in self.scored(query, device)[:k]]
+
+    def scored(self, query: str, device: str) -> list[tuple[float, int]]:
+        """(점수, 설명 번호), 점수 높은 순 (0점은 뺌)."""
         idx = self.by_device.get(device, [])
         n, q = len(idx), Counter(tokens(expand(query)))
         scored = []
@@ -155,7 +159,7 @@ class Index:
             if s > 0:
                 scored.append((s, i))
         scored.sort(key=lambda x: (-x[0], x[1]))
-        return [self.units[i] for _, i in scored[:k]]
+        return scored
 
 
 def load_units(path: Path = UNITS) -> list[dict]:

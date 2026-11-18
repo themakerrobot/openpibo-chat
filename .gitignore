@@ -5,8 +5,10 @@ REPORT.md
 runs/
 out/
 results/
+results-*/
 logs/
 state/
+state-*/
 baseline/
 samples/
 # 데이터는 어떤 것도 git에 올리지 않습니다: 직접 쓴 대화만
@@ -20,3 +22,5 @@ data/*
 web/
 # 모델 파일은 어디에도 올리지 않음 (Pages 포함)
 *.gguf
+# 찾기용 임베딩 모델 (code_embed.py가 받음)
+models/

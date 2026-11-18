@@ -1207,3 +1207,25 @@ def test_questions_must_say_what_they_ask_about():
         assert VAGUE.search(q), q
     for q in ("사진 찍기 블록은 뭐야?", "눈을 빨갛게 하려면?", "eye_on 함수 인자 알려 줘", "이미지 바꾸기 블록 어디 있어?"):
         assert not VAGUE.search(q), q
+
+
+def test_hybrid_search_mixes_word_and_meaning_scores():
+    """뜻 점수(가짜 임베딩)가 낱말로 못 찾는 설명을 올리고, 순위 섞기는 둘 다 반영."""
+    import numpy as np
+
+    import code_embed
+
+    units = [{"id": f"파이보:block:b{i}", "device": "파이보", "kind": "block", "category": "장치",
+              "name": name, "text": name, "tooltip": "", "code": "", "imports": []}
+             for i, name in enumerate(["눈 불빛 바꾸기", "사진 찍기", "소리 재생하기"])]
+    units.append({"id": "파이브레인:block:x", "device": "파이브레인", "kind": "block", "category": "장치",
+                  "name": "사진 찍기", "text": "사진 찍기", "tooltip": "", "code": "", "imports": []})
+
+    def fake(texts):   # "찰칵"이나 "사진"이 들어가면 같은 방향
+        return np.array([[1.0, 0.0] if ("찰칵" in t or "사진" in t) else [0.0, 1.0] for t in texts])
+
+    hy = code_embed.Hybrid(units, {}, fake)
+    r = hy.ranks("찰칵 남기고 싶어", "파이보")
+    assert r["뜻: 설명 글"][0] == 1 and r["섞기: 순위(RRF)"][0] == 1      # 낱말로는 0점인 「사진 찍기」
+    assert set(r["낱말 (지금)"]) == {0, 1, 2}                                 # 같은 기기 안에서만
+    assert all(i != 3 for order in r.values() for i in order)
