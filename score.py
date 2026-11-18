@@ -119,9 +119,9 @@ def code_api() -> dict:
 
 def code_index():
     if "index" not in _CODE:
-        from code_rag import Index, load_units
+        from code_rag import load_index
 
-        _CODE["index"] = Index(load_units())
+        _CODE["index"] = load_index()
     return _CODE["index"]
 
 

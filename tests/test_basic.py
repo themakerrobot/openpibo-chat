@@ -1107,6 +1107,29 @@ def test_rag_finds_the_block_from_a_students_words_and_sometimes_leaves_the_answ
     assert system.startswith(system_code("파이보")) and "[참고 설명]" in system and "eye_on" in system
 
 
+def test_rag_uses_training_questions_and_shows_color_numbers(tmp_path):
+    """설명 글에 없는 학생 말도 학습 질문으로 찾고, 불빛 설명·카드에는 색 숫자표를 붙임."""
+    import code_rag
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([0]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": []},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+    ]
+    train = tmp_path / "code.jsonl"
+    train.write_text(json.dumps({"device": "파이보", "unit": "파이보:block:vision_read", "messages": [
+        {"role": "system", "content": "s"}, {"role": "user", "content": "찰칵 하고 남기려면?"},
+        {"role": "assistant", "content": "「사진 찍기」를 써요."}]}, ensure_ascii=False) + "\n")
+    assert code_rag.Index(units).search("찰칵 남기기", "파이보") == []                       # 설명만으로는 못 찾음
+    index = code_rag.load_index(units, train)
+    assert index.search("찰칵 남기기", "파이보")[0]["id"] == "파이보:block:vision_read"
+    assert code_rag.load_index(units, tmp_path / "없음.jsonl").search("찰칵", "파이보") == []
+    assert code_rag.COLOR_NOTE in code_rag.ref_text(units[0]) and code_rag.COLOR_NOTE not in code_rag.ref_text(units[1])
+    assert "빨강 255,0,0" in code_rag.card(units[0])["text"] and "빨강" not in code_rag.card(units[1])["text"]
+    assert code_rag.is_light({"method": "led_on_s"}) and not code_rag.is_light({"method": "eye_off"})
+
 def test_webrunner_code_search_matches_python(tmp_path):
     """웹 실행기의 코딩 도우미 찾기(JS)가 code_rag와 같은 설명을 같은 순서로, 같은 시스템 글로 고름."""
     import re

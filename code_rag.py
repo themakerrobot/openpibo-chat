@@ -7,6 +7,9 @@
     python code_rag.py --train data/code.jsonl --out data/code-rag.jsonl   # 학습 대화에 [참고 설명] 붙이기
     python code_rag.py --ask 파이보 "눈을 빨갛게 하려면?"       # 찾아 보기
 
+찾을 때 설명마다 학습 문답(data/code.jsonl, 채점용과 겹치지 않음)의 질문을 덧붙입니다: 학생이 실제로 쓰는 말
+("불 켜는 거", "빨갛게")이 설명 글에 없어도 찾게. 불빛 블록·함수 설명에는 색 숫자표(COLOR_NOTE)를 붙입니다.
+
 학습 대화: 정답 설명 + 찾기로 나온 다른 설명들(헷갈리기 쉬운 것)을 섞어 붙이고, 일부(NO_GOLD_SHARE)는 정답을
 빼고 붙인 뒤 "참고 설명에 없어서 모르겠다"고 대답하게 합니다 (찾기가 틀렸을 때 지어내지 않게).
 """
@@ -26,6 +29,13 @@ from prompts_code import unit_doc
 from tools import system_code
 
 UNITS = Path("data/code-units.jsonl")
+#: 찾기에 덧붙일 질문 (학습 문답)
+ASKED = Path("data/code.jsonl")
+#: 설명 하나에 덧붙이는 질문 수
+MAX_ASKED = 8
+#: 불빛 블록·함수 설명과 카드에 붙이는 색 숫자 (R, G, B 순서, 0~255)
+COLOR_NOTE = ("색 숫자 (R, G, B): 빨강 255,0,0 / 주황 255,128,0 / 노랑 255,255,0 / 초록 0,255,0 / "
+              "하늘 0,255,255 / 파랑 0,0,255 / 보라 128,0,255 / 분홍 255,0,128 / 하양 255,255,255 / 끄기 0,0,0")
 #: 대화에 붙이는 설명 수
 TOP_K = 3
 #: 설명 하나의 최대 글자 수 (노트북에서도 읽을 글이 너무 길어지지 않게)
@@ -92,13 +102,32 @@ def search_text(u: dict) -> str:
     return head + " " + (u.get("doc") or "")[:600]
 
 
-class Index:
-    """기기마다 BM25 (k1=1.2, b=0.75)."""
+def is_light(u: dict) -> bool:
+    """눈·LED 불빛 색을 바꾸는 블록·함수 (eye_on, eye_on_s, led_on, led_on_s)."""
+    name = u.get("method") or (u.get("code") or "")
+    return bool(re.search(r"\b(eye_on|led_on)(_s)?\b", name))
 
-    def __init__(self, units: list[dict]):
+
+def asked_from(path: Path = ASKED) -> dict[str, list[str]]:
+    """학습 문답에서 설명마다 첫 질문들 (정답이 없는 문답은 뺌)."""
+    out: dict[str, list[str]] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        ex = json.loads(line)
+        if ex.get("unit") and ":none:" not in ex["unit"]:
+            out.setdefault(ex["unit"], []).append(first_question(ex))
+    return out
+
+
+class Index:
+    """기기마다 BM25 (k1=1.2, b=0.75). asked: 설명 id → 그 설명을 찾던 질문들 (찾을 글에 덧붙임)."""
+
+    def __init__(self, units: list[dict], asked: dict[str, list[str]] | None = None):
         self.units = units
         self.by_device: dict[str, list[int]] = {}
-        self.docs = [Counter(tokens(search_text(u))) for u in units]
+        asked = asked or {}
+        self.docs = [Counter(tokens(" ".join([search_text(u), *asked.get(u["id"], [])[:MAX_ASKED]]))) for u in units]
         self.lens = [sum(d.values()) for d in self.docs]
         for i, u in enumerate(units):
             self.by_device.setdefault(u["device"], []).append(i)
@@ -133,9 +162,15 @@ def load_units(path: Path = UNITS) -> list[dict]:
     return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 
 
+def load_index(units: list[dict] | None = None, asked: Path = ASKED) -> Index:
+    """설명 + 학습 질문으로 찾기 (score.py, export.py, 웹 실행기 파일이 모두 같은 찾기를 씀)."""
+    return Index(units if units is not None else load_units(), asked_from(asked))
+
+
 def ref_text(u: dict) -> str:
     text = unit_doc(u)
-    return text if len(text) <= MAX_REF else text[:MAX_REF].rsplit("\n", 1)[0] + "\n…"
+    text = text if len(text) <= MAX_REF else text[:MAX_REF].rsplit("\n", 1)[0] + "\n…"
+    return text + "\n" + COLOR_NOTE if is_light(u) else text
 
 
 def context(refs: list[dict]) -> str:
@@ -194,13 +229,16 @@ def card(u: dict) -> dict:
             code = "\n".join(f"# {k}\n{v.strip()}" for k, v in u["byOption"]["codes"].items())
         else:
             code = (u.get("code") or "").strip()
+        text = u.get("note") or u.get("guide") or u.get("tooltip") or ""
         return {"title": f"「{u.get('name') or u['text']}」", "tag": u.get("category") or "", "kind": "블록",
-                "text": u.get("note") or u.get("guide") or u.get("tooltip") or "",
+                "text": text + "\n" + COLOR_NOTE if is_light(u) else text,
                 "code": "\n".join([*(u.get("imports") or []), code]).strip()}
     setup = f"from {u['module']} import {u['class']}" + (f" as {u['alias']}" if u["alias"] != u["class"] else "")
     if u.get("instance"):
         setup += f"\n{u['instance']} = {u['alias']}()"
     doc = "\n".join((u.get("doc") or "").split("\n")[:3])
+    if is_light(u):
+        doc += "\n" + COLOR_NOTE
     return {"title": f"{u['alias']}.{u['signature']}", "tag": u["class"], "kind": "파이썬 함수", "text": doc,
             "code": setup}
 
@@ -239,6 +277,7 @@ def misses(path: Path, index: Index, by_id: dict) -> str:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--units", default=str(UNITS))
+    p.add_argument("--asked", default=str(ASKED), help="찾기에 덧붙일 학습 질문 (없으면 설명만)")
     p.add_argument("--eval", metavar="채점 대화")
     p.add_argument("--train", metavar="학습 대화")
     p.add_argument("--out")
@@ -247,7 +286,7 @@ def main():
     p.add_argument("--export", metavar="파일", help="브라우저(웹 실행기)용 찾기 파일 (예: data/code-index.json)")
     args = p.parse_args()
     units = load_units(Path(args.units))
-    index = Index(units)
+    index = load_index(units, Path(args.asked))
     if args.ask:
         for u in index.search(args.ask[1], args.ask[0]):
             print("---", u["id"]); print(ref_text(u))
