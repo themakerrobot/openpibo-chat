@@ -342,13 +342,27 @@ function codeTokens(text) {
 function codeExpand(index, query) {
   return query + " " + Object.entries(index.synonyms).filter(([k]) => query.includes(k)).map(([, v]) => v).join(" ");
 }
-// code_rag.Index.search와 같은 BM25 (k1=1.2, b=0.75). 같은 기기의 설명 안에서만
-function codeSearch(index, query, device, k) {
+// 설명 파일의 벡터(base64 float32)를 한 번만 풀어 둠
+function codeVectors(index) {
+  const e = index.embed;
+  if (!e || e._P) return e;
+  const dec = s => {
+    if (!s) return new Float32Array(0);
+    const b = atob(s), u8 = new Uint8Array(b.length);
+    for (let i = 0; i < b.length; i++) u8[i] = b.charCodeAt(i);
+    return new Float32Array(u8.buffer);
+  };
+  e._P = dec(e.units); e._Q = dec(e.asked);
+  return e;
+}
+// code_rag.Index.search와 같은 BM25 (k1=1.2, b=0.75). 같은 기기의 설명 안에서만.
+// qvec(질문 임베딩)이 있고 설명 파일에 벡터가 있으면 code_embed.Hybrid.search와 같은 점수 섞기
+function codeSearch(index, query, device, k, qvec) {
   const units = index.units.filter(u => u.device === device);
   const n = units.length, df = index.df[device] || {}, avg = index.avg[device] || 1;
   const q = {};
   for (const t of codeTokens(codeExpand(index, query))) q[t] = (q[t] || 0) + 1;
-  const scored = [];
+  const idx = [], bm = {};
   index.units.forEach((u, i) => {
     if (u.device !== device) return;
     let s = 0;
@@ -358,10 +372,25 @@ function codeSearch(index, query, device, k) {
       const idf = Math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5));
       s += qn * idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * u.len / avg));
     }
-    if (s > 0) scored.push([s, i]);
+    idx.push(i); bm[i] = s;
   });
-  scored.sort((a, b) => b[0] - a[0] || a[1] - b[1]);
-  return scored.slice(0, k || index.top_k).map(([, i]) => index.units[i]);
+  let order;
+  const e = qvec && codeVectors(index);
+  if (e) {
+    const d = e.dim, dot = (arr, row) => { let s = 0; for (let j = 0; j < d; j++) s += arr[row * d + j] * qvec[j]; return s; };
+    const emb = {};
+    for (const i of idx) emb[i] = dot(e._P, i);
+    e.asked_unit.forEach((i, r) => { if (i in emb) { const s = dot(e._Q, r); if (s > emb[i]) emb[i] = s; } });
+    let topB = 0, lo = Infinity, hi = -Infinity;
+    for (const i of idx) { topB = Math.max(topB, bm[i]); lo = Math.min(lo, emb[i]); hi = Math.max(hi, emb[i]); }
+    topB = topB || 1;
+    const w = e.weight, score = {};
+    for (const i of idx) score[i] = w * bm[i] / topB + (1 - w) * (emb[i] - lo) / ((hi - lo) || 1);
+    order = idx.slice().sort((a, b) => score[b] - score[a] || a - b);
+  } else {
+    order = idx.filter(i => bm[i] > 0).sort((a, b) => bm[b] - bm[a] || a - b);
+  }
+  return order.slice(0, k || index.top_k).map(i => index.units[i]);
 }
 // code_rag.system_with와 같은 시스템 글: 기기 코딩 시스템 글 + [참고 설명]
 function codeSystem(index, device, refs) {
@@ -411,6 +440,26 @@ const thread = $("thread"), logBox = $("log");
 let wllama = null, busy = false, aborter = null;
 let messages = [];   // 대화 기억 (OpenAI 형식)
 let codeIndex = null;   // 코딩 도우미 설명 파일
+let embedder = null, embedFailed = false;   // 질문 임베딩 (설명 파일에 벡터가 있을 때만, 처음 쓸 때 받음)
+
+// 질문을 설명 파일과 같은 모델(multilingual-e5-small 양자화 ONNX)로 임베딩. 못 하면 null → 낱말로만 찾음
+async function codeQuery(text) {
+  if (!codeIndex.embed || embedFailed) return null;
+  try {
+    if (!embedder) {
+      setStatus("찾기 모델 받는 중… (처음 한 번 약 118MB)", "busy");
+      const { pipeline } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1");
+      embedder = await pipeline("feature-extraction", codeIndex.embed.model, {dtype: codeIndex.embed.dtype});
+    }
+    const out = await embedder("query: " + text, {pooling: "mean", normalize: true});
+    return Array.from(out.data);
+  } catch (err) {
+    embedFailed = true;
+    $("codeInfo").textContent += " · 찾기 모델을 못 불러와 낱말로만 찾음";
+    showError("찾기 모델을 못 불러와 낱말로만 찾아요", err);
+    return null;
+  }
+}
 
 function setStatus(text, state) {   // state: ready | busy | error | (없음)
   $("status").textContent = text;
@@ -561,7 +610,7 @@ async function runTurn(text) {
   let system = $("system").value.trim();
   if (set.code) {                      // 찾은 설명을 카드로 바로 보여 주고, 모델에는 그 설명을 붙여 물음
     if (!codeIndex) { addMessage("error", "코딩 도우미는 설명 파일(code-index.json)을 먼저 골라야 해요"); return; }
-    const refs = codeSearch(codeIndex, text, $("codeDevice").value);
+    const refs = codeSearch(codeIndex, text, $("codeDevice").value, undefined, await codeQuery(text));
     system = codeSystem(codeIndex, $("codeDevice").value, refs);
     addMessage("user", text);
     addCards(refs);
@@ -686,9 +735,11 @@ $("codeIndex").onchange = async () => {
     const data = JSON.parse(await f.text());
     if (!data.units || !data.systems) throw new Error("code-index.json 모양이 아니에요");
     codeIndex = data;
+    embedFailed = false;
     const by = {};
     data.units.forEach(u => by[u.device] = (by[u.device] || 0) + 1);
-    $("codeInfo").textContent = f.name + " · " + Object.entries(by).map(([d, n]) => `${d} ${n}개`).join(", ");
+    $("codeInfo").textContent = f.name + " · " + Object.entries(by).map(([d, n]) => `${d} ${n}개`).join(", ") +
+      (data.embed ? " · 찾기: 낱말+뜻" : " · 찾기: 낱말");
   } catch (err) { codeIndex = null; showError("설명 파일을 못 읽었어요", err); }
 };
 applyToolset();

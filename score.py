@@ -319,7 +319,7 @@ def report() -> str:
     if LANG == "code":
         from code_rag import evaluate
 
-        text += f"\n찾기 (BM25): {json.dumps(evaluate(HELDOUT, code_index()), ensure_ascii=False)} " \
+        text += f"\n찾기 ({code_index().kind}): {json.dumps(evaluate(HELDOUT, code_index()), ensure_ascii=False)} " \
                 "— 채점 질문으로 찾았을 때 정답 설명이 1등·상위 3개에 든 비율\n"
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "score.md").write_text(text)

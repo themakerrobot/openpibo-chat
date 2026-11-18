@@ -123,6 +123,8 @@ def asked_from(path: Path = ASKED) -> dict[str, list[str]]:
 class Index:
     """기기마다 BM25 (k1=1.2, b=0.75). asked: 설명 id → 그 설명을 찾던 질문들 (찾을 글에 덧붙임)."""
 
+    kind = "낱말 (BM25)"
+
     def __init__(self, units: list[dict], asked: dict[str, list[str]] | None = None):
         self.units = units
         self.by_device: dict[str, list[int]] = {}
@@ -166,9 +168,24 @@ def load_units(path: Path = UNITS) -> list[dict]:
     return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 
 
-def load_index(units: list[dict] | None = None, asked: Path = ASKED) -> Index:
-    """설명 + 학습 질문으로 찾기 (score.py, export.py, 웹 실행기 파일이 모두 같은 찾기를 씀)."""
-    return Index(units if units is not None else load_units(), asked_from(asked))
+def load_index(units: list[dict] | None = None, asked: Path = ASKED, embed: bool | None = None) -> Index:
+    """설명 + 학습 질문으로 찾기 (score.py, export.py, 웹 실행기 파일이 모두 같은 찾기를 씀).
+    embed: True면 낱말+뜻 섞기(code_embed, 없으면 오류), False면 낱말만, None이면 쓸 수 있을 때 섞기.
+    어느 쪽인지 한 줄 알림 (onnxruntime이 없어 낱말만 쓰면 까닭도)."""
+    units = units if units is not None else load_units()
+    questions = asked_from(asked)
+    if embed is not False:
+        import code_embed
+
+        why = code_embed.usable()
+        if why is None:
+            index = code_embed.Hybrid(units, questions, code_embed.Embedder())
+            print(f"찾기: {index.kind}", flush=True)
+            return index
+        if embed:
+            raise SystemExit(f"찾기: 섞기를 못 씀: {why}")
+        print(f"찾기: 낱말만 ({why})", flush=True)
+    return Index(units, questions)
 
 
 def ref_text(u: dict) -> str:
@@ -273,7 +290,8 @@ def card(u: dict) -> dict:
 def export(units: list[dict], index: "Index", path: Path) -> None:
     """브라우저용 찾기 파일: 설명마다 낱말 조각·글 길이·대화에 붙일 글·카드, 기기마다 낱말 수와 시스템 글,
     사전과 머리글. 브라우저는 점수 계산만 하므로 파이썬 찾기와 결과가 같음."""
-    data = {"version": 1, "top_k": TOP_K, "header": HEADER, "synonyms": SYNONYMS,
+    data = {"version": 2, "top_k": TOP_K, "header": HEADER, "synonyms": SYNONYMS,
+            "embed": index.export_part() if hasattr(index, "export_part") else None,
             "systems": {dev: system_code(dev) for dev in index.by_device},
             "df": {dev: dict(index.df[dev]) for dev in index.by_device},
             "avg": index.avg,
@@ -319,7 +337,8 @@ def main():
             print("---", u["id"]); print(ref_text(u))
     if args.export:
         export(units, index, Path(args.export))
-        print(f"{args.export}: 설명 {len(units)}개, {Path(args.export).stat().st_size / 2**10:.0f}KB", flush=True)
+        print(f"{args.export}: 설명 {len(units)}개, 찾기 {index.kind}, "
+              f"{Path(args.export).stat().st_size / 2**10:.0f}KB", flush=True)
     if args.misses:
         text = misses(Path(args.misses), index, {u["id"]: u for u in units})
         Path(args.out or "samples/rag-misses.txt").parent.mkdir(exist_ok=True)

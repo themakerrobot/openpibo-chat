@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 
@@ -26,6 +27,32 @@ ONNX = "onnx/model_quantized.onnx"
 MODELS = Path("models/e5-small")
 #: 순위 섞기 상수 (흔히 쓰는 60)
 RRF_K = 60
+#: 쓸 때 섞는 비율: 낱말 점수(가장 높은 것으로 나눔) × WEIGHT + 뜻 점수(기기 안에서 0~1로) × (1 - WEIGHT).
+#: 채점 질문에서 0.3·0.5·0.7 중 가장 좋았음 (상위 3개 0.813, 같은 기능 0.872)
+WEIGHT = 0.5
+
+
+def usable() -> str | None:
+    """섞은 찾기를 못 쓰는 까닭 (쓸 수 있으면 None)."""
+    import importlib.util
+
+    for name in ("onnxruntime", "tokenizers", "huggingface_hub"):
+        if importlib.util.find_spec(name) is None:
+            return f"{name} 없음 (pip install onnxruntime tokenizers)"
+    return None
+
+
+def as32(a) -> np.ndarray:
+    """float32로 한 번 깎은 뒤 float64로: 브라우저(float32 벡터를 JS 숫자로 계산)와 같은 값."""
+    return np.asarray(a, dtype=np.float32).astype(np.float64)
+
+
+def mix(idx: list[int], bm: dict[int, float], emb: dict[int, float], w: float = WEIGHT) -> list[int]:
+    """점수 섞기 순위 (웹 실행기 codeSearch와 같은 식)."""
+    top_b = max(bm.values(), default=0.0) or 1.0
+    lo, hi = min(emb.values(), default=0.0), max(emb.values(), default=0.0)
+    score = {i: w * bm[i] / top_b + (1 - w) * (emb[i] - lo) / ((hi - lo) or 1) for i in idx}
+    return sorted(idx, key=lambda i: (-score[i], i))
 
 
 class Embedder:
@@ -65,32 +92,48 @@ def passage(u: dict) -> str:
     return f"passage: {c['title']} {c['tag']} {c['text']}"[:1000]
 
 
-class Hybrid:
-    """낱말 점수와 뜻 점수를 한 기기의 설명 안에서 섞어 찾습니다."""
+class Hybrid(code_rag.Index):
+    """낱말 점수와 뜻 점수를 한 기기의 설명 안에서 섞어 찾습니다 (code_rag.Index 대신 그대로 씀).
+    search는 점수 섞기(WEIGHT), ranks는 실험용으로 방법별 순위."""
 
-    def __init__(self, units: list[dict], asked: dict[str, list[str]], embed: Embedder):
-        self.units, self.embed = units, embed
-        self.bm25 = code_rag.Index(units, asked)
-        self.P = embed([passage(u) for u in units])
+    kind = "낱말+뜻 (e5-small)"
+
+    def __init__(self, units: list[dict], asked: dict[str, list[str]], embed):
+        super().__init__(units, asked)
+        self.embed = embed
+        self.P = as32(embed([passage(u) for u in units]))
         self.asked_rows: list[tuple[int, str]] = [(i, q) for i, u in enumerate(units)
                                                    for q in asked.get(u["id"], [])[:code_rag.MAX_ASKED]]
-        self.Q = embed([f"query: {q}" for _, q in self.asked_rows])
+        self.Q = as32(embed([f"query: {q}" for _, q in self.asked_rows])) if self.asked_rows else np.zeros((0, 0))
 
-    def ranks(self, query: str, device: str) -> dict[str, list[int]]:
-        """방법별 설명 번호 순위."""
-        idx = self.bm25.by_device.get(device, [])
-        q = self.embed([f"query: {query}"])[0]
+    def qvec(self, query: str) -> np.ndarray:
+        return as32(self.embed([f"query: {query}"])[0])
+
+    def parts(self, query: str, device: str, q: np.ndarray):
+        """설명 번호들, 낱말 점수, 뜻 점수(설명 글), 뜻 점수(설명 글과 학습 질문 중 큰 것)."""
+        idx = self.by_device.get(device, [])
         emb_p = {i: float(self.P[i] @ q) for i in idx}
         emb_a = dict.fromkeys(idx, -1.0)
         if len(self.asked_rows):
-            sims = self.Q @ q
-            for (i, _), s in zip(self.asked_rows, sims):
+            for (i, _), s in zip(self.asked_rows, self.Q @ q):
                 if i in emb_a and s > emb_a[i]:
                     emb_a[i] = float(s)
         emb = {i: max(emb_p[i], emb_a[i]) for i in idx}
         bm = dict.fromkeys(idx, 0.0)
-        for s, i in self.bm25.scored(query, device):
+        for s, i in self.scored(query, device):
             bm[i] = s
+        return idx, bm, emb_p, emb
+
+    def search_with(self, query: str, device: str, q: np.ndarray, k: int = code_rag.TOP_K) -> list[dict]:
+        idx, bm, _, emb = self.parts(query, device, q)
+        return [self.units[i] for i in mix(idx, bm, emb)[:k]]
+
+    def search(self, query: str, device: str, k: int = code_rag.TOP_K) -> list[dict]:
+        return self.search_with(query, device, self.qvec(query), k)
+
+    def ranks(self, query: str, device: str) -> dict[str, list[int]]:
+        """방법별 설명 번호 순위."""
+        idx, bm, emb_p, emb = self.parts(query, device, self.qvec(query))
 
         def order(score: dict[int, float]) -> list[int]:
             return sorted(idx, key=lambda i: (-score[i], i))
@@ -101,12 +144,18 @@ class Hybrid:
         # 낱말 점수가 0인 설명은 낱말 순위에 없는 것으로 (순서만으로 점수를 받지 않게)
         out["섞기: 순위(RRF)"] = order({i: (1 / (RRF_K + pos_b[i]) if bm[i] > 0 else 0) + 1 / (RRF_K + pos_e[i])
                                     for i in idx})
-        top_b = max(bm.values()) or 1.0
-        lo, hi = min(emb.values()), max(emb.values())
         for w in (0.3, 0.5, 0.7):
-            out[f"섞기: 점수 낱말 {w}"] = order({i: w * bm[i] / top_b + (1 - w) * (emb[i] - lo) / ((hi - lo) or 1)
-                                             for i in idx})
+            out[f"섞기: 점수 낱말 {w}"] = mix(idx, bm, emb, w)
         return out
+
+    def export_part(self) -> dict:
+        """웹 실행기용: 설명·학습 질문 벡터(float32, base64)와 섞는 비율. 질문은 브라우저가 같은 모델로 임베딩."""
+        def b64(a):
+            return base64.b64encode(np.ascontiguousarray(a, dtype="<f4").tobytes()).decode()
+
+        return {"model": REPO, "dtype": "q8", "weight": WEIGHT, "dim": int(self.P.shape[1]),
+                "units": b64(self.P), "asked": b64(self.Q) if len(self.asked_rows) else "",
+                "asked_unit": [i for i, _ in self.asked_rows]}
 
 
 def evaluate(path: Path, hy: Hybrid, ks=(1, 3, 5)) -> dict[str, dict[str, float]]:

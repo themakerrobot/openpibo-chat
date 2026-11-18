@@ -1121,9 +1121,9 @@ def test_rag_uses_training_questions_and_shows_color_numbers(tmp_path):
         {"role": "system", "content": "s"}, {"role": "user", "content": "찰칵 하고 남기려면?"},
         {"role": "assistant", "content": "「사진 찍기」를 써요."}]}, ensure_ascii=False) + "\n")
     assert code_rag.Index(units).search("찰칵 남기기", "파이보") == []                       # 설명만으로는 못 찾음
-    index = code_rag.load_index(units, train)
+    index = code_rag.load_index(units, train, embed=False)
     assert index.search("찰칵 남기기", "파이보")[0]["id"] == "파이보:block:vision_read"
-    assert code_rag.load_index(units, tmp_path / "없음.jsonl").search("찰칵", "파이보") == []
+    assert code_rag.load_index(units, tmp_path / "없음.jsonl", embed=False).search("찰칵", "파이보") == []
     assert code_rag.COLOR_NOTE in code_rag.ref_text(units[0]) and code_rag.COLOR_NOTE not in code_rag.ref_text(units[1])
     assert "빨강 255,0,0" in code_rag.card(units[0])["text"] and "빨강" not in code_rag.card(units[1])["text"]
     assert code_rag.is_light({"method": "led_on_s"}) and not code_rag.is_light({"method": "eye_off"})
@@ -1241,3 +1241,63 @@ def test_same_feature_counts_blocks_and_functions_that_call_the_same_method():
     assert code_rag.feature(block) == code_rag.feature(func) == {"eye_on"}
     assert code_rag.same_feature(block, [other, func]) and not code_rag.same_feature(block, [other])
     assert code_rag.same_feature(start, [start]) and not code_rag.same_feature(start, [other, {"id": "e", "code": ""}])
+
+
+def test_webrunner_hybrid_search_matches_python(tmp_path):
+    """설명 파일에 벡터가 있으면 웹 실행기도 code_embed.Hybrid와 같은 점수 섞기로 같은 설명을 고름."""
+    import hashlib
+    import re
+    import shutil
+    import subprocess
+
+    import numpy as np
+
+    import code_embed
+    import code_rag
+
+    def fake(texts):   # 글마다 정해진 8차원 단위 벡터 (같은 낱말이 있으면 조금 닮게)
+        out = []
+        for t in texts:
+            v = np.zeros(8)
+            for w in re.findall(r"[가-힣]+|\w+", t.replace("query: ", "").replace("passage: ", "")):
+                h = hashlib.md5(w.encode()).digest()
+                v += np.frombuffer(h[:8], dtype=np.uint8) / 255 - 0.5
+            out.append(v / (np.linalg.norm(v) or 1))
+        return np.array(out)
+
+    units = [{"id": f"파이보:block:b{i}", "device": "파이보", "kind": "block", "category": cat, "name": name,
+              "text": name, "tooltip": tip, "code": code, "imports": []}
+             for i, (cat, name, tip, code) in enumerate([
+                 ("장치", "눈 불빛 바꾸기", "눈 색을 바꿔요", "device.eye_on(<val0>)"),
+                 ("시각", "사진 찍기", "카메라로 찍어요", "camera.read()"),
+                 ("소리", "소리 재생하기", "음악을 틀어요", "audio.play(<f>)"),
+                 ("동작", "동작 실행하기", "춤을 춰요", "motion.set_motion(<m>)")])]
+    units.append({"id": "파이브레인:block:x", "device": "파이브레인", "kind": "block", "category": "장치",
+                  "name": "불빛 바꾸기", "text": "불빛 바꾸기", "tooltip": "", "code": "device.led_on()", "imports": []})
+    asked = {"파이보:block:b1": ["찰칵 남기려면?"], "파이보:block:b3": ["신나게 흔들기"]}
+    hy = code_embed.Hybrid(units, asked, fake)
+    f = tmp_path / "code-index.json"
+    code_rag.export(units, hy, f)
+    data = json.loads(f.read_text())
+    assert data["version"] == 2 and data["embed"]["weight"] == code_embed.WEIGHT and data["embed"]["asked_unit"] == [1, 3]
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    asks = [("파이보", "눈 색 바꾸고 싶어"), ("파이보", "찰칵"), ("파이보", "신나게 춤"), ("파이보", "없는 말"),
+            ("파이브레인", "불빛")]
+    vecs = [list(code_embed.as32(fake([f"query: {q}"])[0])) for _, q in asks]
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const index = JSON.parse(require("fs").readFileSync({json.dumps(str(f))}, "utf8"));
+const asks = {json.dumps(asks, ensure_ascii=False)}, vecs = {json.dumps(vecs)};
+console.log(JSON.stringify(asks.map(([d, q], j) => [codeSearch(index, q, d, 4, vecs[j]).map(u => u.id),
+                                                    codeSearch(index, q, d, 4).map(u => u.id)])));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    for (dev, q), v, (mixed, words) in zip(asks, vecs, got):
+        assert mixed == [u["id"] for u in hy.search_with(q, dev, np.array(v), 4)], q
+        assert words == [u["id"] for u in code_rag.Index.search(hy, q, dev, 4)], q
+    assert got[3][0] and not got[3][1]          # 낱말로는 못 찾아도 섞기는 순위를 냄
+    assert all(i.startswith("파이브레인") for i in got[4][0])
