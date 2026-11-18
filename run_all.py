@@ -38,9 +38,10 @@ DATA_EN = "data/train-themaker-en.jsonl"
 GGUF_EN = f"out/{NAME_EN}-Q4_K_M.gguf"
 #: 코딩 도우미 (노트북용 실험, RAG): 같은 데이터로 0.8B와 2B를 학습해 견줌
 BASE_2B = "Qwen/Qwen3.5-2B"   # Apache-2.0
-NAME_CODE, NAME_CODE_2B = "themaker-code-0.8b", "themaker-code-2b"
+# 코딩 도우미는 노트북용 2B만 (0.8B는 첫 판에서 견줘 보고 뺌)
+NAME_CODE_2B = "themaker-code-2b"
 DATA_CODE = "data/train-themaker-code.jsonl"
-GGUF_CODE, GGUF_CODE_2B = f"out/{NAME_CODE}-Q4_K_M.gguf", f"out/{NAME_CODE_2B}-Q4_K_M.gguf"
+GGUF_CODE_2B = f"out/{NAME_CODE_2B}-Q4_K_M.gguf"
 #: 블록·함수를 뽑을 기기 저장소 (PC의 환경 변수로 바꿈)
 CODE_REPOS = {"파이보": os.environ.get("CODE_PIBO", "~/openpibo-os.pibo"),
               "파이브레인": os.environ.get("CODE_PIBRAIN", "~/openpibo-os.pibrain")}
@@ -53,8 +54,7 @@ BEFORE = "baseline/before-Q4_K_M.gguf"
 def steps():
     """(단계 이름, 명령, 먼저 끝나야 하는 단계들)."""
     run, run_en = f"runs/{NAME}", f"runs/{NAME_EN}"
-    code = [("", BASE, f"runs/{NAME_CODE}", NAME_CODE, GGUF_CODE),
-            ("-2b", BASE_2B, f"runs/{NAME_CODE_2B}", NAME_CODE_2B, GGUF_CODE_2B)]
+    code = [("-2b", BASE_2B, f"runs/{NAME_CODE_2B}", NAME_CODE_2B, GGUF_CODE_2B)]
     return [
         # 원본 대화(data/source.jsonl, 채점용 data/source-heldout.jsonl: PC에만 있음)의 상대 말을
         # 선생이 파이보 말투로 바꿔 쓰고, 다시 검사해 좋은 것만
@@ -132,10 +132,7 @@ def steps():
                                     "--imatrix", DATA_CODE, "--lang", "code"], [f"small-code{suffix}"]),
             (f"score-code{suffix}", ["score.py", "answer", "--gguf", gguf, "--name", name, "--lang", "code"],
              [f"gguf-code{suffix}", "data-code"]))],
-        # 견줌: 코딩을 배우지 않은 대화 모델
-        ("score-code-chat", ["score.py", "answer", "--gguf", GGUF, "--name", "themaker-ko-chat", "--lang", "code"],
-         ["gguf", "data-code"]),
-        ("score-code-judge", ["score.py", "judge", "--lang", "code"], ["score-code", "score-code-2b", "score-code-chat"]),
+        ("score-code-judge", ["score.py", "judge", "--lang", "code"], ["score-code-2b"]),
         # 견줌 2: 학습하지 않은 바탕 모델 2B·4B를 같은 RAG로 (학습이 도움이 되는지, 4B면 얼마나 나은지)
         *[step for size, mb in (("2b", "2B"), ("4b", "4B")) for step in (
             (f"base-code-{size}", ["fetch_base.py", "--repo", f"unsloth/Qwen3.5-{mb}-GGUF",
@@ -291,7 +288,7 @@ def report():
         if mark == "실패":
             lines += [f"    {ln}" for ln in last_error(HERE / "logs" / f"{name}.log")]
     for folder, ggufs in (("results", [GGUF]), ("results-en", [GGUF_EN]),
-                          ("results-code", [GGUF_CODE, GGUF_CODE_2B])):
+                          ("results-code", [GGUF_CODE_2B])):
         score = HERE / folder / "score.md"
         if score.exists():
             lines += ["", f"## 채점 ({folder}/score.md)", "", score.read_text()]

@@ -385,9 +385,7 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "data-themaker-en", "train-en", "small-en", "gguf-en", "score-en-before",
                      "score-en-themaker", "score-en-judge",
                      "data-code-units", "data-code", "data-code-rag", "data-themaker-code",
-                     "train-code", "small-code", "gguf-code", "score-code",
-                     "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b",
-                     "score-code-chat", "score-code-judge", "base-code-2b", "score-code-base-2b",
+                     "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b", "score-code-judge", "base-code-2b", "score-code-base-2b",
                      "base-code-4b", "score-code-base-4b", "score-code-judge-base", "data-code-rag-misses"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
@@ -408,11 +406,11 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     assert "--lang" in cmds["gguf-en"][0] and run_all.GGUF_EN == "out/themaker-en-0.8b-Q4_K_M.gguf"
     for step in ("score-en-before", "score-en-themaker", "score-en-judge", "data-tools-en"):
         assert cmds[step][0][cmds[step][0].index("--lang") + 1] == "en"
-    # 코딩 도우미: 같은 데이터로 0.8B와 2B, 코딩 채점에 대화 모델도 견줌
+    # 코딩 도우미: 노트북용 2B만
     assert "Qwen/Qwen3.5-2B" in cmds["train-code-2b"][0] and run_all.DATA_CODE in cmds["train-code-2b"][0]
-    assert cmds["train-code"][1] == cmds["train-code-2b"][1] == ["data-themaker-code"]
+    assert cmds["train-code-2b"][1] == ["data-themaker-code"] and "train-code" not in cmds
     assert cmds["gguf-code-2b"][0][cmds["gguf-code-2b"][0].index("--lang") + 1] == "code"
-    assert cmds["score-code-judge"][1] == ["score-code", "score-code-2b", "score-code-chat"]
+    assert cmds["score-code-judge"][1] == ["score-code-2b"]
     assert "data/code-rag.jsonl" in cmds["data-themaker-code"][0] and "3072" in cmds["train-code-2b"][0]
 
 
