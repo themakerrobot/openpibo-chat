@@ -212,18 +212,41 @@ def with_refs(ex: dict, index: Index, units: dict, rng: random.Random) -> dict:
     return ex
 
 
+def feature(u: dict) -> set[str]:
+    """설명이 부르는 파이썬 함수 이름 (eye_on_s → eye_on). 블록은 코드에서, 함수는 이름에서. 없으면 빈 집합."""
+    if u.get("method"):
+        names = [u["method"]]
+    else:
+        code = (u.get("code") or "") + " ".join((u.get("byOption") or {}).get("codes", {}).values())
+        names = re.findall(r"\.(\w+)\(", code)
+    return {n.removesuffix("_s") for n in names}
+
+
+def same_feature(gold: dict | None, found: list[dict]) -> bool:
+    """찾은 것 중에 정답이 있거나, 정답과 같은 함수를 부르는 설명이 있음 (블록 ↔ 같은 함수, eye_on ↔ eye_on_s)."""
+    if gold is None:
+        return False
+    want = feature(gold)
+    return any(u["id"] == gold["id"] or (want and want & feature(u)) for u in found)
+
+
 def evaluate(path: Path, index: Index) -> dict:
-    """채점 대화의 첫 질문으로 찾았을 때 정답 설명이 1등인 비율, 상위 TOP_K에 든 비율."""
-    n = top1 = topk = 0
+    """채점 대화의 첫 질문으로 찾았을 때 정답 설명이 1등인 비율, 상위 TOP_K에 든 비율,
+    상위 TOP_K에 정답이나 같은 기능(같은 함수를 부르는 블록·함수)이 든 비율."""
+    by_id = {u["id"]: u for u in index.units}
+    n = top1 = topk = same = 0
     for line in path.read_text().splitlines():
         ex = json.loads(line)
         if not ex.get("unit") or ":none:" in ex["unit"]:
             continue
-        found = [u["id"] for u in index.search(first_question(ex), ex["device"], TOP_K)]
+        found = index.search(first_question(ex), ex["device"], TOP_K)
+        ids = [u["id"] for u in found]
         n += 1
-        top1 += bool(found) and found[0] == ex["unit"]
-        topk += ex["unit"] in found
-    return {"질문": n, "1등": round(top1 / max(n, 1), 3), f"상위 {TOP_K}개": round(topk / max(n, 1), 3)}
+        top1 += bool(ids) and ids[0] == ex["unit"]
+        topk += ex["unit"] in ids
+        same += same_feature(by_id.get(ex["unit"]), found)
+    return {"질문": n, "1등": round(top1 / max(n, 1), 3), f"상위 {TOP_K}개": round(topk / max(n, 1), 3),
+            f"같은 기능 상위 {TOP_K}개": round(same / max(n, 1), 3)}
 
 
 def card(u: dict) -> dict:

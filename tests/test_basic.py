@@ -1229,3 +1229,15 @@ def test_hybrid_search_mixes_word_and_meaning_scores():
     assert r["뜻: 설명 글"][0] == 1 and r["섞기: 순위(RRF)"][0] == 1      # 낱말로는 0점인 「사진 찍기」
     assert set(r["낱말 (지금)"]) == {0, 1, 2}                                 # 같은 기기 안에서만
     assert all(i != 3 for order in r.values() for i in order)
+
+
+def test_same_feature_counts_blocks_and_functions_that_call_the_same_method():
+    import code_rag
+
+    block = {"id": "a", "kind": "block", "code": "device.eye_on(<val0>, <val1>, <val2>)"}
+    func = {"id": "b", "kind": "func", "method": "eye_on_s"}
+    other = {"id": "c", "kind": "block", "code": "camera.read()"}
+    start = {"id": "d", "kind": "block", "code": ""}
+    assert code_rag.feature(block) == code_rag.feature(func) == {"eye_on"}
+    assert code_rag.same_feature(block, [other, func]) and not code_rag.same_feature(block, [other])
+    assert code_rag.same_feature(start, [start]) and not code_rag.same_feature(start, [other, {"id": "e", "code": ""}])

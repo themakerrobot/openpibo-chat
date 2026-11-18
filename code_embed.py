@@ -110,6 +110,8 @@ class Hybrid:
 
 
 def evaluate(path: Path, hy: Hybrid, ks=(1, 3, 5)) -> dict[str, dict[str, float]]:
+    """방법별 정답이 상위 k개에 든 비율, 그리고 상위 3개에 정답이나 같은 기능(code_rag.same_feature)이 든 비율."""
+    by_id = {u["id"]: u for u in hy.units}
     hits: dict[str, list[int]] = {}
     n = 0
     for line in path.read_text().splitlines():
@@ -118,11 +120,14 @@ def evaluate(path: Path, hy: Hybrid, ks=(1, 3, 5)) -> dict[str, dict[str, float]
             continue
         n += 1
         for name, order in hy.ranks(code_rag.first_question(ex), ex["device"]).items():
-            ids = [hy.units[i]["id"] for i in order[:max(ks)]]
-            row = hits.setdefault(name, [0] * len(ks))
+            found = [hy.units[i] for i in order[:max(ks)]]
+            ids = [u["id"] for u in found]
+            row = hits.setdefault(name, [0] * (len(ks) + 1))
             for j, k in enumerate(ks):
                 row[j] += ex["unit"] in ids[:k]
-    return {name: {f"상위 {k}": round(row[j] / max(n, 1), 3) for j, k in enumerate(ks)} for name, row in hits.items()}
+            row[-1] += code_rag.same_feature(by_id.get(ex["unit"]), found[:3])
+    names = [f"상위 {k}" for k in ks] + ["같은 기능 상위 3"]
+    return {name: {key: round(v / max(n, 1), 3) for key, v in zip(names, row)} for name, row in hits.items()}
 
 
 def main():
