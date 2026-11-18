@@ -65,6 +65,9 @@ python -m http.server 8000
      jsdelivr에서, 모델(`Xenova/multilingual-e5-small` 양자화 ONNX, 약 118MB)을 Hugging Face에서 받습니다.
      못 받으면 낱말로만 찾고 화면에 알립니다. 질문은 밖으로 보내지 않습니다.
    - 설명 파일을 onnxruntime 없이 만들면(`찾기: 낱말만`) 벡터가 없어 낱말로만 찾습니다.
+4. 대답이 끝나면 대답 속 「」 블록 이름, 기기 객체의 메서드(`device.eye_on` 등), 인자 개수·이름을 그 기기 설명과
+   대조해 없는 것을 "확인 필요"로 알립니다 (학습 데이터 검사 `prompts_code.answer_problem`과 같은 규칙).
+   인자 값(색 숫자 등)이 맞는지는 보지 못합니다.
 
 ## 도구 더하기
 

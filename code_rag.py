@@ -29,6 +29,8 @@ from prompts_code import unit_doc
 from tools import system_code
 
 UNITS = Path("data/code-units.jsonl")
+#: 기기별 블록 모양·객체·메서드 인자 (code_docs.py가 만듦). 웹 실행기가 대답 속 이름을 대조하는 데 씀
+API = Path("data/code-api.json")
 #: 찾기에 덧붙일 질문 (학습 문답)
 ASKED = Path("data/code.jsonl")
 #: 설명 하나에 덧붙이는 질문 수
@@ -287,11 +289,12 @@ def card(u: dict) -> dict:
             "code": setup}
 
 
-def export(units: list[dict], index: "Index", path: Path) -> None:
+def export(units: list[dict], index: "Index", path: Path, api: dict | None = None) -> None:
     """브라우저용 찾기 파일: 설명마다 낱말 조각·글 길이·대화에 붙일 글·카드, 기기마다 낱말 수와 시스템 글,
     사전과 머리글. 브라우저는 점수 계산만 하므로 파이썬 찾기와 결과가 같음."""
     data = {"version": 2, "top_k": TOP_K, "header": HEADER, "synonyms": SYNONYMS,
             "embed": index.export_part() if hasattr(index, "export_part") else None,
+            "api": api,
             "systems": {dev: system_code(dev) for dev in index.by_device},
             "df": {dev: dict(index.df[dev]) for dev in index.by_device},
             "avg": index.avg,
@@ -336,7 +339,7 @@ def main():
         for u in index.search(args.ask[1], args.ask[0]):
             print("---", u["id"]); print(ref_text(u))
     if args.export:
-        export(units, index, Path(args.export))
+        export(units, index, Path(args.export), json.loads(API.read_text()) if API.exists() else None)
         print(f"{args.export}: 설명 {len(units)}개, 찾기 {index.kind}, "
               f"{Path(args.export).stat().st_size / 2**10:.0f}KB", flush=True)
     if args.misses:

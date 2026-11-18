@@ -1332,3 +1332,39 @@ def test_why_report_counts_error_types_by_refs(tmp_path, monkeypatch):
     keys = list(score.WHY_TYPES) + ["unread"]
     assert "| m | 참고에 있음 | 2 | " + " | ".join("2" if k == "arg" else "0" for k in keys) + " |" in text
     assert "| m | 없음 | 1 | " + " | ".join("1" if k == "feature" else "0" for k in keys) + " |" in text
+
+
+def test_webrunner_code_check_matches_python_answer_problem(tmp_path):
+    """웹 실행기가 대답 속 블록 이름·메서드·인자 개수를 prompts_code.answer_problem과 같게 잡음."""
+    import re
+    import shutil
+    import subprocess
+
+    from prompts_code import answer_problem
+
+    api = code_api()["파이보"]
+    api["instances"]["camera"] = "Camera"
+    cases = ["「RGB 눈 불빛 바꾸기」 블록에 255, 0, 0을 넣어요.",
+             "「점수 올리기」 블록을 써요.",
+             "`device.eye_blink(1)`을 쓰면 돼요.",
+             "`camera.draw_bitmap(1, 2, 3, 4, 5, 6)`처럼 써요.",
+             "`camera.draw_bitmap(1, 2)`처럼 써요.",
+             "`camera.draw_bitmap(1, 2, 3, color=1)`처럼 써요.",
+             "`camera.draw_bitmap(8, 8, [0]*64, pixel=(255, 0, 0))`처럼 써요.",
+             "```python\nfrom openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n```\n이렇게 써요."]
+    want = [answer_problem(c, api) for c in cases]
+    assert want[0] is None and want[1].startswith("없는 블록") and want[2] == "없는 메서드 Device.eye_blink"
+    assert want[3] == "인자가 많음 Camera.draw_bitmap" and want[4] == "인자가 모자람 Camera.draw_bitmap(val)"
+    assert want[5] == "없는 인자 Camera.draw_bitmap(color=)" and want[6] is None and want[7] is None
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const api = {json.dumps(api, ensure_ascii=False)}, cases = {json.dumps(cases, ensure_ascii=False)};
+console.log(JSON.stringify(cases.map(c => codeCheck(c, api))));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    assert got == [[w] if w else [] for w in want]

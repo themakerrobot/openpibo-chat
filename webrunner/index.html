@@ -392,6 +392,57 @@ function codeSearch(index, query, device, k, qvec) {
   }
   return order.slice(0, k || index.top_k).map(i => index.units[i]);
 }
+// prompts_code.answer_problem 가운데 기계로 셀 수 있는 것만: 「」 블록 이름이 그 기기 블록인지, 기기 객체의
+// 메서드(device.eye_on 등)가 있는지, 인자 개수·이름이 맞는지. 문제들을 돌려줌 (없으면 빈 배열)
+function codeNorm(name, slots) {
+  if (!slots) name = name.replace(/\[[^\]]*\]|\([^)]*\)/g, "");
+  return name.replace(/[\s□▾⏵\[\]()〈〉<>.,·]/g, "");
+}
+function codeKnownBlock(name, api) {
+  const forms = new Set();
+  for (const bs of Object.values(api.blocks || {})) for (const b of bs) { forms.add(codeNorm(b, true)); forms.add(codeNorm(b, false)); }
+  for (const n of new Set([codeNorm(name, true), codeNorm(name, false)])) {
+    if (n && [...forms].some(f => n === f || (n.length >= 4 && f.includes(n)))) return true;
+  }
+  return false;
+}
+function codeArgs(text, start) {     // 여는 괄호 다음부터 짝이 맞는 닫는 괄호까지의 인자들 (못 찾으면 null)
+  let depth = 0, cur = "", out = [], quote = null;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) { cur += ch; if (ch === quote && text[i - 1] !== "\\") quote = null; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; cur += ch; continue; }
+    if ("([{".includes(ch)) depth++;
+    if (")]}".includes(ch)) { if (depth === 0) { if (cur.trim()) out.push(cur.trim()); return out; } depth--; }
+    if (ch === "," && depth === 0) { out.push(cur.trim()); cur = ""; continue; }
+    cur += ch;
+  }
+  return null;
+}
+function codeCheck(answer, api) {
+  if (!api) return [];
+  const out = [], prose = answer.replace(/```(?:python|py)?\s*\n[\s\S]*?```/g, " ");
+  for (const m of prose.matchAll(/「([^」]+)」|〈([^〉]+)〉|『([^』]+)』/g)) {
+    const name = m[1] || m[2] || m[3];
+    if (!codeKnownBlock(name, api)) out.push(`없는 블록 「${name.slice(0, 20)}」`);
+  }
+  for (const m of answer.matchAll(/\b(\w+)\.(\w+)\s*\(/g)) {
+    const alias = api.instances[m[1]];
+    if (!alias) continue;
+    const methods = api.methods[alias] || {}, name = `${alias}.${m[2]}`;
+    if (!(m[2] in methods)) { out.push(`없는 메서드 ${name}`); continue; }
+    const p = methods[m[2]], args = codeArgs(answer, m.index + m[0].length);
+    if (!p || !args || args.some(a => a.startsWith("*"))) continue;
+    const kw = args.filter(a => /^\w+\s*=(?!=)/.test(a)).map(a => a.split("=")[0].trim());
+    const pos = args.length - kw.length;
+    if (!p.varargs && pos > p.positional) { out.push(`인자가 많음 ${name}`); continue; }
+    const badKw = kw.find(k => !p.names.includes(k));
+    if (badKw && !p.varkw) { out.push(`없는 인자 ${name}(${badKw}=)`); continue; }
+    const missing = p.names.slice(pos, p.required).filter(n => !kw.includes(n));
+    if (missing.length) out.push(`인자가 모자람 ${name}(${missing[0]})`);
+  }
+  return [...new Set(out)];
+}
 // code_rag.system_with와 같은 시스템 글: 기기 코딩 시스템 글 + [참고 설명]
 function codeSystem(index, device, refs) {
   const ctx = refs.length ? index.header + "\n" + refs.map((u, k) => `${k + 1}. ${u.ref}`).join("\n\n")
@@ -659,6 +710,10 @@ async function runTurn(text) {
       const list = Object.values(calls);
       if (finish !== "tool_calls" || !list.length) {
         if (!content) addMessage("assistant", "(내용 없음)");
+        if (set.code && codeIndex.api) {      // 대답 속 블록·함수 이름과 인자 개수를 설명과 대조
+          const bad = codeCheck(content, codeIndex.api[$("codeDevice").value]);
+          if (bad.length) addMessage("error", "확인 필요 (설명에 없음): " + bad.join(", ") + " · 위 카드가 정확해요");
+        }
         messages.push({role: "assistant", content});
         break;
       }
