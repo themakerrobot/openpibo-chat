@@ -30,8 +30,9 @@ def tools_of(example: dict):
 def targets(tok, example: dict, max_len: int):
     """한 대화에서 모델이 말하는(또는 도구를 부르는) 차례마다 (input_ids, labels) 하나."""
     msgs, tools = example["messages"], tools_of(example)
+    skip = set(example.get("no_loss", []))        # 읽기만 하고 학습하지 않을 앞 대답의 번호 (tool_data.py)
     for i, m in enumerate(msgs):
-        if m["role"] != "assistant":
+        if m["role"] != "assistant" or i in skip:
             continue
         prompt = render(tok, msgs[:i], True, tools)
         full = render(tok, msgs[:i + 1], False, tools)
