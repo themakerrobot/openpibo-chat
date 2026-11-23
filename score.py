@@ -114,12 +114,24 @@ def set_lang(lang: str) -> None:
     (data/heldout-code.jsonl, results-code, 도구 채점 없음)."""
     global RESULTS, HELDOUT, TOOLS_HELDOUT, LANG
     LANG = lang
+    RESULTS, HELDOUT, TOOLS_HELDOUT = Path("results"), Path("data/heldout.jsonl"), Path("data/heldout-tools.jsonl")
     if lang == "en":
         RESULTS, HELDOUT = Path("results-en"), Path("data/heldout-en.jsonl")
         TOOLS_HELDOUT = Path("data/heldout-tools-en.jsonl")
     elif lang == "code":
         RESULTS, HELDOUT = Path("results-code"), Path("data/heldout-code.jsonl")
         TOOLS_HELDOUT = Path("data/heldout-tools-code.jsonl")     # 없음: 도구 채점은 건너뜀
+
+
+def use_files(heldout: str | None = None, tools_heldout: str | None = None, results: str | None = None) -> None:
+    """시험 파일·결과 폴더를 바꿈 (주지 않은 것은 set_lang이 정한 그대로)."""
+    global RESULTS, HELDOUT, TOOLS_HELDOUT
+    if heldout:
+        HELDOUT = Path(heldout)
+    if tools_heldout:
+        TOOLS_HELDOUT = Path(tools_heldout)
+    if results:
+        RESULTS = Path(results)
 
 
 def problem(text: str, q: dict | None = None) -> str | None:
@@ -465,8 +477,12 @@ def main():
     p.add_argument("--name")
     p.add_argument("--lang", choices=["ko", "en", "code"], default="ko",
                    help="en이면 영어 모델, code면 코딩 도우미 채점")
+    p.add_argument("--heldout", help="대화 시험 파일 (기본: 언어마다 data/heldout*.jsonl)")
+    p.add_argument("--tools-heldout", help="도구 시험 파일 (기본: 언어마다 data/heldout-tools*.jsonl)")
+    p.add_argument("--results", help="결과 폴더 (기본: results, results-en). 시험 파일을 바꾸면 따로 두기")
     args = p.parse_args()
     set_lang(args.lang)
+    use_files(args.heldout, args.tools_heldout, args.results)
     if args.what == "answer":
         answer(args.gguf, args.name)
     elif args.what == "judge":
