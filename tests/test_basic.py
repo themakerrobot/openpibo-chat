@@ -383,7 +383,10 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
                      "train", "small", "gguf", "score-before", "score-themaker", "score-judge",
                      "data-en", "data-en-heldout", "data-tools-en", "data-tools-en-heldout",
                      "data-themaker-en", "train-en", "small-en", "gguf-en", "score-en-before",
-                     "score-en-themaker", "score-en-judge"]
+                     "score-en-themaker", "score-en-judge",
+                     "data-code-units", "data-code", "data-code-rag", "data-themaker-code",
+                     "train-code-2b", "small-code-2b", "gguf-code-2b", "score-code-2b", "score-code-judge", "base-code-2b", "score-code-base-2b",
+                     "base-code-4b", "score-code-base-4b", "score-code-judge-base", "data-code-rag-misses"]
     cmds = cmds_of(steps)
     assert cmds["data-pibo"] == (["rewrite.py", "--data", "data/source.jsonl", "--out",
                                   "data/pibo.jsonl", "--skip", *run_all.SKIP], [])
@@ -403,6 +406,12 @@ def test_runner_makes_only_the_final_q4_file(tmp_path, monkeypatch):
     assert "--lang" in cmds["gguf-en"][0] and run_all.GGUF_EN == "out/themaker-en-0.8b-Q4_K_M.gguf"
     for step in ("score-en-before", "score-en-themaker", "score-en-judge", "data-tools-en"):
         assert cmds[step][0][cmds[step][0].index("--lang") + 1] == "en"
+    # 코딩 도우미: 노트북용 2B만
+    assert "Qwen/Qwen3.5-2B" in cmds["train-code-2b"][0] and run_all.DATA_CODE in cmds["train-code-2b"][0]
+    assert cmds["train-code-2b"][1] == ["data-themaker-code"] and "train-code" not in cmds
+    assert cmds["gguf-code-2b"][0][cmds["gguf-code-2b"][0].index("--lang") + 1] == "code"
+    assert cmds["score-code-judge"][1] == ["score-code-2b"]
+    assert "data/code-rag.jsonl" in cmds["data-themaker-code"][0] and "3072" in cmds["train-code-2b"][0]
 
 
 def test_status_shows_the_running_step(tmp_path, monkeypatch):
@@ -643,6 +652,51 @@ def test_moving_away_needs_a_direction_word_in_the_childs_words(monkeypatch):
     assert app.turn("x", history, "조금 뒤로 가 줄래?", robot, SYSTEM) == "뒤로 갈게요."
     assert app.turn("x", history, "춤춰 줘", robot, SYSTEM) == "신나게 춤춰 볼게요!"
     assert robot.did == [("move", "뒤로"), ("move", "춤")]
+
+
+def test_opposite_direction_from_the_childs_words_is_not_run(monkeypatch):
+    import pibo_chat as app
+
+    robot = Robot()
+    replies = iter([reply("앞으로 갈게요.", "move", action="앞으로"),     # "뒤로 물러나"에 앞으로
+                    reply("앞으로 갈게요.", "move", action="앞으로"),     # 또 그러면 정해진 말
+                    reply("오른쪽으로 갈게요.", "move", action="오른쪽"),  # "left"에 오른쪽
+                    reply("왼쪽으로 돌게요.", "move", action="왼쪽"),      # 다시 물으면 맞게
+                    reply("왼쪽으로 갈게요.", "move", action="왼쪽"),     # "좌우로 흔들어"에 왼쪽
+                    reply("도리도리 할게요.", "move", action="도리도리"),
+                    reply("가까이 갈게요.", "move", action="앞으로")])    # "closer"도 앞으로
+    monkeypatch.setattr(app, "ask", lambda *a, **k: next(replies))
+    assert app.turn("x", [], "너무 가까워 한 발짝 뒤로 물러나 줘", robot, SYSTEM) == app.NOT_MOVING
+    assert app.turn("x", [], "turn toward the window on your left", robot, SYSTEM) == "왼쪽으로 돌게요."
+    assert app.turn("x", [], "싫다는 뜻으로 고개 좌우로 흔들어 봐", robot, SYSTEM) == "도리도리 할게요."
+    assert app.turn("x", [], "roll a bit closer so i can see you better", robot, SYSTEM) == "가까이 갈게요."
+    assert robot.did == [("move", "왼쪽"), ("move", "도리도리"), ("move", "앞으로")]
+    assert app.blocked("alright turn left", ("move", {"action": "오른쪽"}))                # alright는 right 아님
+    assert app.blocked("turn left right now", ("move", {"action": "오른쪽"}))              # right now도 아님
+
+
+def test_the_same_tool_again_needs_a_request_word(monkeypatch):
+    import pibo_chat as app
+
+    robot, history = Robot(), []
+    replies = iter([reply("빨간색으로 바꿀게요!", "light", color="빨강"),
+                    reply("빨간색이에요.", "light", color="빨강"),          # "고마워"에 또 켬
+                    reply("마음에 든다니 기뻐요."),                          # 다시 물으면 대화
+                    reply("빨간색이에요.", "light", color="빨강"),          # "한 번 더 켜 줘"는 실행
+                    reply("신나게 춤춰 볼게요!", "move", action="춤"),
+                    reply("춤출게요.", "move", action="춤"),                # "ㅋㅋ 몸치네"에 또 춤
+                    reply("춤출게요.", "move", action="춤"),                # 또 그러면 정해진 말
+                    reply("초록색으로 바꿀게요.", "light", color="초록")])   # 다른 호출은 그대로
+    monkeypatch.setattr(app, "ask", lambda *a, **k: next(replies))
+    assert app.turn("x", history, "빨간 불 켜 줘", robot, SYSTEM) == "빨간색으로 바꿀게요!"
+    assert app.turn("x", history, "오 예쁘다 고마워", robot, SYSTEM) == "마음에 든다니 기뻐요."
+    assert app.turn("x", history, "빨간불 한 번 더 켜 줘", robot, SYSTEM) == "빨간색이에요."
+    assert app.turn("x", history, "춤춰 줘", robot, SYSTEM) == "신나게 춤춰 볼게요!"
+    assert app.turn("x", history, "ㅋㅋㅋ 몸치네", robot, SYSTEM) == app.NOT_MOVING
+    assert app.turn("x", history, "초록색은 어때", robot, SYSTEM) == "초록색으로 바꿀게요."
+    assert robot.did == [("light", "빨강"), ("light", "빨강"), ("move", "춤"), ("light", "초록")]
+    assert app.repeated("ooh pretty thank you", ("light", {"color": "초록"}), ("light", {"color": "초록"}))
+    assert not app.repeated("again please", ("light", {"color": "초록"}), ("light", {"color": "초록"}))
 
 
 def test_server_errors_do_not_stop_the_app(monkeypatch, capsys):
@@ -967,3 +1021,395 @@ def test_webrunner_tools_match_the_model_and_calculate_safely(tmp_path):
     assert "목록에 없음" in got["jump"]["error"] and "없는 도구" in got["missing"]["error"]
     assert got["light"]["color"] == "빨강" and "목록에 없음" in got["purple"]["error"]
     assert got["enSystem"] == "You are TheMake" and got["follow"] == [True, False]
+
+
+# ------------------------------------------------------------- 코딩 도우미
+
+def code_api():
+    return {"파이보": {"imports": {"Device": ["openpibo.device", "Device"], "Motion": ["openpibo.motion", "Motion"]},
+                     "instances": {"device": "Device", "motion": "Motion"},
+                     "methods": {"Device": {"eye_on": None, "eye_off": None}, "Motion": {"set_motion": None},
+                                 "Camera": {"draw_bitmap": {"names": ["w", "h", "val", "background", "pixel"],
+                                                            "positional": 5, "required": 3,
+                                                            "varargs": False, "varkw": False}}},
+                     "blocks": {"장치": ["RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "색상 ([■]) 눈 불빛 바꾸기"],
+                                "소리": ["오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기"], "시작": ["클릭했을때"]}},
+            "파이브레인": {"imports": {"Device": ["openpibo.device", "DeviceByPiBrain"]},
+                       "instances": {"device": "Device"}, "methods": {"Device": {"led_on": None, "led_off": None}},
+                       "blocks": {"장치": ["RGB 불빛 바꾸기"]}}}
+
+
+def test_code_answers_only_use_what_the_device_has():
+    from prompts_code import answer_problem, code_problem
+
+    api = code_api()
+    ok = "from openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n"
+    assert code_problem(ok, api["파이보"]) is None
+    assert code_problem(ok.replace("eye_on", "eye_color"), api["파이보"]) == "없는 메서드 Device.eye_color"
+    assert code_problem("from openpibo.motion import Motion\n", api["파이브레인"]) == "없는 모듈 openpibo.motion"
+    assert code_problem("from openpibo.device import DeviceByPiBrain as Device\nd = Device()\nd.led_on(1,2,3)",
+                        api["파이브레인"]) is None                                    # 다른 이름으로 만들어도 따라감
+    assert code_problem("d = Device()\nd.eye_on(1,2,3)", api["파이브레인"]) == "없는 메서드 Device.eye_on"
+    assert code_problem("def x(:\n", api["파이보"]).startswith("코드 문법 오류")
+    good = "「RGB 눈 불빛 바꾸기」 블록을 쓰면 돼요. 파이썬은 이렇게 해요.\n```python\n" + ok + "```"
+    assert answer_problem(good, api["파이보"]) is None
+    assert answer_problem(good.replace("돼요", "돼"), api["파이보"]) == "반말"
+    assert answer_problem(good + " 😀", api["파이보"]).startswith("이모지")
+    assert answer_problem("가" * 701, api["파이보"]).endswith("넘음")
+    # 지어낸 것: 없는 모듈(pybo), 블록 상자에 없는 블록, 글 속 코드 조각의 없는 메서드
+    assert code_problem("import pybo\npybo.when_clicked('적')", api["파이보"]) == "없는 모듈 pybo"
+    assert code_problem("import time\ntime.sleep(1)", api["파이보"]) is None
+    assert answer_problem("「점수 올리기」 블록을 이어요.", api["파이보"]) == "없는 블록 「점수 올리기」"
+    assert answer_problem("「눈 불빛 바꾸기」 블록을 써요.", api["파이보"]) is None          # 블록 이름의 일부
+    assert answer_problem("「오디오 크기로 재생하기」 블록에 80을 넣어요.", api["파이보"]) is None    # 칸을 빼고 말해도
+    assert answer_problem("「오디오 [폴더 선택 ▾] [파일 선택 ▾] ([80]) 크기로 재생하기」를 써요.", api["파이보"]) is None
+    assert answer_problem("`pybo.when_clicked('객체')`처럼 써요.", api["파이보"]) == "없는 모듈 pybo"
+    assert answer_problem("`device.eye_on(1, 2, 3)`처럼 써요.", api["파이브레인"]) == "없는 메서드 Device.eye_on"
+    assert answer_problem("〈점수 올리기〉 블록을 이어요.", api["파이보"]) == "없는 블록 「점수 올리기」"
+    assert answer_problem("출력해 보시면 알 수 있어요.", api["파이보"]) == "학생을 높임 '보시면'"
+    assert answer_problem("「눈 불빛 바꾸기」 블록을 사용하세요.", api["파이보"]) is None      # 부탁하는 끝은 둠
+    # 인자: 이름·개수 (draw_bitmap(w, h, val, background=…, pixel=…))
+    cam = dict(api["파이보"], imports={**api["파이보"]["imports"], "Camera": ["openpibo.vision_camera", "Camera"]},
+               instances={**api["파이보"]["instances"], "camera": "Camera"})
+    assert code_problem("camera.draw_bitmap(8, 8, '1,0', pixel=(0,0,0))", cam) is None
+    assert code_problem("camera.draw_bitmap(8, 8, '1,0', color=(0,0,0))", cam) == "없는 인자 Camera.draw_bitmap(color=)"
+    assert code_problem("camera.draw_bitmap(8, 8)", cam) == "인자가 모자람 Camera.draw_bitmap(val)"
+    assert code_problem("camera.draw_bitmap(1, 2, 3, 4, 5, 6)", cam) == "인자가 많음 Camera.draw_bitmap"
+    from prompts_code import passes
+    assert passes({"unsupported": ["True 또는 False"], "grounded": 5, "clear": 5, "on_topic": True,
+                   "code_ok": True}) == "설명에 없는 말"
+    assert passes({"unsupported": [], "grounded": 5, "clear": 5, "on_topic": False, "code_ok": True}) == "다른 블록 이야기"
+
+
+def test_code_data_makes_dialogs_and_holds_some_out(tmp_path):
+    import code_data
+    from tools import system_code
+
+    units = {f"파이보:func:Device.eye_on{k}": {"id": f"파이보:func:Device.eye_on{k}", "device": "파이보", "kind": "func",
+             "module": "openpibo.device", "class": "Device", "alias": "Device", "instance": "device",
+             "method": "eye_on", "signature": "eye_on(*color)", "doc": "LED를 켭니다."} for k in range(2)}
+    code = "```python\nfrom openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n```"
+    pairs = [{"q": f"눈 빨갛게 하려면? {k}", "a": f"이렇게 해요 {k}.\n{code}"} for k in range(5)]
+    pairs.append({"q": "없는 함수", "a": "이렇게 해요.\n" + code.replace("eye_on", "eye_magic")})
+    asked = []
+
+    def fake(prompts, tokens):
+        asked.append(len(prompts))
+        if "검사해요" in prompts[0]:                     # 문답마다 따로: 넷째까지 5점, 다섯째는 3점
+            return [json.dumps({"unsupported": [], "grounded": 3 if "하려면? 4" in p else 5,
+                                "clear": 5, "on_topic": True, "code_ok": True}) for p in prompts]
+        return [json.dumps({"pairs": pairs}, ensure_ascii=False)] * len(prompts)
+
+    log = tmp_path / "log.jsonl"
+    done = code_data.run(fake, units, code_api(), log)
+    train, held, kept, why = code_data.results(units, done)
+    assert asked == [2, 10] and why["없는 메서드"] == 2 and why["grounded 3점"] == 2
+    assert kept == {"파이보": 6} and len(held) == 2                    # 설명마다 4쌍 → 1쌍 채점용
+    assert all(e["messages"][0]["content"] == system_code("파이보") for e in train + held)
+    asked.clear()
+    code_data.run(fake, units, code_api(), log)                        # 다시 돌리면 묻지 않음
+    assert asked == []
+
+
+
+def test_rag_finds_the_block_from_a_students_words_and_sometimes_leaves_the_answer_out():
+    import random
+
+    import code_rag
+    from tools import system_code
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": ["from openpibo.device import Device"]},
+        {"id": "파이보:block:motion_set_motion", "device": "파이보", "kind": "block", "category": "동작",
+         "name": "동작 [dance1 ▾] ([1]) 번 실행하기", "text": "동작 □ □ 번 실행하기", "tooltip": "선택한 동작을 실행합니다.",
+         "code": "motion.set_motion(<name>, <cycle>)\n", "imports": []},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+        {"id": "파이브레인:block:led", "device": "파이브레인", "kind": "block", "category": "장치",
+         "name": "RGB 불빛 바꾸기", "text": "RGB 불빛 바꾸기", "tooltip": "불빛 색을 바꿉니다.", "code": "device.led_on()", "imports": []},
+    ]
+    index = code_rag.Index(units)
+    assert index.search("눈을 빨갛게 하려면?", "파이보")[0]["id"] == "파이보:block:device_eye_on"   # 사전으로 넓혀 찾음
+    assert index.search("춤추게 하고 싶어", "파이보")[0]["id"] == "파이보:block:motion_set_motion"
+    assert index.search("eye_on 인자 알려 줘", "파이보")[0]["id"] == "파이보:block:device_eye_on"
+    assert all(u["device"] == "파이브레인" for u in index.search("불빛 바꾸기", "파이브레인"))     # 같은 기기 안에서만
+    ex = {"kind": "chat", "source": "code", "device": "파이보", "unit": "파이보:block:device_eye_on",
+          "messages": [{"role": "system", "content": system_code("파이보")}, {"role": "user", "content": "눈 빨갛게?"},
+                       {"role": "assistant", "content": "「RGB 눈 불빛 바꾸기」에 255, 0, 0을 넣어요."}]}
+    by_id = {u["id"]: u for u in units}
+    outs = [code_rag.with_refs(ex, index, by_id, random.Random(s)) for s in range(60)]
+    kept = [o for o in outs if not o.get("no_gold")]
+    dropped = [o for o in outs if o.get("no_gold")]
+    assert kept and dropped and len(dropped) < len(kept)                        # 가끔 정답을 빼고
+    assert all("파이보:block:device_eye_on" in o["refs"] for o in kept)
+    assert all("파이보:block:device_eye_on" not in o["refs"] and o["messages"][-1]["content"] == code_rag.NO_GOLD_ANSWER
+               for o in dropped)
+    system = kept[0]["messages"][0]["content"]
+    assert system.startswith(system_code("파이보")) and "[참고 설명]" in system and "eye_on" in system
+
+
+def test_rag_uses_training_questions_and_shows_color_numbers(tmp_path):
+    """설명 글에 없는 학생 말도 학습 질문으로 찾고, 불빛 설명·카드에는 색 숫자표를 붙임."""
+    import code_rag
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([0]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": []},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+    ]
+    train = tmp_path / "code.jsonl"
+    train.write_text(json.dumps({"device": "파이보", "unit": "파이보:block:vision_read", "messages": [
+        {"role": "system", "content": "s"}, {"role": "user", "content": "찰칵 하고 남기려면?"},
+        {"role": "assistant", "content": "「사진 찍기」를 써요."}]}, ensure_ascii=False) + "\n")
+    assert code_rag.Index(units).search("찰칵 남기기", "파이보") == []                       # 설명만으로는 못 찾음
+    index = code_rag.load_index(units, train, embed=False)
+    assert index.search("찰칵 남기기", "파이보")[0]["id"] == "파이보:block:vision_read"
+    assert code_rag.load_index(units, tmp_path / "없음.jsonl", embed=False).search("찰칵", "파이보") == []
+    assert code_rag.COLOR_NOTE in code_rag.ref_text(units[0]) and code_rag.COLOR_NOTE not in code_rag.ref_text(units[1])
+    assert "빨강 255,0,0" in code_rag.card(units[0])["text"] and "빨강" not in code_rag.card(units[1])["text"]
+    assert code_rag.is_light({"method": "led_on_s"}) and not code_rag.is_light({"method": "eye_off"})
+
+def test_webrunner_code_search_matches_python(tmp_path):
+    """웹 실행기의 코딩 도우미 찾기(JS)가 code_rag와 같은 설명을 같은 순서로, 같은 시스템 글로 고름."""
+    import re
+    import shutil
+    import subprocess
+
+    import code_rag
+
+    units = [
+        {"id": "파이보:block:device_eye_on", "device": "파이보", "kind": "block", "category": "장치",
+         "name": "RGB ([255]) ([0]) ([0]) 눈 불빛 바꾸기", "text": "RGB □□□ 눈 불빛 바꾸기", "tooltip": "눈 불빛의 색을 변경합니다.",
+         "code": "device.eye_on(<val0>, <val1>, <val2>)\n", "imports": ["from openpibo.device import Device"]},
+        {"id": "파이보:block:motion_set_motion", "device": "파이보", "kind": "block", "category": "동작",
+         "name": "동작 [dance1 ▾] ([1]) 번 실행하기", "text": "동작 □ □ 번 실행하기", "tooltip": "선택한 동작을 실행합니다.",
+         "code": "motion.set_motion(<name>, <cycle>)\n", "imports": [],
+         "byOption": {"field": "name", "codes": {"dance1": "motion.set_motion('dance1', 1)"}}},
+        {"id": "파이보:block:vision_read", "device": "파이보", "kind": "block", "category": "시각", "name": "사진 찍기",
+         "text": "사진 찍기", "tooltip": "카메라로 사진을 찍습니다.", "code": "camera.read()", "imports": []},
+        {"id": "파이보:api:Device.eye_on", "device": "파이보", "kind": "api", "module": "openpibo.device",
+         "class": "Device", "alias": "Device", "instance": "device", "method": "eye_on",
+         "signature": "eye_on(*color)", "doc": "눈 색을 바꿉니다.\ncolor: (r, g, b) 0~255"},
+        {"id": "파이브레인:block:led", "device": "파이브레인", "kind": "block", "category": "장치",
+         "name": "RGB 불빛 바꾸기", "text": "RGB 불빛 바꾸기", "tooltip": "불빛 색을 바꿉니다.", "code": "device.led_on()", "imports": []},
+    ]
+    index = code_rag.Index(units)
+    f = tmp_path / "code-index.json"
+    code_rag.export(units, index, f)
+    data = json.loads(f.read_text())
+    assert data["units"][1]["card"]["title"] == "「동작 [dance1 ▾] ([1]) 번 실행하기」"
+    assert "# dance1" in data["units"][1]["card"]["code"]
+    assert data["units"][3]["card"]["code"] == "from openpibo.device import Device\ndevice = Device()"
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    asks = [("파이보", "눈을 빨갛게 하려면?"), ("파이보", "춤추게 하고 싶어"), ("파이보", "eye_on 인자 알려 줘"),
+            ("파이보", "사진 찍는 블록 3개"), ("파이보", "xyz 없는 말"), ("파이브레인", "불빛 바꾸기")]
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const index = JSON.parse(require("fs").readFileSync({json.dumps(str(f))}, "utf8"));
+const asks = {json.dumps(asks, ensure_ascii=False)};
+console.log(JSON.stringify(asks.map(([d, q]) => {{
+  const refs = codeSearch(index, q, d);
+  return {{ids: refs.map(u => u.id), system: codeSystem(index, d, refs), tokens: codeTokens(q)}};
+}})));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    for (dev, q), g in zip(asks, got):
+        refs = index.search(q, dev)
+        assert g["ids"] == [u["id"] for u in refs], q
+        assert g["system"] == code_rag.system_with(dev, refs), q
+        assert g["tokens"] == code_rag.tokens(q), q
+    assert got[0]["ids"][0] == "파이보:block:device_eye_on" and got[4]["ids"] == []
+
+
+
+def test_broken_check_answers_are_read_mark_by_mark():
+    from prompts_code import decide_check
+
+    broken = ('{"marks": [{"unsupported": [], "grounded": 5, "clear": 4, "on_topic": true, "code_ok": true}, '
+              '{"unsupported": ["값은 "True" 또는 "False""], "grounded": 2, "clear": 5, "on_topic": true, "code_ok": true}, '
+              '{"unsupported": [], "grounded": 5, "clear": 5, "on_to')                      # 따옴표가 깨지고 끝이 잘림
+    marks = decide_check(broken, 3)
+    assert marks[0] == {"unsupported": [], "grounded": 5, "clear": 4, "on_topic": True, "code_ok": True}
+    assert marks[1]["unsupported"] and marks[1]["grounded"] == 2
+    assert marks[2] is None
+    good = '{"marks": [{"unsupported": [], "grounded": 5, "clear": 5, "on_topic": true, "code_ok": true}]}'
+    assert decide_check(good, 1)[0]["grounded"] == 5 and decide_check(good, 2) == [None, None]
+
+
+
+def test_questions_must_say_what_they_ask_about():
+    from prompts_code import VAGUE
+
+    for q in ("이 블록 뭐야?", "이거 어디 있어?", "그 함수 인자 알려 줘", "이 블록은 어떻게 써?", "이게 뭐야"):
+        assert VAGUE.search(q), q
+    for q in ("사진 찍기 블록은 뭐야?", "눈을 빨갛게 하려면?", "eye_on 함수 인자 알려 줘", "이미지 바꾸기 블록 어디 있어?"):
+        assert not VAGUE.search(q), q
+
+
+def test_hybrid_search_mixes_word_and_meaning_scores():
+    """뜻 점수(가짜 임베딩)가 낱말로 못 찾는 설명을 올리고, 순위 섞기는 둘 다 반영."""
+    import numpy as np
+
+    import code_embed
+
+    units = [{"id": f"파이보:block:b{i}", "device": "파이보", "kind": "block", "category": "장치",
+              "name": name, "text": name, "tooltip": "", "code": "", "imports": []}
+             for i, name in enumerate(["눈 불빛 바꾸기", "사진 찍기", "소리 재생하기"])]
+    units.append({"id": "파이브레인:block:x", "device": "파이브레인", "kind": "block", "category": "장치",
+                  "name": "사진 찍기", "text": "사진 찍기", "tooltip": "", "code": "", "imports": []})
+
+    def fake(texts):   # "찰칵"이나 "사진"이 들어가면 같은 방향
+        return np.array([[1.0, 0.0] if ("찰칵" in t or "사진" in t) else [0.0, 1.0] for t in texts])
+
+    hy = code_embed.Hybrid(units, {}, fake)
+    r = hy.ranks("찰칵 남기고 싶어", "파이보")
+    assert r["뜻: 설명 글"][0] == 1 and r["섞기: 순위(RRF)"][0] == 1      # 낱말로는 0점인 「사진 찍기」
+    assert set(r["낱말 (지금)"]) == {0, 1, 2}                                 # 같은 기기 안에서만
+    assert all(i != 3 for order in r.values() for i in order)
+
+
+def test_same_feature_counts_blocks_and_functions_that_call_the_same_method():
+    import code_rag
+
+    block = {"id": "a", "kind": "block", "code": "device.eye_on(<val0>, <val1>, <val2>)"}
+    func = {"id": "b", "kind": "func", "method": "eye_on_s"}
+    other = {"id": "c", "kind": "block", "code": "camera.read()"}
+    start = {"id": "d", "kind": "block", "code": ""}
+    assert code_rag.feature(block) == code_rag.feature(func) == {"eye_on"}
+    assert code_rag.same_feature(block, [other, func]) and not code_rag.same_feature(block, [other])
+    assert code_rag.same_feature(start, [start]) and not code_rag.same_feature(start, [other, {"id": "e", "code": ""}])
+
+
+def test_webrunner_hybrid_search_matches_python(tmp_path):
+    """설명 파일에 벡터가 있으면 웹 실행기도 code_embed.Hybrid와 같은 점수 섞기로 같은 설명을 고름."""
+    import hashlib
+    import re
+    import shutil
+    import subprocess
+
+    import numpy as np
+
+    import code_embed
+    import code_rag
+
+    def fake(texts):   # 글마다 정해진 8차원 단위 벡터 (같은 낱말이 있으면 조금 닮게)
+        out = []
+        for t in texts:
+            v = np.zeros(8)
+            for w in re.findall(r"[가-힣]+|\w+", t.replace("query: ", "").replace("passage: ", "")):
+                h = hashlib.md5(w.encode()).digest()
+                v += np.frombuffer(h[:8], dtype=np.uint8) / 255 - 0.5
+            out.append(v / (np.linalg.norm(v) or 1))
+        return np.array(out)
+
+    units = [{"id": f"파이보:block:b{i}", "device": "파이보", "kind": "block", "category": cat, "name": name,
+              "text": name, "tooltip": tip, "code": code, "imports": []}
+             for i, (cat, name, tip, code) in enumerate([
+                 ("장치", "눈 불빛 바꾸기", "눈 색을 바꿔요", "device.eye_on(<val0>)"),
+                 ("시각", "사진 찍기", "카메라로 찍어요", "camera.read()"),
+                 ("소리", "소리 재생하기", "음악을 틀어요", "audio.play(<f>)"),
+                 ("동작", "동작 실행하기", "춤을 춰요", "motion.set_motion(<m>)")])]
+    units.append({"id": "파이브레인:block:x", "device": "파이브레인", "kind": "block", "category": "장치",
+                  "name": "불빛 바꾸기", "text": "불빛 바꾸기", "tooltip": "", "code": "device.led_on()", "imports": []})
+    asked = {"파이보:block:b1": ["찰칵 남기려면?"], "파이보:block:b3": ["신나게 흔들기"]}
+    hy = code_embed.Hybrid(units, asked, fake)
+    f = tmp_path / "code-index.json"
+    code_rag.export(units, hy, f)
+    data = json.loads(f.read_text())
+    assert data["version"] == 2 and data["embed"]["weight"] == code_embed.WEIGHT and data["embed"]["asked_unit"] == [1, 3]
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    asks = [("파이보", "눈 색 바꾸고 싶어"), ("파이보", "찰칵"), ("파이보", "신나게 춤"), ("파이보", "없는 말"),
+            ("파이브레인", "불빛")]
+    vecs = [list(code_embed.as32(fake([f"query: {q}"])[0])) for _, q in asks]
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const index = JSON.parse(require("fs").readFileSync({json.dumps(str(f))}, "utf8"));
+const asks = {json.dumps(asks, ensure_ascii=False)}, vecs = {json.dumps(vecs)};
+console.log(JSON.stringify(asks.map(([d, q], j) => [codeSearch(index, q, d, 4, vecs[j]).map(u => u.id),
+                                                    codeSearch(index, q, d, 4).map(u => u.id)])));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    for (dev, q), v, (mixed, words) in zip(asks, vecs, got):
+        assert mixed == [u["id"] for u in hy.search_with(q, dev, np.array(v), 4)], q
+        assert words == [u["id"] for u in code_rag.Index.search(hy, q, dev, 4)], q
+    assert got[3][0] and not got[3][1]          # 낱말로는 못 찾아도 섞기는 순위를 냄
+    assert all(i.startswith("파이브레인") for i in got[4][0])
+
+
+def test_code_report_splits_wrong_answers_by_whether_the_answer_was_in_the_refs(tmp_path, monkeypatch):
+    import score
+
+    monkeypatch.setattr(score, "RESULTS", tmp_path)
+    qs = [{"set": "첫마디", "unit": "파이보:block:a", "found": None},
+          {"set": "첫마디", "unit": "파이보:block:b", "found": None},
+          {"set": "첫마디", "unit": "파이보:none:x", "found": None},
+          {"set": "이어지는 대화"}]
+    (tmp_path / "answers-m.json").write_text(json.dumps(
+        {"answers": ["", "", "", ""], "found": [["파이보:block:a"], ["파이보:block:c"], [], None]}))
+    (tmp_path / "scores-m.json").write_text(json.dumps(
+        [{"wrong": False, "fit": 5}, {"wrong": True, "fit": 2}, {"wrong": False, "fit": 4}, {}]))
+    text = score.refs_report(qs)
+    assert "| m | 1개 · 틀린 사실 0% · 설명과 맞음 5.00 | 1개 · 틀린 사실 100% · 설명과 맞음 2.00 | " \
+           "1개 · 틀린 사실 0% · 설명과 맞음 4.00 |" in text
+
+
+def test_why_report_counts_error_types_by_refs(tmp_path, monkeypatch):
+    import score
+
+    monkeypatch.setattr(score, "RESULTS", tmp_path)
+    qs = [{"set": "첫마디", "unit": "u:a"}, {"set": "첫마디", "unit": "u:b"}, {"set": "첫마디", "unit": "u:c"}]
+    (tmp_path / "answers-m.json").write_text(json.dumps({"answers": ["", "", ""],
+                                                         "found": [["u:a"], ["u:x"], ["u:c"]]}))
+    (tmp_path / "whys-m.json").write_text(json.dumps({"0": "arg", "1": "feature", "2": "arg"}))
+    text = score.why_report(qs)
+    keys = list(score.WHY_TYPES) + ["unread"]
+    assert "| m | 참고에 있음 | 2 | " + " | ".join("2" if k == "arg" else "0" for k in keys) + " |" in text
+    assert "| m | 없음 | 1 | " + " | ".join("1" if k == "feature" else "0" for k in keys) + " |" in text
+
+
+def test_webrunner_code_check_matches_python_answer_problem(tmp_path):
+    """웹 실행기가 대답 속 블록 이름·메서드·인자 개수를 prompts_code.answer_problem과 같게 잡음."""
+    import re
+    import shutil
+    import subprocess
+
+    from prompts_code import answer_problem
+
+    api = code_api()["파이보"]
+    api["instances"]["camera"] = "Camera"
+    cases = ["「RGB 눈 불빛 바꾸기」 블록에 255, 0, 0을 넣어요.",
+             "「점수 올리기」 블록을 써요.",
+             "`device.eye_blink(1)`을 쓰면 돼요.",
+             "`camera.draw_bitmap(1, 2, 3, 4, 5, 6)`처럼 써요.",
+             "`camera.draw_bitmap(1, 2)`처럼 써요.",
+             "`camera.draw_bitmap(1, 2, 3, color=1)`처럼 써요.",
+             "`camera.draw_bitmap(8, 8, [0]*64, pixel=(255, 0, 0))`처럼 써요.",
+             "```python\nfrom openpibo.device import Device\ndevice = Device()\ndevice.eye_on(255, 0, 0)\n```\n이렇게 써요."]
+    want = [answer_problem(c, api) for c in cases]
+    assert want[0] is None and want[1].startswith("없는 블록") and want[2] == "없는 메서드 Device.eye_blink"
+    assert want[3] == "인자가 많음 Camera.draw_bitmap" and want[4] == "인자가 모자람 Camera.draw_bitmap(val)"
+    assert want[5] == "없는 인자 Camera.draw_bitmap(color=)" and want[6] is None and want[7] is None
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    page = (ROOT / "webrunner" / "index.html").read_text(encoding="utf-8")
+    script = re.search(r'<script id="tools">(.*?)</script>', page, re.S).group(1) + f"""
+const api = {json.dumps(api, ensure_ascii=False)}, cases = {json.dumps(cases, ensure_ascii=False)};
+console.log(JSON.stringify(cases.map(c => codeCheck(c, api))));
+"""
+    js = tmp_path / "t.js"
+    js.write_text(script, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(js)], capture_output=True, text=True, check=True).stdout)
+    assert got == [[w] if w else [] for w in want]

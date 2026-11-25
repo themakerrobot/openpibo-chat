@@ -18,7 +18,10 @@
   결과("앞에 컵이 보여요.")를 덧붙입니다. 기기에 없는 동작이면 실행하지 않고 없다고 말합니다.
 - "멈춰"는 안전을 위해 모델에 묻지 않고 바로 멈춥니다.
 - 자리를 옮기는 동작(앞으로·뒤로·왼쪽·오른쪽)은 학생 말에 그 방향 낱말이 있을 때만 실행합니다
-  (MOVE_WORDS). 없으면 한 번 더 묻고, 또 부르면 실행하지 않고 대화로 대답합니다.
+  (MOVE_WORDS). 없으면 한 번 더 묻고, 또 부르면 실행하지 않고 대화로 대답합니다. 그래서 "뒤로 물러나"에
+  앞으로, "왼쪽으로"에 오른쪽처럼 반대 방향을 부르면 실행하지 않습니다.
+- 바로 앞에서 실행한 도구를 같은 인자로 또 부르는데 학생 말에 부탁하는 낱말(REQUEST)이 없으면
+  ("고마워", "예쁘다", "ㅋㅋ 몸치네") 실행하지 않습니다. 방향과 같이 한 번 더 묻고, 또 그러면 대화로 대답합니다.
 - 음성 인식·합성은 listen()/speak()를 지금 쓰는 것으로 바꿔 끼우면 됩니다 (TTS 목소리는 lang_of로).
 - openpibo의 Device(MCU)·카메라는 root 권한이 필요해 sudo로 실행합니다.
 """
@@ -140,6 +143,7 @@ class Pibo:
     def __init__(self, fake: bool = False):
         self.fake = fake
         self._parts: dict = {}
+        self.last_call: tuple[str, dict] | None = None   # 바로 앞에서 부른 도구 (같은 호출 되풀이 막기)
 
     def part(self, name: str):
         if name not in self._parts:
@@ -248,10 +252,11 @@ STOP = re.compile(r"멈춰|멈추라|정지|스톱|그만\s*움직|stop|\bfreeze
 
 #: 자리를 옮기는 동작은 학생 말에 그 방향 낱말이 있을 때만 실행합니다 (안전: 이야기 속 말에
 #: 모델이 잘못 부르면 책상에서 움직이지 않게). 제자리 동작(춤, 인사 …)과 불빛·보기는 모델이 정함
-MOVE_WORDS = {"앞으로": re.compile(r"앞|이리|다가|오라|forward|come", re.IGNORECASE),
-              "뒤로": re.compile(r"뒤|물러|back", re.IGNORECASE),
-              "왼쪽": re.compile(r"왼|left", re.IGNORECASE),
-              "오른쪽": re.compile(r"오른|right", re.IGNORECASE)}
+#: 영어 낱말은 낱말 경계로만 (alright·backpack·welcome 같은 데 걸리지 않게). "좌우"(도리도리)는 왼쪽이 아님
+MOVE_WORDS = {"앞으로": re.compile(r"앞|이리|다가|오라|가까이|\b(forward|come|closer|toward me)\b", re.IGNORECASE),
+              "뒤로": re.compile(r"뒤|물러|멀리|\b(back|backward|backwards|away)\b", re.IGNORECASE),
+              "왼쪽": re.compile(r"왼|\bleft\b", re.IGNORECASE),
+              "오른쪽": re.compile(r"오른|\bright\b(?!\s+now)", re.IGNORECASE)}
 #: 막은 뒤 다시 물어도 또 막히면 하는 말
 NOT_MOVING = SAY["ko"]["not_moving"]
 
@@ -264,11 +269,33 @@ def blocked(text: str, call: tuple[str, dict] | None) -> bool:
     return words is not None and not words.search(text)
 
 
+#: 도구를 해 달라는 낱말. 바로 앞과 같은 호출을 또 할 때 이게 없으면 막습니다 ("고마워", "예쁘다", "ㅋㅋ")
+REQUEST = re.compile(r"줘|줄래|주세요|주라|봐|해|켜|꺼|끄|바꿔|바꾸|춰|추자|쳐|치자|흔들|돌아|돌려|가자|다가|이리"
+                     r"|다시|또|한\s*번|계속"
+                     r"|\b(again|more|please|can you|could you|will you|turn|make|switch|change|do|show"
+                     r"|dance|clap|wave|nod|shake|look|go|move|come|keep)\b", re.IGNORECASE)
+
+
+def repeated(text: str, call: tuple[str, dict] | None, last: tuple[str, dict] | None) -> bool:
+    """바로 앞에서 실행한 도구를 같은 인자로 또 부르는데 학생 말에 부탁하는 낱말이 없는지."""
+    return bool(call and last and call[0] == last[0] and call[1] == last[1] and not REQUEST.search(text))
+
+
+def why_not(text: str, call: tuple[str, dict] | None, last: tuple[str, dict] | None) -> str | None:
+    """실행하지 않을 까닭 (실행해도 되면 None)."""
+    if blocked(text, call):
+        return "학생 말에 그 방향 낱말이 없음"
+    if repeated(text, call, last):
+        return "부탁하는 말 없이 바로 앞과 같은 호출"
+    return None
+
+
 def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bool = True) -> str:
     """학생 말 하나 → 할 말. tools가 거짓("대화만 하자")이면 도구 목록 없이 대화만.
     기억(history)에는 학생 말과 실제로 한 말만 남깁니다 (학습 때의 앞 대화와 같은 모양)."""
     history.append({"role": "user", "content": text})
     if STOP.search(text):
+        robot.last_call = None
         if robot.can_move:
             robot.stop()
         said = "네, 멈출게요." if lang_of(text) == "ko" else "Okay, I'll stop."
@@ -277,13 +304,16 @@ def turn(url: str, history: list, text: str, robot: Pibo, system: str, tools: bo
     msgs = [{"role": "system", "content": system}] + window(history)
     msg = ask(url, msgs, tools)
     calls = calls_of(msg) if tools else []
-    if calls and blocked(text, calls[0]):
+    last = getattr(robot, "last_call", None)
+    why = why_not(text, calls[0], last) if calls else None
+    if why:
         # 같은 도구 목록으로 한 번 더 (앞부분이 같아 서버가 기억한 걸 씀). 또 막히면 정해진 말로
-        print(f"  [도구] {calls[0][0]}({calls[0][1]}) 막음: 학생 말에 방향 낱말이 없음", flush=True)
+        print(f"  [도구] {calls[0][0]}({calls[0][1]}) 막음: {why}", flush=True)
         msg = ask(url, msgs, tools, temperature=1.0)
         calls = calls_of(msg)
-        if calls and blocked(text, calls[0]):
+        if calls and why_not(text, calls[0], last):
             msg, calls = {"content": say("not_moving")}, []
+    robot.last_call = (calls[0][0], dict(calls[0][1])) if calls else None
     content = (msg.get("content") or "").strip()
     if calls:
         said = act(robot, *calls[0], content)
@@ -362,6 +392,7 @@ def main(robot_class=Pibo):
             if was != use_tools:
                 # 끄고 켜는 말은 모델에 보내지 않고 정해진 말로 대답하고 기억을 비웁니다
                 history.clear()
+                robot.last_call = None
                 print(f"  (도구 {'켬' if use_tools else '끔'})", flush=True)
                 speak(name, say("tools_on" if use_tools else "tools_off"))
                 continue
@@ -372,6 +403,7 @@ def main(robot_class=Pibo):
             body = exc.read().decode("utf-8", "ignore")[:300] if hasattr(exc, "read") else ""
             print(f"  (서버 오류: {exc} {body})", flush=True)
             history.clear()
+            robot.last_call = None
             speak(name, say("error"))
         print(f"  (모두 {time.time() - t:.1f}초)", flush=True)
 
